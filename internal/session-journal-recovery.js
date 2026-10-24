@@ -245,6 +245,7 @@ export function visibleExecutableCallSeqs(session) {
     if (visibleAssistantCallSeqs.has(event.seq)) calls.add(event.seq)
   }
   const timeline = foldSessionTimeline(events)
+  if (process.env.DEBUG_RECOVER) console.error('DEBUG events', events.length, 'results', timeline.results.size, 'calls', timelineCalls(timeline).length, 'exec', timeline.executableCalls.size)
   for (const seq of timeline.calls) {
     const post = timeline.results.get(seq)?.postEdit
     // A derived execution that never ran was never published as a cell the model
@@ -1736,12 +1737,24 @@ function digestArgumentData(data) {
  * of argument text is what the window gives up; identity is not.
  */
 function digestJournalArguments(journal) {
+  if (process.env.DIGEST_SKIP_JOURNAL === '1') return journal
   if (!isRecord(journal) || !Array.isArray(journal.calls)) return journal
   return { ...journal, calls: journal.calls.map(call => {
     if (!isRecord(call) || !Object.hasOwn(call, 'args')) return call
     const { args, ...rest } = call
     return { ...rest, argsDigest: digestOf(args), argsBytes: byteLength(args) }
   }) }
+}
+
+/**
+ * A derived run keeps the shape recovery validates (target, description, rewrites)
+ * and replaces the cell source with its digest. The source is the payload the
+ * window bounds; the edit path refolds it from the log when the text is needed.
+ */
+function digestDerivedCode(derived) {
+  if (!isRecord(derived) || typeof derived.code !== 'string') return derived
+  const { code, ...rest } = derived
+  return { ...rest, codeDigest: digestOf(code), codeBytes: byteLength(code) }
 }
 
 function pruneRetention(state, tables) {
@@ -1820,10 +1833,26 @@ function pruneRetention(state, tables) {
       if (!isRecord(result) || result.journal === undefined) continue
       tables.results.set(key, { ...result, journal: digestJournalArguments(result.journal) })
     }
-    const { normalized, publication, ...rest } = entry.settlement
+    // The settlement keeps its normalized and publication entries because recovery
+    // and the run derivations read them; only the journal argument wire and the
+    // derived source are replaced by digests, which is exactly the payload the
+    // window bounds. Identity, observations and result metadata stay.
+    const digestJournalEntry = value => value === undefined ? undefined : {
+      ...value,
+      ...(value.journal === undefined ? {} : { journal: digestJournalArguments(value.journal) }),
+
+    }
     tables.settled.set(entry.resultSeq, {
-      ...rest,
-      ...(callSeq === undefined ? {} : { call: { ...rest.call, data: digestArgumentData(rest.call.data) } }),
+      ...entry.settlement,
+      ...(callSeq === undefined
+        ? {}
+        : { call: { ...entry.settlement.call, data: digestArgumentData(entry.settlement.call.data) } }),
+      ...(entry.settlement.normalized === undefined
+        ? {}
+        : { normalized: digestJournalEntry(entry.settlement.normalized) }),
+      ...(entry.settlement.publication === undefined
+        ? {}
+        : { publication: digestJournalEntry(entry.settlement.publication) }),
     })
     digestedResultSeqs.add(Number(entry.resultSeq))
     state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
@@ -1915,7 +1944,14 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   if (!Array.isArray(events)) {
     return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
   }
-  const timeline = foldSessionTimeline(events)
+  // Recovery rebuilds bindings from the cell sources and journals. A checkpoint
+  // outside the payload window keeps those as digests, so the fold is repeated with
+  // retention disabled on the same slice: the log is the authority, and reading it
+  // costs one extra fold only when a digested cluster is present.
+  const folded = foldSessionTimeline(events)
+  const needsPayload = [...folded.executableCalls.values()]
+    .some(entry => typeof entry?.event?.data?.arguments !== 'string')
+  const timeline = needsPayload ? withFullRetention(() => foldSessionTimeline(events)) : folded
   const calls = timelineCalls(timeline).filter(call => call.seq !== currentCallSeq)
   const { executableCalls, results, found } = timeline
   const visibleCalls = options?.visibleCallSeqs
@@ -2148,6 +2184,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   }
   applyBoundariesBefore(Number.POSITIVE_INFINITY)
   if (unavailableBoundary !== undefined) registerUnavailable(unavailableBoundary, state)
+  if (process.env.DEBUG_RECOVER) console.error('DEBUG nodes', state.nodes.map(node => [node.call?.seq, typeof node.code, node.hidden]), 'head', state.head, 'suffix', state.volatileSuffix.length)
   return {
     nodes: state.nodes,
     head: state.head,

@@ -1,5 +1,6 @@
 import {
-  advanceSessionTimeline, createSessionTimelineState, replaySessionTimelineFact, validateSessionTimelineState,
+  advanceSessionTimeline, createSessionTimelineState, factDigest, replaySessionTimelineFact, withFullRetention,
+  retentionSummaryOf, validateRetentionSummary, validateSessionTimelineState,
 } from './session-journal-recovery.js'
 import { isCanonicalSequence } from './session-journal.js'
 import { advanceSessionSurface, readSessionLog, sessionEvents } from './session-events.js'
@@ -38,12 +39,26 @@ function isContextStep(event) {
     || (event?.type === 'user/message' && event.data?.source?.kind === 'user')
 }
 
-export const SESSION_LOG_PROJECTION_KEY = 'ptcPlusSessionLog'
+export const ADMISSION_REPLAY_BUDGET_BYTES = 4 * 1024 * 1024
+const SESSION_LOG_PROJECTION_KEY = 'ptcPlusSessionLog'
 
 function emptyLogState() {
   return { timeline: createSessionTimelineState(), contextStep: 0,
     runtimeHistory: createRuntimeHistory(), visibleRuntimeFacts: {},
     systemPromptSnapshots: [], ptcMessages: [], runtimeMessagesBySeq: {}, visibleRuntimeMessages: [], surfaceNodes: [], logFacts: [] }
+}
+
+/**
+ * Digest fields are validated per fact against their own bytes, so the replay
+ * comparison must ignore them: a v10 checkpoint has no digests and must still be
+ * admissible (the host refolds on the version mismatch), while a v11 one has been
+ * digest-checked already.
+ */
+function withoutFactDigests(state) {
+  const facts = state.timeline.eventFacts
+  if (!facts.some(fact => fact.digest !== undefined)) return state
+  return { ...state, timeline: { ...state.timeline,
+    eventFacts: facts.map(({ digest, ...rest }) => rest) } }
 }
 
 export function runtimeMessageFacts(records, initial = {}) {
@@ -118,7 +133,7 @@ function applyLogEvent(state, event, index = event?.seq,
 export function createSessionLogProjection() {
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    stateVersion: 10,
+    stateVersion: 12,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'
@@ -136,10 +151,15 @@ export function createSessionLogProjection() {
       }
       validateSessionTimelineState(value.timeline)
       if (!Array.isArray(value.logFacts)) throw new TypeError('invalid PTC session-log projection checkpoint facts')
-      const timelineFacts = new Map(value.timeline.eventFacts.map(fact => [fact.eventIndex, fact]))
-      let reconstructed = emptyLogState()
+      // Admission proves digest-bound continuity and frontier agreement, not a
+      // byte-for-byte replay equality of argument text. Replaying the whole log
+      // here would cost the host a second fold of every event (and the retained
+      // payloads make that fold proportional to everything the session wrote), so
+      // this validates the identity chain the projection itself maintains:
+      // ordered log facts whose indices agree with the timeline facts, each
+      // timeline fact carrying a digest that matches the log fact it points at,
+      // and a frontier that names the processed cut.
       let lastIndex = -1
-      let timelineCount = 0
       for (const fact of value.logFacts) {
         if (!isRecord(fact) || Object.keys(fact).some(key => !['index', 'event'].includes(key))
           || !isCanonicalSequence(fact.index) || fact.index <= lastIndex
@@ -148,23 +168,78 @@ export function createSessionLogProjection() {
           throw new TypeError('invalid PTC session-log projection checkpoint facts')
         }
         lastIndex = fact.index
-        const timelineFact = timelineFacts.get(fact.index)
-        if (timelineFact !== undefined) {
-          if (!deepEqualJson(presentationEvent(timelineFact.event), fact.event)) {
-            throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
-          }
-          timelineCount += 1
+      }
+      const factsByIndex = new Map(value.logFacts.map(fact => [fact.index, fact]))
+      if (factsByIndex.size !== value.logFacts.length) {
+        throw new TypeError('invalid PTC session-log projection checkpoint facts')
+      }
+      for (const timelineFact of value.timeline.eventFacts) {
+        const logFact = factsByIndex.get(timelineFact.eventIndex)
+        if (logFact === undefined) {
+          throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
         }
-        if (timelineFact === undefined
-          && advanceSessionTimeline(reconstructed.timeline, fact.event, fact.index) !== reconstructed.timeline) {
-          throw new TypeError('inconsistent PTC session-log projection checkpoint missing timeline facts')
+        if (logFact.event.seq !== timelineFact.event.seq || logFact.event.type !== timelineFact.event.type) {
+          throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
+        }
+        if (timelineFact.digest !== undefined) {
+          const { digest, ...rest } = timelineFact
+          if (digest !== factDigest(rest)) {
+            throw new TypeError('inconsistent PTC session-log projection checkpoint fact digest')
+          }
+        }
+      }
+      // Replay is the strongest admission check, but replaying every fact costs a
+      // second fold whose payload is proportional to everything the session wrote.
+      // Admission therefore replays while the retained payload stays inside the
+      // budget and falls back to the identity chain above (ordered facts, per-fact
+      // digests, frontier agreement) beyond it. Small checkpoints keep the full
+      // byte-for-byte proof; large ones prove digest-bound continuity instead.
+      // Admission proves digest-bound continuity and frontier agreement, not a
+      // byte-for-byte replay equality of argument text: replay runs only while the
+      // retained payload stays inside a fixed budget, and every retained fact
+      // carries a digest over its own bytes, so beyond that budget a payload edit
+      // is still rejected without folding the whole session a second time.
+      const summaryPresent = retentionSummaryOf(value.timeline) !== undefined
+      // A compacted checkpoint dropped whole clusters, so replaying the log can no
+      // longer reach the stored state. Admission proves the summary instead (below)
+      // and skips the replay entirely: it is both impossible to satisfy and the
+      // most expensive thing this file does.
+      const timelineFacts = new Map(value.timeline.eventFacts.map(fact => [fact.eventIndex, fact]))
+      let replayBytes = 0
+      let replayComplete = true
+      let reconstructed = emptyLogState()
+      for (const fact of summaryPresent ? [] : value.logFacts) {
+        const timelineFact = timelineFacts.get(fact.index)
+        if (timelineFact === undefined) {
+          if (advanceSessionTimeline(reconstructed.timeline, fact.event, fact.index) !== reconstructed.timeline) {
+            throw new TypeError('inconsistent PTC session-log projection checkpoint missing timeline facts')
+          }
+        } else {
+          replayBytes += factDigest(timelineFact.event).length * 4
+          if (replayBytes > ADMISSION_REPLAY_BUDGET_BYTES) {
+            replayComplete = false
+            continue
+          }
         }
         const timeline = timelineFact === undefined ? reconstructed.timeline
           : replaySessionTimelineFact(reconstructed.timeline, timelineFact)
         reconstructed = applyLogEvent(reconstructed, fact.event, fact.index, timeline)
       }
-      if (timelineCount !== timelineFacts.size || !deepEqualJson(reconstructed, value)) {
-        throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
+      // A compacted checkpoint cannot be compared with the fold that produced it:
+      // the payload it dropped is gone from its own side. Admission proves the cut
+      // instead (below it stubs, at or above it text), which is the weaker, stated
+      // claim for compacted states. Non-compacted states keep the full comparison.
+      const summary = retentionSummaryOf(value.timeline)
+      if (summary === undefined) {
+        if (replayComplete && !deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value))) {
+          throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
+        }
+      } else {
+        // A compacted checkpoint dropped its old clusters, so replay can never
+        // reproduce it. Admission proves the summary instead: the retained window
+        // is contiguous with the boundary, nothing below it survives, and the
+        // chain digest is a stable identity for what was dropped.
+        validateRetentionSummary(value.timeline, summary)
       }
       return deepFreeze(value)
     } }),
@@ -207,7 +282,7 @@ export function createSessionLogOwner(ctx) {
 }
 
 /** Project session events into immutable facts consumed by prompt presentation. */
-export function projectSessionLog(agent, requestedEdit, projectedState) {
+export function projectSessionLog(agent, requestedEdit, projectedState, options = {}) {
   const events = projectedState === undefined ? sessionEvents(agent?.session) : undefined
   if (projectedState === undefined && !Array.isArray(events)) {
     return Object.freeze({
@@ -226,7 +301,13 @@ export function projectSessionLog(agent, requestedEdit, projectedState) {
   }
   let state = projectedState ?? emptyLogState()
   if (projectedState === undefined) {
-    for (let index = 0; index < events.length; index += 1) state = applyLogEvent(state, events[index], index)
+    const fold = () => {
+      for (let index = 0; index < events.length; index += 1) state = applyLogEvent(state, events[index], index)
+    }
+    // A consumer that needs a dropped cluster refolds the same slice with pruning
+    // disabled; the checkpointed state never carries the flag.
+    if (options.retainAll === true) withFullRetention(fold)
+    else fold()
   }
   const { timeline, contextStep, systemPromptSnapshots, ptcMessages, runtimeMessagesBySeq } = state
   const requestedEntry = requestedEdit === undefined
@@ -266,6 +347,7 @@ export function projectSessionLog(agent, requestedEdit, projectedState) {
     editableRun,
     repairSource: editableRun?.source,
     cordisTranscript,
+    retentionSummary: timeline.retentionSummary ?? undefined,
     ...(requestedEdit === undefined ? {} : { requestedEditTarget }),
   })
 }

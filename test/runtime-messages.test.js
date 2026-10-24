@@ -245,6 +245,36 @@ test('projection checkpoints reject malformed tables and inconsistent derived fa
   assert.deepEqual(projection.stateSchema.parse(JSON.parse(JSON.stringify(invisible))), invisible)
 })
 
+test('admission proves digest-bound continuity: it rejects a tampered fact digest and a tampered frontier', () => {
+  const projection = createSessionLogProjection()
+  assert.equal(projection.stateVersion, 12)
+  let checkpoint = projection.init()
+  checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
+    data: runtimeStateMessage(state('retained')), surfaceOp: 'append' })
+  checkpoint = projection.apply(checkpoint, { seq: 1, type: 'user/message',
+    data: runtimeNoticeMessage(tip(1)), surfaceOp: 'append' })
+  // Only timeline events (turn boundaries, tool calls) produce retained facts.
+  checkpoint = projection.apply(checkpoint, { seq: 2, type: 'turn/start', data: {} })
+  const clean = JSON.parse(JSON.stringify(checkpoint))
+  // Digest-bound continuity: every retained fact carries a digest over its own
+  // bytes, so a payload edit is rejected without replaying the event.
+  assert.ok(clean.timeline.eventFacts.every(fact => typeof fact.digest === 'string'))
+  assert.deepEqual(projection.stateSchema.parse(clean), checkpoint)
+  const tamperedDigest = JSON.parse(JSON.stringify(checkpoint))
+  tamperedDigest.timeline.eventFacts[0].digest = 'f'.repeat(64)
+  assert.throws(() => projection.stateSchema.parse(tamperedDigest), /PTC session-log projection/)
+  // Frontier agreement: the frontier must be the last recorded clear and must
+  // describe the same scope the timeline reports.
+  const tamperedFrontier = JSON.parse(JSON.stringify(checkpoint))
+  tamperedFrontier.timeline.runSelectionFrontier = { index: 0, scope: 0, reason: 'turn/start' }
+  assert.throws(() => projection.stateSchema.parse(tamperedFrontier), /PTC session-log projection/)
+  // A v10 checkpoint has no fact digests; the host refolds it on the version
+  // mismatch, and admission still accepts it when the shape is intact.
+  const legacy = JSON.parse(JSON.stringify(checkpoint))
+  for (const fact of legacy.timeline.eventFacts) delete fact.digest
+  assert.deepEqual(projection.stateSchema.parse(legacy), JSON.parse(JSON.stringify(legacy)))
+})
+
 test('public restore rejects malformed nested timeline evidence before advancing a valid suffix', () => {
   const registry = new SessionProjectionRegistry(new Context())
   registry.register(createSessionLogProjection())

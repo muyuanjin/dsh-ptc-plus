@@ -25,6 +25,10 @@ import {
 } from './session-journal.js'
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
+import {
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, extendSummary, prunedCallEvent, prunedNormalized,
+  prunedSettlement, settlementBytes, summaryEntry,
+} from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
 const RUN_SELECTION_CLEAR_REASONS = new Set([
@@ -266,10 +270,14 @@ function timelineDerivedRun(call, result, eventIndex, derived) {
 }
 
 function successfulTimelineRun(run) {
-  return run.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
+  // A pruned settlement yields no run, so it cannot certify success either.
+  return run?.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
 }
 
 function settlementRun(settlement) {
+  // A pruned settlement no longer holds the text this run is derived from; report it
+  // as unavailable instead of rebuilding a run from digests.
+  if (settlement.pruned === true) return undefined
   const publication = settlement.publication
   if (publication === undefined) return undefined
   const result = { data: { meta: { [REWRITES_KEY]: publication.postEditRewrites ?? publication.rewrites } } }
@@ -432,7 +440,12 @@ function correlationEvent(event) {
       parentCallId: event.data?.parentCallId,
       subCallId: event.data?.subCallId,
       name: event.data?.name,
-      arguments: event.data?.arguments,
+      // A compacted dispatch keeps its digest pair, so re-deriving this fact from a
+      // pruned observation reproduces exactly what was stored.
+      ...(event.data?.arguments === undefined
+        ? (event.data?.argumentsDigest === undefined ? {}
+          : { argumentsDigest: event.data.argumentsDigest, argumentsBytes: event.data.argumentsBytes })
+        : { arguments: event.data.arguments }),
       ...(event.type === 'tool/ptc-dispatch' ? {
         isError: event.data?.isError,
         ...(event.data?.name === 'run_code' && event.data.meta?.[JOURNAL_KEY] !== undefined
@@ -538,8 +551,81 @@ function timelineCalls(timeline) {
 function timelineCallEvent(event) {
   return timelineJson({ seq: event.seq, type: event.type, data: {
     callId: event.data.callId, name: event.data.name,
-    ...(REPL_TOOL_NAMES.has(event.data.name) ? { arguments: event.data.arguments } : {}),
+    ...(REPL_TOOL_NAMES.has(event.data.name)
+      ? (event.data.arguments === undefined
+        ? { argumentsDigest: event.data.argumentsDigest, argumentsBytes: event.data.argumentsBytes }
+        : { arguments: event.data.arguments })
+      : {}),
   } })
+}
+
+/** Stable digest of a stored projection fact, used by checkpoint admission. */
+export function factDigest(value) {
+  return createHash('sha256').update(JSON.stringify(value ?? null, (_key, field) => (
+    isRecord(field) ? Object.fromEntries(Object.keys(field).sort().map(key => [key, field[key]])) : field
+  ))).digest('hex')
+}
+
+function withoutFactDigests(state) {
+  // Admission compares what the projection describes, not bookkeeping whose exact
+  // value depends on when pruning happened: per-fact digests and the retained-byte
+  // counter are accounting, not session state.
+  const { retainedBytes: _retainedBytes, retentionSummary: _retentionSummary, ...rest } = state
+  const facts = rest.eventFacts
+  if (!facts.some(fact => fact.digest !== undefined)) return rest
+  return { ...rest, eventFacts: facts.map(({ digest, ...fact }) => fact) }
+}
+
+/**
+ * The retention summary an admitted checkpoint carries.
+ *
+ * A compacted checkpoint keeps no per-settlement stubs at all: dropping the whole
+ * cluster is what makes the file size independent of how many cells the session
+ * ran. What survives is one chained summary of what was dropped, so admission can
+ * still tell "never existed" from "existed and was dropped".
+ */
+export function retentionSummaryOf(state) {
+  const summary = state?.retentionSummary
+  if (summary === undefined || summary === null) return undefined
+  return summary
+}
+
+/**
+ * Prove a compacted checkpoint without replaying it.
+ *
+ * The retained window must be contiguous with the summary boundary: every
+ * settlement above `toSeq` is present and intact, every executable call that a
+ * retained settlement names is present, and the summary is a well-formed chain.
+ * Below the boundary nothing survives, which is exactly the contract of dropping
+ * a cluster. This is the weaker, stated claim admission makes for compacted
+ * states; uncompacted states keep the byte-for-byte replay equality.
+ */
+export function validateRetentionSummary(timeline, summary) {
+  if (!isRecord(summary)) throw new TypeError('invalid PTC session-log projection retention summary')
+  const keys = Object.keys(summary)
+  if (keys.some(key => !['fromSeq', 'toSeq', 'count', 'chainDigest'].includes(key))) {
+    throw new TypeError('invalid PTC session-log projection retention summary')
+  }
+  if (!isCanonicalSequence(summary.fromSeq) || !isCanonicalSequence(summary.toSeq)
+    || summary.fromSeq > summary.toSeq || !Number.isSafeInteger(summary.count) || summary.count < 1
+    || typeof summary.chainDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(summary.chainDigest)) {
+    throw new TypeError('invalid PTC session-log projection retention summary')
+  }
+  for (const [key, pair] of Object.entries(timeline.settledResultsByEventSeq ?? {})) {
+    const seq = pair?.[0]
+    const settlement = pair?.[1]
+    if (!isCanonicalSequence(seq) || settlement === undefined) {
+      throw new TypeError('invalid PTC session-log projection retention window')
+    }
+    if (seq <= summary.toSeq) {
+      throw new TypeError(`PTC session-log projection retains settlement ${key} below its retention boundary`)
+    }
+    const callSeq = settlement.call?.seq
+    if (!isCanonicalSequence(callSeq) || timeline.executableCalls?.[`k${callSeq}`] === undefined) {
+      throw new TypeError('PTC session-log projection lost the call of a retained settlement')
+    }
+  }
+  return summary
 }
 
 function eventDigest(event) {
@@ -555,6 +641,8 @@ function resultIdentity(data) {
     isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
   ))).digest('hex')
 }
+
+const ADMISSION_REPLAY_BUDGET_BYTES = 4 * 1024 * 1024
 
 export function createSessionTimelineState() {
   return {
@@ -576,6 +664,12 @@ export function createSessionTimelineState() {
     runSelectionHistory: [],
     lastEventIndex: null,
     eventFacts: [],
+    // Payload bytes the retained settlements still carry: the retention window
+    // keeps this bounded so a checkpoint never scales with written content.
+    retainedBytes: 0,
+    // One chained summary of the clusters the window dropped. Per-settlement stubs
+    // would still scale with the number of cells the session ran.
+    retentionSummary: null,
     scope: 0,
   }
 }
@@ -589,10 +683,21 @@ export function validateSessionTimelineState(value) {
   const target = field => fields(field, ['callSeq', 'source']) && isCanonicalSequence(field.callSeq) && typeof field.source === 'string'
   const callEvent = event => fields(event, ['seq', 'type', 'data']) && isCanonicalSequence(event.seq) && event.type === 'tool/call'
     && isRecord(event.data) && typeof event.data.callId === 'string'
-    && fields(event.data, ['callId', 'name', 'arguments'])
+    && fields(event.data, ['callId', 'name', 'arguments', 'argumentsDigest', 'argumentsBytes'])
     && optional(event.data.name, name => typeof name === 'string')
-    && optional(event.data.arguments, args => typeof args === 'string')
+    && (event.data.arguments === undefined
+      ? (event.data.argumentsDigest === undefined
+        || (typeof event.data.argumentsDigest === 'string' && /^[a-f0-9]{64}$/u.test(event.data.argumentsDigest)
+          && isCanonicalSequence(event.data.argumentsBytes)))
+      : (typeof event.data.arguments === 'string' && event.data.argumentsDigest === undefined
+        && event.data.argumentsBytes === undefined))
   const callEntry = entry => fields(entry, ['event', 'eventIndex', 'scope', 'ambiguous', 'editTarget']) && callEvent(entry.event)
+    && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
+    && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
+  // A settlement references its call through `call` and keeps only the entry's
+  // position and claims. Storing `entry.event` as well would serialize the call
+  // event a second time — the duplication the retention work exists to remove.
+  const settlementEntry = entry => fields(entry, ['eventIndex', 'scope', 'ambiguous', 'editTarget'])
     && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
     && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
   const table = (name, keyValid, payloadValid) => {
@@ -607,8 +712,10 @@ export function validateSessionTimelineState(value) {
     'cordisTranscript', 'editTargets', 'pendingByCallId', 'seenCallIds', 'claimedEditTargets', 'editClaims',
     'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
-    'runSelectionHistory', 'lastEventIndex', 'eventFacts']) && typeof value.openTurn === 'boolean'
+    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes', 'retentionSummary']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
+    && typeof value.retainedBytes === 'number' && value.retainedBytes >= 0
+    && (value.retentionSummary === undefined || value.retentionSummary === null || isRecord(value.retentionSummary))
     && Array.isArray(value.calls) && value.calls.every(seq => isCanonicalSequence(seq))
     && Array.isArray(value.boundaries))
   requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
@@ -660,6 +767,15 @@ export function validateSessionTimelineState(value) {
     return true
   }
   const normalizedResult = result => {
+    // A pruned entry keeps only its position and an identity digest: the payload
+    // was dropped by the retention window, so admission can prove continuity but
+    // not the text. Everything else keeps the full shape.
+    if (result.payloadDigest !== undefined) {
+      return fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'payloadDigest'])
+        && isCanonicalSequence(result.eventSeq) && isCanonicalSequence(result.eventIndex)
+        && optional(result.positionSeq, isCanonicalSequence)
+        && typeof result.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(result.payloadDigest)
+    }
     if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings',
       'postEdit', 'postEditError'])
       || !isCanonicalSequence(result.eventSeq) || !isCanonicalSequence(result.eventIndex)
@@ -712,18 +828,23 @@ export function validateSessionTimelineState(value) {
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
   const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
-    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
-    && callEvent(settlement.call) && callEntry(settlement.entry)
+    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized', 'pruned'])
+    && callEvent(settlement.call) && settlementEntry(settlement.entry)
     && optional(settlement.normalized, normalizedResult)
     && typeof settlement.ordinary === 'boolean'
     && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
     && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
-    && deepEqualJson(settlement.call, settlement.entry.event)
     && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
+    && optional(settlement.pruned, pruned => pruned === true)
     && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
       || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
-    && optional(settlement.publication, publication => fields(publication,
-      ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
+    && optional(settlement.publication, publication => settlement.pruned === true
+      // A pruned publication keeps only where it sat and an identity digest; the
+      // journal and derived code were dropped by the retention window.
+      ? (fields(publication, ['index', 'payloadDigest']) && isCanonicalSequence(publication.index)
+        && typeof publication.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(publication.payloadDigest))
+      : fields(publication,
+        ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
       && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
       && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
       && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
@@ -745,8 +866,10 @@ export function validateSessionTimelineState(value) {
   requireFact(Array.isArray(value.eventFacts))
   let reconstructed = createSessionTimelineState()
   let correlationIndex = -1
+  let replayBytes = 0
+  let replayComplete = true
   for (const observation of value.eventFacts) {
-    requireFact(fields(observation, ['eventIndex', 'event', 'identity', 'hasJournal', 'normalized',
+    requireFact(fields(observation, ['eventIndex', 'event', 'digest', 'identity', 'hasJournal', 'normalized',
       'boundaries', 'boundaryFailure', 'rewrites', 'selectedTarget'])
       && isCanonicalSequence(observation.eventIndex) && observation.eventIndex > correlationIndex
       && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
@@ -775,9 +898,34 @@ export function validateSessionTimelineState(value) {
       && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: observation.rewrites }) ?? null,
         observation.rewrites ?? null))
     correlationIndex = observation.eventIndex
+    // Replay proves byte-for-byte equality, but its cost is proportional to the
+    // retained payload of the whole session. Admission therefore replays only
+    // while that payload stays inside the budget and falls back to the per-fact
+    // digests plus the shape/identity checks above beyond it.
+    replayBytes += factDigest(observation.event).length * 4
+    if (replayBytes > ADMISSION_REPLAY_BUDGET_BYTES) {
+      replayComplete = false
+      continue
+    }
     reconstructed = replaySessionTimelineFact(reconstructed, observation)
   }
-  requireFact(deepEqualJson(reconstructed, value))
+  const summary = retentionSummaryOf(value)
+  if (summary !== undefined) {
+    // A compacted checkpoint dropped whole clusters, so replay can never reproduce
+    // it; proving the summary is both the honest and the affordable claim.
+    validateRetentionSummary(value, summary)
+  } else if (replayComplete) {
+    // Non-compacted states keep the full replay equality.
+    if (summary === undefined) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
+    else validateRetentionSummary(value, summary)
+  }
+  // Semantic checks run first so their diagnostics stay specific; the digest is
+  // the last line of defence and rejects a payload edit without replaying it.
+  for (const observation of value.eventFacts) {
+    if (observation.digest === undefined) continue
+    const { digest, ...rest } = observation
+    requireFact(digest === factDigest(rest))
+  }
   for (const observation of ordinaryObservations.values()) {
     const settlement = settlements.get(observation.eventSeq)
     requireFact(settlement !== undefined
@@ -855,7 +1003,7 @@ export function validateSessionTimelineState(value) {
   }
   requireFact(selectedRun === undefined || publications.some(settlement =>
     settlement.entry.scope === value.scope && !settlement.entry.ambiguous
-    && settlementRun(settlement).callSeq === selectedRun.callSeq))
+    && settlementRun(settlement)?.callSeq === selectedRun.callSeq))
   requireFact(selectedRun === undefined ? value.latestRun === undefined && value.editableRun === undefined
     : deepEqualJson(value.latestRun ?? null, selectedRun) && deepEqualJson(value.editableRun ?? null, selectedRun))
   requireFact(value.lastSuccessfulRunIndex === lastSuccessfulRunIndex
@@ -1307,7 +1455,11 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
       if (isCanonicalSequence(resultSeq)) state.results.set(resultSeq, timelineJson(normalized))
       state.found = true
     }
-    const settlement = call === undefined ? undefined : { call, entry, identity: observation.identity,
+    const settlement = call === undefined ? undefined : { call, entry: {
+      eventIndex: entry?.eventIndex, scope: entry?.scope,
+      ...(entry?.ambiguous === true ? { ambiguous: true } : {}),
+      ...(entry?.editTarget === undefined ? {} : { editTarget: entry.editTarget }),
+    }, identity: observation.identity,
       observedIndex: eventIndex, ordinary: !prunedReplacement,
       ...(normalized === undefined ? {} : { normalized }) }
     if (settlement !== undefined && entry.scope === scope
@@ -1328,6 +1480,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     }
     if (settlement !== undefined && isCanonicalSequence(event.seq)) {
       settledResultsByEventSeq.set(event.seq, settlement)
+      state.retainedBytes += settlementBytes(settlement)
     }
 
     const claimedTarget = editClaims.get(callSeq)
@@ -1358,7 +1511,13 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     }
     publishRun()
   }
-  state.eventFacts[state.eventFacts.length - 1] = timelineJson(observation)
+  // Digest the serialized fact (undefined fields dropped) so admission can
+  // re-digest exactly the bytes it received.
+  const plainObservation = JSON.parse(JSON.stringify(observation))
+  plainObservation.digest = factDigest(plainObservation)
+  state.eventFacts[state.eventFacts.length - 1] = timelineJson(plainObservation)
+  pruneRetention(state, { settled: settledResultsByEventSeq, executable: state.executableCalls, results: state.results,
+    ordinary: ordinaryResultSeqs })
   return Object.fromEntries(Object.entries({ ...state,
     executableCalls: state.executableCalls.table, results: state.results.table, editTargets: state.editTargets.table,
     pendingByCallId: pendingByCallId.table, seenCallIds: seenCallIds.table,
@@ -1366,6 +1525,127 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     ordinaryResultSeqs: ordinaryResultSeqs.table, settledResultsByEventSeq: settledResultsByEventSeq.table,
     pruneReplacementWindow, scope,
   }).filter(([_key, value]) => value !== undefined))
+}
+
+/**
+ * Refold a session while keeping every payload.
+ *
+ * A consumer that needs a cluster the retention window dropped cannot rebuild it
+ * from the checkpoint. The session log still has the events, so the caller refolds
+ * that slice with pruning disabled and reads the cluster from there. The flag is
+ * scoped to one synchronous fold; the checkpointed state never sees it.
+ */
+let fullRetentionDepth = 0
+export function withFullRetention(run) {
+  fullRetentionDepth += 1
+  try {
+    return run()
+  } finally {
+    fullRetentionDepth -= 1
+  }
+}
+
+/**
+ * Drop the oldest settlements entirely and fold them into one summary.
+ *
+ * The projection is a fold shortcut, not the log. Keeping a digest stub per settled
+ * cell still made a checkpoint proportional to how many cells the session ran (450
+ * stubs cost ~1.7 MB before any payload), so the whole cluster is dropped instead:
+ * the settlement, its executable call, its ordinary observation and its normalized
+ * result. What survives is one chained summary of what was dropped, which is what
+ * makes the size a function of the window rather than of the session.
+ *
+ * Consumers that need a dropped cell must refold it from the session log; when the
+ * log cannot supply it they report `retention-pruned` instead of guessing.
+ */
+function pruneRetention(state, tables) {
+  if (fullRetentionDepth > 0) return
+  const entries = Object.entries(tables.settled.table)
+    .map(([, pair]) => ({ settlement: pair[1], resultSeq: pair[0] }))
+    .filter(entry => entry.settlement !== undefined)
+    .sort((left, right) => left.settlement.observedIndex - right.settlement.observedIndex)
+  if (entries.length === 0) return
+  // The count window is order-only so a replayed fold prunes identically.
+  const keepFrom = Math.max(0, entries.length - MAX_RETAINED_RUNS)
+  // The runs a consumer reads synchronously — the latest publication and the cell
+  // an edit would capture — stay inside the window even when newer settlements
+  // pushed them past the count. Dropping them would turn "editable" into "pruned"
+  // for the cell the user is actually looking at.
+  const pinnedCallSeqs = new Set([state.latestRun?.callSeq, state.editableRun?.callSeq]
+    .filter(callSeq => isCanonicalSequence(callSeq)))
+  const mustPrune = new Set([
+    ...entries.slice(0, keepFrom)
+      .filter(entry => pinnedCallSeqs.has(entry.settlement.call?.seq) === false)
+      .map(entry => entry.resultSeq),
+  ])
+  // A cumulative byte cap, not only a per-entry one: the window has to be a constant
+  // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
+  // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
+  // the payload budget is spent; the newest entry always stays.
+  const retainedPayloadBytes = (entry, executable = tables.executable) => {
+    const callSeq = entry.settlement.call?.seq
+    const stored = callSeq === undefined ? undefined : executable.get(callSeq)
+    const executableArguments = stored?.event?.data?.arguments
+    return settlementBytes(entry.settlement)
+      + (typeof executableArguments === 'string' ? byteLength(executableArguments) : 0)
+  }
+  let retainedTotal = 0
+  const newestFirst = [...entries].reverse()
+  for (const [index, entry] of newestFirst.entries()) {
+    const bytes = retainedPayloadBytes(entry)
+    const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
+    if (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES) {
+      mustPrune.add(entry.resultSeq)
+      continue
+    }
+    retainedTotal += bytes
+  }
+  if (mustPrune.size === 0) return
+  const droppedCallSeqs = new Set()
+  const droppedResultSeqs = new Set()
+  const dropped = []
+  for (const entry of entries) {
+    if (!mustPrune.has(entry.resultSeq)) continue
+    const callSeq = entry.settlement.call?.seq
+    dropped.push(summaryEntry(entry.settlement, Number(entry.resultSeq)))
+    tables.settled.delete(entry.resultSeq)
+    if (callSeq !== undefined) {
+      tables.executable.delete(callSeq)
+      if (tables.ordinary?.has(callSeq)) tables.ordinary.delete(callSeq)
+      droppedCallSeqs.add(callSeq)
+    }
+    // `results` is keyed by the RESULT sequence on the ordinary path and by the CALL
+    // sequence on the republication path, so drop both keys when either exists.
+    for (const key of [entry.resultSeq, callSeq]) {
+      if (key === undefined) continue
+      if (tables.results.has(key)) tables.results.delete(key)
+    }
+    droppedResultSeqs.add(entry.resultSeq)
+    state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
+  }
+  if (dropped.length === 0) return
+  // The ordered call list may only name stored entries, so a dropped cluster takes
+  // its call seq with it.
+  state.calls = state.calls.filter(callSeq => !droppedCallSeqs.has(callSeq))
+  dropped.sort((left, right) => left.resultSeq - right.resultSeq)
+  state.retentionSummary = extendSummary(state.retentionSummary, dropped)
+  // The facts of a dropped cluster keep their identity and digests but lose the
+  // payload text, for the same reason the cluster itself is gone.
+  // A fact per event is itself linear in the session length, so a dropped cluster
+  // takes its tool/call and tool/result facts with it. Admission for a compacted
+  // checkpoint proves the summary instead of replaying those facts.
+  state.eventFacts = state.eventFacts.filter(fact => {
+    if (fact.event?.type === 'tool/call' && droppedCallSeqs.has(fact.event.seq)) return false
+    if (fact.normalized !== undefined && droppedResultSeqs.has(Number(fact.normalized.eventSeq))) return false
+    return true
+  })
+}
+
+function findResultSeq(table, settlement) {
+  for (const [key, candidate] of Object.entries(table.table)) {
+    if (candidate === settlement) return candidate[0]
+  }
+  return undefined
 }
 
 export function sessionTimelineValue(checkpoint) {

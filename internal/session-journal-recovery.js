@@ -1969,10 +1969,15 @@ function pruneRetention(state, tables) {
     return true
   })
   // A digested cluster keeps its facts, but they carry the digest-only journal too:
-  // the fact list is a second copy of the same result content.
+  // the fact list is a second copy of the same result content. Rewriting the payload
+  // invalidates the fact's own digest, so it is recomputed here — admission checks
+  // that digest against the bytes it receives.
   state.eventFacts = state.eventFacts.map(fact => {
     if (fact.normalized === undefined || !digestedResultSeqs.has(Number(fact.normalized.eventSeq))) return fact
-    return { ...fact, normalized: digestJournalArguments(fact.normalized) }
+    const { digest: _digest, ...rest } = fact
+    const next = { ...rest, normalized: digestJournalArguments(fact.normalized) }
+    next.digest = factDigest(next)
+    return next
   })
   // A dispatch fact names the cell an edit would capture, and that target carries
   // the cell's source. Once the payload is digested the fold can no longer derive

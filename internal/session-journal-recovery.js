@@ -25,6 +25,9 @@ import {
 } from './session-journal.js'
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
+import {
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, prunedCallEvent, prunedNormalized, prunedSettlement, settlementBytes,
+} from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
 const RUN_SELECTION_CLEAR_REASONS = new Set([
@@ -538,7 +541,11 @@ function timelineCalls(timeline) {
 function timelineCallEvent(event) {
   return timelineJson({ seq: event.seq, type: event.type, data: {
     callId: event.data.callId, name: event.data.name,
-    ...(REPL_TOOL_NAMES.has(event.data.name) ? { arguments: event.data.arguments } : {}),
+    ...(REPL_TOOL_NAMES.has(event.data.name)
+      ? (event.data.arguments === undefined
+        ? { argumentsDigest: event.data.argumentsDigest, argumentsBytes: event.data.argumentsBytes }
+        : { arguments: event.data.arguments })
+      : {}),
   } })
 }
 
@@ -591,6 +598,9 @@ export function createSessionTimelineState() {
     runSelectionHistory: [],
     lastEventIndex: null,
     eventFacts: [],
+    // Payload bytes the retained settlements still carry: the retention window
+    // keeps this bounded so a checkpoint never scales with written content.
+    retainedBytes: 0,
     scope: 0,
   }
 }
@@ -604,9 +614,14 @@ export function validateSessionTimelineState(value) {
   const target = field => fields(field, ['callSeq', 'source']) && isCanonicalSequence(field.callSeq) && typeof field.source === 'string'
   const callEvent = event => fields(event, ['seq', 'type', 'data']) && isCanonicalSequence(event.seq) && event.type === 'tool/call'
     && isRecord(event.data) && typeof event.data.callId === 'string'
-    && fields(event.data, ['callId', 'name', 'arguments'])
+    && fields(event.data, ['callId', 'name', 'arguments', 'argumentsDigest', 'argumentsBytes'])
     && optional(event.data.name, name => typeof name === 'string')
-    && optional(event.data.arguments, args => typeof args === 'string')
+    && (event.data.arguments === undefined
+      ? (event.data.argumentsDigest === undefined
+        || (typeof event.data.argumentsDigest === 'string' && /^[a-f0-9]{64}$/u.test(event.data.argumentsDigest)
+          && isCanonicalSequence(event.data.argumentsBytes)))
+      : (typeof event.data.arguments === 'string' && event.data.argumentsDigest === undefined
+        && event.data.argumentsBytes === undefined))
   const callEntry = entry => fields(entry, ['event', 'eventIndex', 'scope', 'ambiguous', 'editTarget']) && callEvent(entry.event)
     && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
     && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
@@ -622,8 +637,9 @@ export function validateSessionTimelineState(value) {
     'cordisTranscript', 'editTargets', 'pendingByCallId', 'seenCallIds', 'claimedEditTargets', 'editClaims',
     'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
-    'runSelectionHistory', 'lastEventIndex', 'eventFacts']) && typeof value.openTurn === 'boolean'
+    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
+    && typeof value.retainedBytes === 'number' && value.retainedBytes >= 0
     && Array.isArray(value.calls) && value.calls.every(seq => isCanonicalSequence(seq))
     && Array.isArray(value.boundaries))
   requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
@@ -675,6 +691,15 @@ export function validateSessionTimelineState(value) {
     return true
   }
   const normalizedResult = result => {
+    // A pruned entry keeps only its position and an identity digest: the payload
+    // was dropped by the retention window, so admission can prove continuity but
+    // not the text. Everything else keeps the full shape.
+    if (result.payloadDigest !== undefined) {
+      return fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'payloadDigest'])
+        && isCanonicalSequence(result.eventSeq) && isCanonicalSequence(result.eventIndex)
+        && optional(result.positionSeq, isCanonicalSequence)
+        && typeof result.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(result.payloadDigest)
+    }
     if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings',
       'postEdit', 'postEditError'])
       || !isCanonicalSequence(result.eventSeq) || !isCanonicalSequence(result.eventIndex)
@@ -727,7 +752,7 @@ export function validateSessionTimelineState(value) {
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
   const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
-    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
+    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized', 'pruned'])
     && callEvent(settlement.call) && callEntry(settlement.entry)
     && optional(settlement.normalized, normalizedResult)
     && typeof settlement.ordinary === 'boolean'
@@ -735,10 +760,16 @@ export function validateSessionTimelineState(value) {
     && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
     && deepEqualJson(settlement.call, settlement.entry.event)
     && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
+    && optional(settlement.pruned, pruned => pruned === true)
     && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
       || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
-    && optional(settlement.publication, publication => fields(publication,
-      ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
+    && optional(settlement.publication, publication => settlement.pruned === true
+      // A pruned publication keeps only where it sat and an identity digest; the
+      // journal and derived code were dropped by the retention window.
+      ? (fields(publication, ['index', 'payloadDigest']) && isCanonicalSequence(publication.index)
+        && typeof publication.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(publication.payloadDigest))
+      : fields(publication,
+        ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
       && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
       && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
       && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
@@ -1361,6 +1392,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     }
     if (settlement !== undefined && isCanonicalSequence(event.seq)) {
       settledResultsByEventSeq.set(event.seq, settlement)
+      state.retainedBytes += settlementBytes(settlement)
     }
 
     const claimedTarget = editClaims.get(callSeq)

@@ -295,9 +295,6 @@ function successfulTimelineRun(run) {
 }
 
 function settlementRun(settlement, executableCalls) {
-  // A pruned settlement no longer holds the text this run is derived from; report it
-  // as unavailable instead of rebuilding a run from digests.
-  if (settlement.pruned === true) return undefined
   const publication = settlement.publication
   if (publication === undefined) return undefined
   const result = { data: { meta: { [REWRITES_KEY]: publication.postEditRewrites ?? publication.rewrites } } }
@@ -988,7 +985,7 @@ export function validateSessionTimelineState(value, logFacts) {
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
   const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
-    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized', 'pruned'])
+    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
     && callEvent(settlement.call) && settlementEntry(settlement.entry)
     && optional(settlement.normalized, normalizedResult)
     && typeof settlement.ordinary === 'boolean'

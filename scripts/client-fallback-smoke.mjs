@@ -1022,6 +1022,36 @@ if (values.list) {
             `${label}: combination choices keep equal width`)
         }
         const writesBeforeNavigation = await page.evaluate(() => window.settingsWrites.length)
+        // Screenshot the prompt-text table once, from the widest light chrome run: the
+        // pane's layout regression (stacked chips, misaligned columns) is only visible
+        // in a rendered image, so the gate records one for review.
+        if (width === 1920 && theme === 'light' && !native && locale === 'en') {
+          await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
+          await page.locator('.ptcPlusPromptTable').waitFor()
+          await page.screenshot({ path: 'G:/Temp/pane-view2.png', fullPage: false })
+          // The dialog is height-capped and scrolls, so an element screenshot would clip
+          // every row past the fold. Expand it for the capture and restore afterwards.
+          await page.evaluate(() => {
+            const modal = document.querySelector('.ptcPlusSettingsModal')
+            window.__paneRestore = []
+            const expand = element => {
+              window.__paneRestore.push([element, element.getAttribute('style') ?? ''])
+              element.style.height = 'auto'
+              element.style.maxHeight = 'none'
+              if (getComputedStyle(element).overflowY !== 'visible') element.style.overflow = 'visible'
+            }
+            expand(modal)
+            for (const element of modal.querySelectorAll('*')) {
+              const style = getComputedStyle(element)
+              if (style.overflowY === 'auto' || style.overflowY === 'scroll') expand(element)
+            }
+          })
+          await page.locator('.ptcPlusPromptTable').screenshot({ path: 'G:/Temp/pane-view2-table.png' })
+          await page.evaluate(() => {
+            for (const [element, style] of window.__paneRestore) element.setAttribute('style', style)
+            delete window.__paneRestore
+          })
+        }
         const recoveryChoice = combinationChoices.filter({ hasText: labels['capabilities.combination.recovery'] })
         await recoveryChoice.focus()
         await recoveryChoice.press('Enter')

@@ -23,6 +23,11 @@ const HOST_CONTEXT_SECTIONS = Object.freeze([
   Object.freeze({ id: 'host:system-prompt', presence: 'capabilities.prompt.hostPresenceEvery' }),
   Object.freeze({ id: 'host:tools:sdk', presence: 'capabilities.prompt.hostPresenceCapabilities' }),
 ])
+// The prompt table is one column model shared by the colgroup, the header and every
+// data row. Slot chips do not get a column: they render in their own full-width
+// sub-row, because a narrow chip column stacked a five-slot anchor into a tall stack.
+const PROMPT_TABLE_COLUMN_KEYS = Object.freeze(['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind'])
+const PROMPT_TABLE_COLUMNS = PROMPT_TABLE_COLUMN_KEYS.length
 
 function capabilityChoiceLabel(t, value) {
   return t(value === 'inherit' ? 'capabilities.quick.noOverride'
@@ -1111,15 +1116,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'channel' }, anchor.channel),
         h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', 'data-cell': 'anchor' },
           h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId),
-          h('small', { className: 'ptcPlusPromptChipNote', 'data-owner-status': anchor.owner }, status)),
+          h('span', { className: 'ptcPlusPromptOwnerBadge', 'data-owner-status': anchor.owner }, status)),
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence', title: anchor.presence }, anchor.presence),
         h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', 'data-cell': 'bytes' }, bytes),
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason', title: reasons.join(' · ') },
           reasons.length === 0 ? '—' : reasons.join(' · ')),
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind', title: kinds.join(' · ') }, kinds.join(' · ')),
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'slots' },
-          h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot)))),
       ]
+      // Chips live in their own full-width sub-row: a narrow slot column stacked one
+      // chip per line and turned every five-slot anchor into a 200 px block.
       return [
         h('tr', {
           key: anchor.anchorId,
@@ -1128,15 +1133,17 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           'data-wired': anchor.wired === true ? 'true' : 'false',
           'data-paused': paused ? 'true' : 'false',
         }, ...cells),
+        h('tr', { key: `${anchor.anchorId}-chips`, className: 'ptcPlusPromptChipsRow', 'data-anchor-chips': anchor.anchorId },
+          h('td', { className: 'ptcPlusPromptCell', colSpan: PROMPT_TABLE_COLUMNS },
+            h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot))))),
         editor === null ? null : h('tr', { key: `${anchor.anchorId}-editor`, className: 'ptcPlusPromptEditorRow' },
-          h('td', { className: 'ptcPlusPromptCell', colSpan: 7 }, editor)),
+          h('td', { className: 'ptcPlusPromptCell', colSpan: PROMPT_TABLE_COLUMNS }, editor)),
       ]
     })
     const headers = [
       t('capabilities.prompt.columnChannel'), t('capabilities.prompt.columnAnchor'),
       t('capabilities.prompt.columnPresence'), t('capabilities.prompt.columnBytesSplit'),
       t('capabilities.prompt.columnReason'), t('capabilities.prompt.columnKind'),
-      t('capabilities.prompt.columnSlots'),
     ]
     const header = h('thead', null, h('tr', { className: 'ptcPlusPromptHeader' },
       ...headers.map((label, index) => h('th', { key: label, scope: 'col', role: 'columnheader', 'data-column': index }, label))))
@@ -1155,8 +1162,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason' }, t('capabilities.prompt.ownerHost')),
       h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind' },
         h('span', { className: 'ptcPlusPromptChip', 'data-readonly': 'true' },
-          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection')))),
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'slots' })))
+          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection'))))))
     // Design §5/§11.7: saving shows what will change. The preview is derived from the
     // same document the editors write, so it cannot disagree with them, and it only
     // appears while at least one slot differs from its built-in text.
@@ -1219,7 +1225,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),
       h('table', { className: 'ptcPlusPromptTable' },
         h('colgroup', null,
-          ['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind', 'slots'].map(key =>
+          PROMPT_TABLE_COLUMN_KEYS.map(key =>
             h('col', { key, className: `ptcPlusPromptCol-${key}` }))),
         header,
         h('tbody', null, ...rows.flat(1).filter(Boolean), ...hostRows)))

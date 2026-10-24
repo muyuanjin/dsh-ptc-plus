@@ -8269,13 +8269,15 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   // textarea, so an extra field or a duplicated editor is a visible regression.
   for (const row of rows) {
     // The editor lives in the row's own full-width sub-row, so a wired editable
-    // anchor still owns exactly one field and a read-only one owns none.
-    const editorRow = row.nextElementSibling?.classList?.contains('ptcPlusPromptEditorRow')
-      ? row.nextElementSibling : null
+    // anchor still owns exactly one field and a read-only one owns none. The chips
+    // sub-row sits between the data row and the editor row.
+    const chipsRow = row.nextElementSibling
+    const editorRow = chipsRow?.nextElementSibling?.classList?.contains('ptcPlusPromptEditorRow')
+      ? chipsRow.nextElementSibling : null
     const textareas = editorRow === null ? [] : [...editorRow.querySelectorAll('textarea')]
     expect(textareas.length).toBeLessThanOrEqual(1)
-    if (row.dataset.wired === 'true' && row.querySelector('[data-slot-id]') !== null) {
-      const editable = [...row.querySelectorAll('[data-slot-id]')].filter(chip => chip.tagName === 'BUTTON')
+    if (row.dataset.wired === 'true' && chipsRow.querySelector('[data-slot-id]') !== null) {
+      const editable = [...chipsRow.querySelectorAll('[data-slot-id]')].filter(chip => chip.tagName === 'BUTTON')
       if (editable.length > 0) expect(textareas).toHaveLength(1)
     }
   }
@@ -8328,20 +8330,34 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
 
   // A table-like structure: one header row plus one aligned row per anchor, each with
-  // the six documented columns (channel, anchor, presence, bytes, reason, kind). A
-  // pile of chips cannot satisfy this.
+  // the six documented columns (channel, anchor, presence, bytes, reason, kind). Slot
+  // chips live in a full-width sub-row, not in a seventh column: a narrow chip column
+  // stacked a five-slot anchor into a tall pile of buttons.
   const table = view.container.querySelector('.ptcPlusPromptTable')
   expect(table).not.toBeNull()
   const header = table.querySelector('.ptcPlusPromptHeader')
   expect([...header.querySelectorAll('[role="columnheader"]')].map(cell => cell.textContent))
-    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind', 'Slots'])
+    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind'])
   const rows = [...table.querySelectorAll('[data-anchor-id]')]
   expect(rows).toHaveLength(13)
   for (const row of rows) {
     const cells = [...row.querySelectorAll(':scope > [data-cell]')]
     expect(cells.map(cell => cell.dataset.cell))
-      .toEqual(['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind', 'slots'])
+      .toEqual(['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind'])
+    expect(row.querySelector('[data-slot-id]')).toBeNull()
+    const chipsRow = row.nextElementSibling
+    expect(chipsRow.classList.contains('ptcPlusPromptChipsRow')).toBe(true)
+    expect(chipsRow.dataset.anchorChips).toBe(row.dataset.anchorId)
+    const chipCells = [...chipsRow.children]
+    expect(chipCells).toHaveLength(1)
+    expect(chipCells[0].getAttribute('colspan')).toBe('6')
+    expect(chipCells[0].querySelector('.ptcPlusPromptChips').children.length).toBeGreaterThan(0)
+    expect(chipsRow.querySelectorAll('[data-slot-id]').length).toBeGreaterThan(0)
   }
+  // The owner label sits inline next to the anchor id instead of wrapping onto a second
+  // line inside the anchor cell.
+  const anchorCell = rows[0].querySelector('[data-cell=anchor]')
+  expect(getComputedStyle(anchorCell).flexDirection).toBe('row')
   // The byte column carries the per-slot split when an anchor has more than one
   // measured slot, so the split is visible without opening the editor.
   const runCodeRow = rows.find(row => row.dataset.anchorId === 'run_code')
@@ -8351,7 +8367,7 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   // shipped wording without retyping it. A placeholder here would mean the field is
   // empty and the sentence is only decoration.
   const runCode = view.container.querySelector('[data-anchor-id="run_code"]')
-  const textarea = runCode.nextElementSibling.querySelector('textarea')
+  const textarea = runCode.nextElementSibling.nextElementSibling.querySelector('textarea')
   const builtIn = PROMPT_ASSETS.find(asset => asset.id === textarea.getAttribute('aria-label')).defaultText
   expect(textarea.value).toBe(builtIn)
   expect(textarea.value.length).toBeGreaterThan(20)

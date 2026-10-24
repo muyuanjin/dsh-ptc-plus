@@ -9123,6 +9123,8 @@ var HOST_CONTEXT_SECTIONS = Object.freeze([
   Object.freeze({ id: "host:system-prompt", presence: "capabilities.prompt.hostPresenceEvery" }),
   Object.freeze({ id: "host:tools:sdk", presence: "capabilities.prompt.hostPresenceCapabilities" })
 ]);
+var PROMPT_TABLE_COLUMN_KEYS = Object.freeze(["channel", "anchor", "presence", "bytes", "reason", "kind"]);
+var PROMPT_TABLE_COLUMNS = PROMPT_TABLE_COLUMN_KEYS.length;
 function capabilityChoiceLabel(t2, value) {
   return t2(value === "inherit" ? "capabilities.quick.noOverride" : ["enabled", "pending", "unknown"].includes(value) ? `capabilities.quick.${value}` : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.${value}` : "capabilities.quick.unknown");
 }
@@ -10881,7 +10883,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           "td",
           { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", "data-cell": "anchor" },
           h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId),
-          h("small", { className: "ptcPlusPromptChipNote", "data-owner-status": anchor.owner }, status)
+          h("span", { className: "ptcPlusPromptOwnerBadge", "data-owner-status": anchor.owner }, status)
         ),
         h("td", { className: "ptcPlusPromptCell", "data-cell": "presence", title: anchor.presence }, anchor.presence),
         h("td", { className: "ptcPlusPromptCell ptcPlusPromptAnchorBytes", "data-cell": "bytes" }, bytes),
@@ -10890,12 +10892,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           { className: "ptcPlusPromptCell", "data-cell": "reason", title: reasons.join(" \xB7 ") },
           reasons.length === 0 ? "\u2014" : reasons.join(" \xB7 ")
         ),
-        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.join(" \xB7 ")),
-        h(
-          "td",
-          { className: "ptcPlusPromptCell", "data-cell": "slots" },
-          h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot)))
-        )
+        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.join(" \xB7 "))
       ];
       return [
         h("tr", {
@@ -10905,10 +10902,19 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           "data-wired": anchor.wired === true ? "true" : "false",
           "data-paused": paused ? "true" : "false"
         }, ...cells),
+        h(
+          "tr",
+          { key: `${anchor.anchorId}-chips`, className: "ptcPlusPromptChipsRow", "data-anchor-chips": anchor.anchorId },
+          h(
+            "td",
+            { className: "ptcPlusPromptCell", colSpan: PROMPT_TABLE_COLUMNS },
+            h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot)))
+          )
+        ),
         editor === null ? null : h(
           "tr",
           { key: `${anchor.anchorId}-editor`, className: "ptcPlusPromptEditorRow" },
-          h("td", { className: "ptcPlusPromptCell", colSpan: 7 }, editor)
+          h("td", { className: "ptcPlusPromptCell", colSpan: PROMPT_TABLE_COLUMNS }, editor)
         )
       ];
     });
@@ -10918,8 +10924,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       t2("capabilities.prompt.columnPresence"),
       t2("capabilities.prompt.columnBytesSplit"),
       t2("capabilities.prompt.columnReason"),
-      t2("capabilities.prompt.columnKind"),
-      t2("capabilities.prompt.columnSlots")
+      t2("capabilities.prompt.columnKind")
     ];
     const header = h("thead", null, h(
       "tr",
@@ -10954,8 +10959,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           { className: "ptcPlusPromptChip", "data-readonly": "true" },
           h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.hostSection"))
         )
-      ),
-      h("td", { className: "ptcPlusPromptCell", "data-cell": "slots" })
+      )
     ));
     const builtinBytes = (text) => new TextEncoder().encode(text).length;
     const changed = account.anchors.map((anchor) => {
@@ -11035,7 +11039,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h(
           "colgroup",
           null,
-          ["channel", "anchor", "presence", "bytes", "reason", "kind", "slots"].map((key) => h("col", { key, className: `ptcPlusPromptCol-${key}` }))
+          PROMPT_TABLE_COLUMN_KEYS.map((key) => h("col", { key, className: `ptcPlusPromptCol-${key}` }))
         ),
         header,
         h("tbody", null, ...rows.flat(1).filter(Boolean), ...hostRows)
@@ -40419,27 +40423,30 @@ var CLIENT_CSS = `
 .ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
 .ptcPlusPromptTable{width:100%;border-collapse:collapse;table-layout:fixed;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
-.ptcPlusPromptCol-channel{width:62px}
-.ptcPlusPromptCol-anchor{width:18%}
+.ptcPlusPromptCol-channel{width:56px}
+.ptcPlusPromptCol-anchor{width:26%}
 .ptcPlusPromptCol-presence{width:11%}
-.ptcPlusPromptCol-bytes{width:24%}
+.ptcPlusPromptCol-bytes{width:22%}
 .ptcPlusPromptCol-reason{width:12%}
-.ptcPlusPromptCol-kind{width:9%}
-.ptcPlusPromptRow{border-bottom:1px solid var(--dsw-alias-border-l2)}
-.ptcPlusPromptRow:last-child{border-bottom:0}
+.ptcPlusPromptCol-kind{width:12%}
+.ptcPlusPromptRow{border-top:1px solid var(--dsw-alias-border-l2)}
+.ptcPlusPromptRow:first-child{border-top:0}
 .ptcPlusPromptRow:hover>td{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptRow[data-host-row]>td{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptHeader>th{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;text-align:left;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
 .ptcPlusPromptCell{padding:8px 10px;font-size:11px;line-height:18px;vertical-align:top;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .ptcPlusPromptCell[data-cell=anchor]{color:var(--dsw-alias-label-primary)}
 .ptcPlusPromptCell[data-cell=bytes]{white-space:normal;text-overflow:clip}.ptcPlusPromptCell[data-cell=bytes] small{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:2px}
-.ptcPlusPromptCell[data-cell=slots]{white-space:normal}.ptcPlusPromptCell[data-cell=reason]{white-space:normal}
+.ptcPlusPromptCell[data-cell=reason]{white-space:normal}
+.ptcPlusPromptChipsRow>td{padding:0 10px 6px;white-space:normal;border-top:0}
+.ptcPlusPromptChipsRow:hover>td{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptEditorRow>td{padding:0 10px 10px;background:transparent}.ptcPlusPromptEditorRow textarea{width:100%}
 .ptcPlusPromptTextarea{color:var(--dsw-alias-label-primary)}
 @media(max-width:720px){.ptcPlusPromptTable{table-layout:auto}.ptcPlusPromptHeader>th:nth-child(1),.ptcPlusPromptHeader>th:nth-child(3),.ptcPlusPromptHeader>th:nth-child(5),.ptcPlusPromptHeader>th:nth-child(6){display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=channel],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=reason],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=kind]{display:none}}
 .ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
-.ptcPlusPromptAnchorCell{display:flex;flex-direction:column;gap:2px;min-width:0}.ptcPlusPromptDiff{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-state-business-primary,#4d6bfe);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPromptDiff h5{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-primary)}.ptcPlusPromptDiffRow{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}.ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.ptcPlusPromptAnchorCell{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
+.ptcPlusPromptOwnerBadge{display:inline-flex;align-items:center;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}.ptcPlusPromptDiff{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-state-business-primary,#4d6bfe);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPromptDiff h5{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-primary)}.ptcPlusPromptDiffRow{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}.ptcPlusPromptAnchorId{display:block;min-width:0;flex:1 1 auto;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ptcPlusPromptAnchorMeta{flex:1 1 220px;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .ptcPlusPromptAnchorBytes{flex:none;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .ptcPlusPromptChips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;grid-column:1/-1}

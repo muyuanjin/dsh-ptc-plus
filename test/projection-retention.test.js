@@ -217,5 +217,6 @@ test('a checkpoint stays below a small multiple of the payload budget', () => {
   const allowance = clusters * 2048
   assert.ok(total < budget * 3 + allowance,
     `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
-  assert.ok(state.hotCellDropped === false || state.hotCellDropped === true)
+  assert.equal(state.hotCellDropped, false,
+    'the newest cell fits the budget, so its payload is retained and no notice is due')
 })

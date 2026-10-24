@@ -14,8 +14,14 @@ import { createHash } from 'node:crypto'
 // Default is unbounded: a bounded window breaks recovery-after-contraction (see
 // ADR 0032), and recovery cannot refold a pruned settlement from the log yet. The
 // environment overrides let tests exercise the mechanism in the meantime.
-export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? Number.POSITIVE_INFINITY)
-export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? Number.POSITIVE_INFINITY)
+// The window is enabled by default: a checkpoint must not grow with how many bytes
+// the session wrote (issue #10: a 77 MB state the host cloned until it aborted).
+// The newest 32 runs keep their payload — enough for tips, the current edit target
+// and republication of what a user is actually looking at — and everything older
+// keeps identity digests and positions only. The environment overrides exist so a
+// test can shrink the window and exercise the contraction.
+export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? 32)
+export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? (8 * 1024 * 1024))
 
 /** Shout when the retention window cannot hold the payload a consumer needs. */
 export const PRUNED_EDIT = '该单元格超出保留窗口，已不可编辑'
@@ -113,6 +119,10 @@ export function settlementBytes(settlement) {
   let bytes = 0
   const args = settlement?.call?.data?.arguments
   if (typeof args === 'string') bytes += byteLength(args)
+  // The entry certifies the same call, so its copy of the arguments counts too;
+  // otherwise the window would retain roughly twice the payload it budgets.
+  const entryArgs = settlement?.entry?.event?.data?.arguments
+  if (typeof entryArgs === 'string') bytes += byteLength(entryArgs)
   const normalized = settlement?.normalized
   if (normalized !== undefined) bytes += byteLength(normalized)
   if (settlement?.publication !== undefined) bytes += byteLength(settlement.publication)

@@ -1585,12 +1585,22 @@ function pruneRetention(state, tables) {
     ...entries.slice(0, keepFrom)
       .filter(entry => !pinnedCallSeqs.has(entry.settlement.call?.seq))
       .map(entry => entry.resultSeq),
-    ...retainedEntries
-      .filter((entry, index) => index < retainedEntries.length - 1
-        && !pinnedCallSeqs.has(entry.settlement.call?.seq)
-        && settlementBytes(entry.settlement) > MAX_RETAINED_BYTES)
-      .map(entry => entry.resultSeq),
   ])
+  // A cumulative byte cap, not only a per-entry one: the window has to be a constant
+  // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
+  // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
+  // the payload budget is spent; the newest entry always stays.
+  let retainedTotal = 0
+  const newestFirst = [...retainedEntries].reverse()
+  for (const [index, entry] of newestFirst.entries()) {
+    const bytes = settlementBytes(entry.settlement)
+    const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
+    if (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES) {
+      mustPrune.add(entry.resultSeq)
+      continue
+    }
+    retainedTotal += bytes
+  }
   if (mustPrune.size === 0) return
   const prunedCallSeqs = new Set()
   const prunedResultSeqs = new Set()

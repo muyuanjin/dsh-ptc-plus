@@ -26,8 +26,7 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, extendSummary, prunedCallEvent, prunedNormalized,
-  prunedSettlement, settlementBytes, summaryEntry,
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, extendSummary, settlementBytes, summaryEntry,
 } from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
@@ -600,7 +599,7 @@ export function retentionSummaryOf(state) {
  * a cluster. This is the weaker, stated claim admission makes for compacted
  * states; uncompacted states keep the byte-for-byte replay equality.
  */
-export function validateRetentionSummary(timeline, summary) {
+export function validateRetentionSummary(timeline, summary, logFacts) {
   if (!isRecord(summary)) throw new TypeError('invalid PTC session-log projection retention summary')
   const keys = Object.keys(summary)
   if (keys.some(key => !['fromSeq', 'toSeq', 'count', 'chainDigest'].includes(key))) {
@@ -625,7 +624,40 @@ export function validateRetentionSummary(timeline, summary) {
       throw new TypeError('PTC session-log projection lost the call of a retained settlement')
     }
   }
+  // A summary that only describes itself proves nothing: a caller that holds the
+  // session log folds the dropped range again and requires the recorded chain to be
+  // exactly what that fold produces. Without the log the boundary checks above are
+  // the whole claim, which is why projection admission passes the facts.
+  if (Array.isArray(logFacts)) {
+    const expected = retentionSummaryFromLog(logFacts, summary.toSeq)
+    if (expected === undefined
+      || expected.count !== summary.count || expected.fromSeq !== summary.fromSeq
+      || expected.toSeq !== summary.toSeq || expected.chainDigest !== summary.chainDigest) {
+      throw new TypeError('inconsistent PTC session-log projection retention summary')
+    }
+  }
   return summary
+}
+
+/** Recompute the summary a fold of the dropped range would have produced. */
+function retentionSummaryFromLog(logFacts, toSeq) {
+  let state
+  withFullRetention(() => {
+    state = createSessionTimelineState()
+    for (const fact of logFacts) {
+      const event = fact?.event
+      if (event === undefined) continue
+      if (isCanonicalSequence(event.seq) && event.seq > toSeq) break
+      state = advanceSessionTimeline(state, event, fact.index)
+    }
+  })
+  const dropped = Object.entries(state?.settledResultsByEventSeq ?? {})
+    .map(([, pair]) => pair)
+    .filter(([resultSeq]) => Number(resultSeq) <= toSeq)
+    .sort((left, right) => left[1].observedIndex - right[1].observedIndex)
+    .map(([resultSeq, settlement]) => summaryEntry(settlement, Number(resultSeq)))
+  if (dropped.length === 0) return undefined
+  return extendSummary(undefined, dropped)
 }
 
 function eventDigest(event) {
@@ -674,7 +706,7 @@ export function createSessionTimelineState() {
   }
 }
 
-export function validateSessionTimelineState(value) {
+export function validateSessionTimelineState(value, logFacts) {
   const requireFact = condition => {
     if (!condition) throw new TypeError('invalid PTC session-log projection timeline checkpoint')
   }
@@ -912,12 +944,12 @@ export function validateSessionTimelineState(value) {
   const summary = retentionSummaryOf(value)
   if (summary !== undefined) {
     // A compacted checkpoint dropped whole clusters, so replay can never reproduce
-    // it; proving the summary is both the honest and the affordable claim.
-    validateRetentionSummary(value, summary)
+    // it; the summary is proved instead — against the log when the caller has it.
+    validateRetentionSummary(value, summary, logFacts)
   } else if (replayComplete) {
     // Non-compacted states keep the full replay equality.
     if (summary === undefined) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
-    else validateRetentionSummary(value, summary)
+    else validateRetentionSummary(value, summary, logFacts)
   }
   // Semantic checks run first so their diagnostics stay specific; the digest is
   // the last line of defence and rejects a payload edit without replaying it.
@@ -1581,7 +1613,9 @@ function pruneRetention(state, tables) {
   // A cumulative byte cap, not only a per-entry one: the window has to be a constant
   // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
   // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
-  // the payload budget is spent; the newest entry always stays.
+  // the payload budget is spent. A single entry larger than the whole budget is
+  // dropped too: the bound wins over keeping the hot cell, and the edit path refolds
+  // that cell from the session log when it is needed.
   const retainedPayloadBytes = (entry, executable = tables.executable) => {
     const callSeq = entry.settlement.call?.seq
     const stored = callSeq === undefined ? undefined : executable.get(callSeq)
@@ -1594,7 +1628,8 @@ function pruneRetention(state, tables) {
   for (const [index, entry] of newestFirst.entries()) {
     const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
-    if (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES) {
+    const overBudget = bytes > MAX_RETAINED_BYTES
+    if (overBudget || (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES)) {
       mustPrune.add(entry.resultSeq)
       continue
     }
@@ -1627,6 +1662,13 @@ function pruneRetention(state, tables) {
   // The ordered call list may only name stored entries, so a dropped cluster takes
   // its call seq with it.
   state.calls = state.calls.filter(callSeq => !droppedCallSeqs.has(callSeq))
+  // The hot run can be dropped when it alone exceeds the byte budget. The cached
+  // run must then stop pointing at a cluster that no longer exists; the edit path
+  // refolds it from the session log when a consumer actually needs it.
+  if (state.latestRun !== undefined && droppedCallSeqs.has(state.latestRun.callSeq)) {
+    state.latestRun = undefined
+    state.editableRun = undefined
+  }
   dropped.sort((left, right) => left.resultSeq - right.resultSeq)
   state.retentionSummary = extendSummary(state.retentionSummary, dropped)
   // The facts of a dropped cluster keep their identity and digests but lose the

@@ -149,8 +149,8 @@ export function createSessionLogProjection() {
         || !isRecord(value.runtimeMessagesBySeq) || !isRecord(value.timeline.cordisTranscript)) {
         throw new TypeError('invalid PTC session-log projection checkpoint')
       }
-      validateSessionTimelineState(value.timeline)
       if (!Array.isArray(value.logFacts)) throw new TypeError('invalid PTC session-log projection checkpoint facts')
+      validateSessionTimelineState(value.timeline, value.logFacts)
       // Admission proves digest-bound continuity and frontier agreement, not a
       // byte-for-byte replay equality of argument text. Replaying the whole log
       // here would cost the host a second fold of every event (and the retained
@@ -236,10 +236,11 @@ export function createSessionLogProjection() {
         }
       } else {
         // A compacted checkpoint dropped its old clusters, so replay can never
-        // reproduce it. Admission proves the summary instead: the retained window
-        // is contiguous with the boundary, nothing below it survives, and the
-        // chain digest is a stable identity for what was dropped.
-        validateRetentionSummary(value.timeline, summary)
+        // reproduce it. Admission proves the summary instead: the retained window is
+        // contiguous with the boundary, nothing below it survives, and the chain is
+        // recomputed from the logged dropped range so the summary cannot certify
+        // itself.
+        validateRetentionSummary(value.timeline, summary, value.logFacts)
       }
       return deepFreeze(value)
     } }),

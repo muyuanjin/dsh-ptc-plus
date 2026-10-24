@@ -19,6 +19,7 @@ import {
   editRunCodeSchema,
 } from './rejected-cell-editor.js'
 import { projectSessionLog } from './session-log-view.js'
+import { PRUNED_EDIT, PRUNED_EDIT_EN } from './projection-retention.js'
 import { PROMPT_SLOT_IDS, promptAssetText } from './prompt-text.js'
 import { sessionEvents } from './session-events.js'
 import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
@@ -212,7 +213,7 @@ export function createEditTransportOwner(ctx, {
       return { accepted: false, scheduled: false,
         reason: start.retentionSummary === undefined
           ? 'no run_code cell is currently eligible for safe editing'
-          : PRUNED_EDIT }
+          : `${PRUNED_EDIT} / ${PRUNED_EDIT_EN}` }
     }
     const edited = editRejectedCell(args, target.source)
     if (!edited.edited) {

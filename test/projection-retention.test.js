@@ -1,11 +1,14 @@
 // The retention window is a module constant; lower it before the recovery module
-// loads so a small synthetic session can cross it.
+// loads so a small synthetic session can cross it. The byte budget is wide enough
+// for a few 2 KB cells so the count window is what this file exercises; the
+// oversized-cell case below shrinks it again on its own.
 process.env.DSH_PTC_RETENTION_RUNS = '3'
-process.env.DSH_PTC_RETENTION_BYTES = '4096'
+process.env.DSH_PTC_RETENTION_BYTES = '65536'
 
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
-const { advanceSessionTimeline, createSessionTimelineState, validateSessionTimelineState, withFullRetention } =
+const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
+  validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 
@@ -40,10 +43,14 @@ function result(callId) {
   } }
 }
 
+let lastHistory = []
 function fold(events) {
   let state = createSessionTimelineState()
-  const history = [{ seq: next(), type: 'turn/start', data: {} }, ...events]
+  // The turn header leads the history and owns the lowest sequence, so a fold that
+  // stops at a given seq still sees it.
+  const history = [{ seq: 0, type: 'turn/start', data: {} }, ...events]
   for (let index = 0; index < history.length; index += 1) state = advanceSessionTimeline(state, history[index], index)
+  lastHistory = history
   return state
 }
 
@@ -121,4 +128,30 @@ test('a dropped cluster can be refolded from the same events', () => {
   assert.equal(full.retentionSummary, null, 'a full-retention fold never prunes')
   assert.equal(Object.keys(full.settledResultsByEventSeq).length, 6,
     'the refolded slice contains the dropped clusters')
+})
+
+test('the summary is proved against the log instead of certifying itself', () => {
+  const events = []
+  for (let index = 0; index < 8; index += 1) {
+    const id = `summary-${index}`
+    events.push(call(`return 'summary-${index}'`, id), result(id))
+  }
+  const state = fold(events)
+  const logFacts = lastHistory.map((event, index) => ({ index, event }))
+  const summary = state.retentionSummary
+  assert.ok(summary !== undefined, 'the fold dropped at least one cluster')
+
+  // With the log in hand the chain must match what folding the dropped range gives.
+  validateRetentionSummary(state, summary, logFacts)
+
+  // A summary that only describes itself is rejected: each tampered field disagrees
+  // with the recomputed chain.
+  assert.throws(() => validateRetentionSummary(state, { ...summary, chainDigest: 'a'.repeat(64) }, logFacts),
+    /inconsistent PTC session-log projection retention summary/u)
+  assert.throws(() => validateRetentionSummary(state, { ...summary, count: summary.count + 1 }, logFacts),
+    /inconsistent PTC session-log projection retention summary/u)
+  assert.throws(() => validateRetentionSummary(state, { ...summary, fromSeq: 1 }, logFacts),
+    /inconsistent PTC session-log projection retention summary/u)
+  assert.throws(() => validateRetentionSummary(state, { ...summary, toSeq: summary.toSeq + 2 }, logFacts),
+    /PTC session-log projection/u)
 })

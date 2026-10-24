@@ -11,10 +11,9 @@ import { createHash } from 'node:crypto'
  * positions remain, and consumers that need the text must report that the entry
  * was pruned instead of guessing.
  */
-// Default is unbounded: enabling the window changes what a checkpoint can prove
-// (pruned runs are identity-only), and the projection-level admission comparison
-// for a pruned checkpoint is not yet reproducible. Tests set
-// DSH_PTC_RETENTION_RUNS to exercise the mechanism until that is resolved.
+// Default is unbounded: a bounded window breaks recovery-after-contraction (see
+// ADR 0032), and recovery cannot refold a pruned settlement from the log yet. The
+// environment overrides let tests exercise the mechanism in the meantime.
 export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? Number.POSITIVE_INFINITY)
 export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? Number.POSITIVE_INFINITY)
 

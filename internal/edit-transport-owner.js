@@ -74,8 +74,12 @@ function nestedEditStart(sessionLog, exec) {
     || event.data.rootCallId !== exec.rootCallId
     || event.data.parentCallId !== exec.rootCallId
     || !deepEqualJson(event.data.arguments, exec.arguments)) return undefined
-  const target = projectSessionLog({ session: { events: events.slice(0, index + 1) } }).editableRun
-  return { startSeq: event.seq, rootCallSeq, target }
+  const view = projectSessionLog({ session: { events: events.slice(0, index + 1) } })
+  const target = view.editableRun
+  // The cut travels with the target so an unavailable edit can say why it is
+  // unavailable: the cell fell outside the retention window instead of never
+  // existing.
+  return { startSeq: event.seq, rootCallSeq, target, retentionCut: view.retentionCut }
 }
 
 function unavailableDerivedResult(inner) {
@@ -197,7 +201,10 @@ export function createEditTransportOwner(ctx, {
     }
     const target = start.target
     if (target?.source === undefined || target.callSeq === undefined) {
-      return { accepted: false, scheduled: false, reason: 'no run_code cell is currently eligible for safe editing' }
+      return { accepted: false, scheduled: false,
+        reason: start.retentionCut === undefined
+          ? 'no run_code cell is currently eligible for safe editing'
+          : PRUNED_EDIT }
     }
     const edited = editRejectedCell(args, target.source)
     if (!edited.edited) {

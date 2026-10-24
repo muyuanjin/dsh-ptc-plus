@@ -269,10 +269,14 @@ function timelineDerivedRun(call, result, eventIndex, derived) {
 }
 
 function successfulTimelineRun(run) {
-  return run.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
+  // A pruned settlement yields no run, so it cannot certify success either.
+  return run?.journal?.completion?.kind === 'return' && run.journal.status !== 'noop'
 }
 
 function settlementRun(settlement) {
+  // A pruned settlement no longer holds the text this run is derived from; report it
+  // as unavailable instead of rebuilding a run from digests.
+  if (settlement.pruned === true) return undefined
   const publication = settlement.publication
   if (publication === undefined) return undefined
   const result = { data: { meta: { [REWRITES_KEY]: publication.postEditRewrites ?? publication.rewrites } } }
@@ -628,14 +632,42 @@ export function compactBelowCut(checkpoint, cut) {
 
 /** Highest observed index the admitted checkpoint still retains; older entries are stubs. */
 export function retentionCutOf(checkpoint) {
-  let cut = undefined
-  for (const pair of Object.values(checkpoint.settledResultsByEventSeq ?? {})) {
+  // Only retention pruning writes this field, and admission proves exactly it. A
+  // checkpoint written before the field existed refolds (state version mismatch),
+  // so no derived fallback is needed here.
+  return isCanonicalSequence(checkpoint?.retentionCut) ? checkpoint.retentionCut : undefined
+}
+
+/**
+ * Prove a compacted checkpoint without replaying it.
+ *
+ * A pruned checkpoint cannot equal the fold that produced it, because the fold no
+ * longer has the text it dropped. What stays checkable is the cut itself: below it
+ * every settlement is a digest stub, at or above it every retained settlement
+ * still carries text, and each stub keeps a digest and a byte length instead of a
+ * silent zero. This is the weaker claim admission makes for compacted states.
+ */
+export function validateRetentionCut(timeline, cut) {
+  if (!isCanonicalSequence(cut)) throw new TypeError('invalid PTC session-log projection retention cut')
+  for (const pair of Object.values(timeline.settledResultsByEventSeq ?? {})) {
     const settlement = pair?.[1]
-    if (settlement?.pruned === true && settlement.observedIndex !== undefined) {
-      cut = cut === undefined ? settlement.observedIndex : Math.max(cut, settlement.observedIndex)
+    if (settlement === undefined || settlement.observedIndex === undefined) continue
+    if (settlement.observedIndex < cut) {
+      if (settlement.pruned !== true) {
+        throw new TypeError('PTC session-log projection retains payload below its retention cut')
+      }
+      const args = settlement.call?.data
+      if (args?.arguments !== undefined
+        || typeof args?.argumentsDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(args.argumentsDigest)
+        || !isCanonicalSequence(args?.argumentsBytes)) {
+        throw new TypeError('PTC session-log projection lost the digest of a pruned call')
+      }
+      continue
+    }
+    if (settlement.pruned === true) {
+      throw new TypeError('PTC session-log projection pruned payload at or above its retention cut')
     }
   }
-  return cut
 }
 
 function eventDigest(event) {
@@ -713,9 +745,10 @@ export function validateSessionTimelineState(value) {
     'cordisTranscript', 'editTargets', 'pendingByCallId', 'seenCallIds', 'claimedEditTargets', 'editClaims',
     'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
-    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes']) && typeof value.openTurn === 'boolean'
+    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes', 'retentionCut']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
     && typeof value.retainedBytes === 'number' && value.retainedBytes >= 0
+    && (value.retentionCut === undefined || isCanonicalSequence(value.retentionCut))
     && Array.isArray(value.calls) && value.calls.every(seq => isCanonicalSequence(seq))
     && Array.isArray(value.boundaries))
   requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
@@ -911,11 +944,11 @@ export function validateSessionTimelineState(value) {
     reconstructed = replaySessionTimelineFact(reconstructed, observation)
   }
   if (replayComplete) {
-    // Align the replayed fold to the admitted retention cut before comparing:
-    // a pruned checkpoint and a fresh replay prune on different byte histories.
+    // Non-compacted states keep the full replay equality. A compacted state cannot
+    // satisfy it (the fold no longer has the text it dropped), so prove the cut.
     const cut = retentionCutOf(value)
-    const replaySide = cut === undefined ? reconstructed : compactBelowCut(reconstructed, cut)
-    requireFact(deepEqualJson(withoutFactDigests(replaySide), withoutFactDigests(value)))
+    if (cut === undefined) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
+    else validateRetentionCut(value, cut)
   }
   // Semantic checks run first so their diagnostics stay specific; the digest is
   // the last line of defence and rejects a payload edit without replaying it.
@@ -1001,7 +1034,7 @@ export function validateSessionTimelineState(value) {
   }
   requireFact(selectedRun === undefined || publications.some(settlement =>
     settlement.entry.scope === value.scope && !settlement.entry.ambiguous
-    && settlementRun(settlement).callSeq === selectedRun.callSeq))
+    && settlementRun(settlement)?.callSeq === selectedRun.callSeq))
   requireFact(selectedRun === undefined ? value.latestRun === undefined && value.editableRun === undefined
     : deepEqualJson(value.latestRun ?? null, selectedRun) && deepEqualJson(value.editableRun ?? null, selectedRun))
   requireFact(value.lastSuccessfulRunIndex === lastSuccessfulRunIndex
@@ -1542,10 +1575,20 @@ function pruneRetention(state, tables) {
   // could not compare the two. Order-only pruning is reproducible.
   const retainedEntries = entries.filter(entry => entry.settlement.pruned !== true)
   const keepFrom = Math.max(0, entries.length - MAX_RETAINED_RUNS)
+  // The runs a consumer reads synchronously — the latest publication and the cell
+  // an edit would capture — stay inside the window even when newer settlements
+  // pushed them past the count. Dropping them would turn "editable" into "pruned"
+  // for the cell the user is actually looking at.
+  const pinnedCallSeqs = new Set([state.latestRun?.callSeq, state.editableRun?.callSeq]
+    .filter(callSeq => isCanonicalSequence(callSeq)))
   const mustPrune = new Set([
-    ...entries.slice(0, keepFrom).map(entry => entry.resultSeq),
+    ...entries.slice(0, keepFrom)
+      .filter(entry => !pinnedCallSeqs.has(entry.settlement.call?.seq))
+      .map(entry => entry.resultSeq),
     ...retainedEntries
-      .filter((entry, index) => index < retainedEntries.length - 1 && settlementBytes(entry.settlement) > MAX_RETAINED_BYTES)
+      .filter((entry, index) => index < retainedEntries.length - 1
+        && !pinnedCallSeqs.has(entry.settlement.call?.seq)
+        && settlementBytes(entry.settlement) > MAX_RETAINED_BYTES)
       .map(entry => entry.resultSeq),
   ])
   if (mustPrune.size === 0) return
@@ -1580,6 +1623,15 @@ function pruneRetention(state, tables) {
   }
   if (prunedCallSeqs.size === 0 && prunedResultSeqs.size === 0) return
   state.retainedBytes = Math.max(0, bytes)
+  // Record the cut: the lowest observed index that still carries payload. Below it
+  // every settlement is a digest stub, at or above it the text is retained. Earlier
+  // folds already pruned entries too, so the cut is derived from the table after
+  // pruning rather than from this round's set.
+  const settlementsAfter = Object.values(tables.settled.table).map(pair => pair[1]).filter(Boolean)
+  const retainedAfter = settlementsAfter.filter(settlement => settlement.pruned !== true)
+  state.retentionCut = retainedAfter.length === 0
+    ? (state.lastEventIndex ?? 0)
+    : Math.min(...retainedAfter.map(settlement => settlement.observedIndex))
   state.eventFacts = state.eventFacts.map(fact => {
     const callPruned = fact.event?.type === 'tool/call' && prunedCallSeqs.has(fact.event.seq)
     const resultPruned = fact.normalized !== undefined && prunedResultSeqs.has(fact.normalized.eventSeq)

@@ -1,6 +1,6 @@
 import {
   advanceSessionTimeline, compactBelowCut, createSessionTimelineState, factDigest, replaySessionTimelineFact,
-  retentionCutOf, validateSessionTimelineState,
+  retentionCutOf, validateRetentionCut, validateSessionTimelineState,
 } from './session-journal-recovery.js'
 import { isCanonicalSequence } from './session-journal.js'
 import { advanceSessionSurface, readSessionLog, sessionEvents } from './session-events.js'
@@ -133,7 +133,7 @@ function applyLogEvent(state, event, index = event?.seq,
 export function createSessionLogProjection() {
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    stateVersion: 11,
+    stateVersion: 12,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'
@@ -220,12 +220,17 @@ export function createSessionLogProjection() {
           : replaySessionTimelineFact(reconstructed.timeline, timelineFact)
         reconstructed = applyLogEvent(reconstructed, fact.event, fact.index, timeline)
       }
-      // A pruned checkpoint carries a retention cut; the replayed fold prunes on its
-      // own accounting, so align both sides to the admitted cut before comparing.
+      // A compacted checkpoint cannot be compared with the fold that produced it:
+      // the payload it dropped is gone from its own side. Admission proves the cut
+      // instead (below it stubs, at or above it text), which is the weaker, stated
+      // claim for compacted states. Non-compacted states keep the full comparison.
       const cut = retentionCutOf(value.timeline)
-      const replaySide = cut === undefined ? reconstructed : compactBelowCut(reconstructed, cut)
-      if (replayComplete && !deepEqualJson(withoutFactDigests(replaySide), withoutFactDigests(value))) {
-        throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
+      if (cut === undefined) {
+        if (replayComplete && !deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value))) {
+          throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
+        }
+      } else {
+        validateRetentionCut(value.timeline, cut)
       }
       return deepFreeze(value)
     } }),

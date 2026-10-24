@@ -995,15 +995,9 @@ export function validateSessionTimelineState(value, logFacts) {
     && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
     && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
     && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
-    && optional(settlement.pruned, pruned => pruned === true)
     && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
       || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
-    && optional(settlement.publication, publication => settlement.pruned === true
-      // A pruned publication keeps only where it sat and an identity digest; the
-      // journal and derived code were dropped by the retention window.
-      ? (fields(publication, ['index', 'payloadDigest']) && isCanonicalSequence(publication.index)
-        && typeof publication.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(publication.payloadDigest))
-      : fields(publication,
+    && optional(settlement.publication, publication => fields(publication,
         ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
       && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
       && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)

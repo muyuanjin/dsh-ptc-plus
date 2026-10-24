@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// ../dsh-ptc-plus/node_modules/react-is/cjs/react-is.development.js
+// node_modules/react-is/cjs/react-is.development.js
 var require_react_is_development = __commonJS({
-  "../dsh-ptc-plus/node_modules/react-is/cjs/react-is.development.js"(exports) {
+  "node_modules/react-is/cjs/react-is.development.js"(exports) {
     "use strict";
     (function() {
       function typeOf(object) {
@@ -127,9 +127,9 @@ var require_react_is_development = __commonJS({
   }
 });
 
-// ../dsh-ptc-plus/node_modules/react-is/index.js
+// node_modules/react-is/index.js
 var require_react_is = __commonJS({
-  "../dsh-ptc-plus/node_modules/react-is/index.js"(exports, module2) {
+  "node_modules/react-is/index.js"(exports, module2) {
     "use strict";
     if (false) {
       module2.exports = null;
@@ -146,7 +146,7 @@ __export(client_exports, {
 });
 module.exports = __toCommonJS(client_exports);
 
-// ../dsh-ptc-plus/node_modules/@deepseek-ai/cosmokit/lib/index.js
+// node_modules/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
   return value === null || value === void 0;
 }
@@ -371,7 +371,7 @@ var Time;
   Time2.template = template;
 })(Time || (Time = {}));
 
-// ../dsh-ptc-plus/node_modules/@deepseek-ai/schemastery/lib/index.mjs
+// node_modules/@deepseek-ai/schemastery/lib/index.mjs
 var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
 var kValidationError = /* @__PURE__ */ Symbol.for("ValidationError");
 globalThis.__schemastery_index__ ??= 0;
@@ -3628,16 +3628,16 @@ function readCapabilityCommandReceipt(text) {
   }
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-select/dist/index.mjs
+// node_modules/@radix-ui/react-select/dist/index.mjs
 var React31 = __toESM(require("react"), 1);
 var ReactDOM4 = __toESM(require("react-dom"), 1);
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/number/dist/index.mjs
+// node_modules/@radix-ui/number/dist/index.mjs
 function clamp(value, [min2, max2]) {
   return Math.min(max2, Math.max(min2, value));
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/primitive/dist/index.mjs
+// node_modules/@radix-ui/primitive/dist/index.mjs
 var canUseDOM = !!(typeof window !== "undefined" && window.document && window.document.createElement);
 function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForDefaultPrevented = true } = {}) {
   return function handleEvent(event) {
@@ -3648,10 +3648,10 @@ function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForD
   };
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-collection/dist/index.mjs
+// node_modules/@radix-ui/react-collection/dist/index.mjs
 var import_react = __toESM(require("react"), 1);
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-context/dist/index.mjs
+// node_modules/@radix-ui/react-context/dist/index.mjs
 var React = __toESM(require("react"), 1);
 var import_jsx_runtime = require("react/jsx-runtime");
 function createContextScope(scopeName, createContextScopeDeps = []) {
@@ -3712,7 +3712,7 @@ function composeContextScopes(...scopes) {
   return createScope;
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-compose-refs/dist/index.mjs
+// node_modules/@radix-ui/react-compose-refs/dist/index.mjs
 var React2 = __toESM(require("react"), 1);
 function setRef(ref, value) {
   if (typeof ref === "function") {
@@ -3749,7 +3749,7 @@ function useComposedRefs(...refs) {
   return React2.useCallback(composeRefs(...refs), refs);
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-slot/dist/index.mjs
+// node_modules/@radix-ui/react-slot/dist/index.mjs
 var React3 = __toESM(require("react"), 1);
 var import_jsx_runtime2 = require("react/jsx-runtime");
 // @__NO_SIDE_EFFECTS__
@@ -3835,7 +3835,7 @@ function getElementRef(element) {
   return element.props.ref || element.ref;
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-collection/dist/index.mjs
+// node_modules/@radix-ui/react-collection/dist/index.mjs
 var import_jsx_runtime3 = require("react/jsx-runtime");
 var import_react2 = __toESM(require("react"), 1);
 var import_jsx_runtime4 = require("react/jsx-runtime");
@@ -3902,7 +3902,7 @@ function createCollection(name2) {
   ];
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-direction/dist/index.mjs
+// node_modules/@radix-ui/react-direction/dist/index.mjs
 var React5 = __toESM(require("react"), 1);
 var import_jsx_runtime5 = require("react/jsx-runtime");
 var DirectionContext = React5.createContext(void 0);
@@ -3911,10 +3911,10 @@ function useDirection(localDir) {
   return localDir || globalDir || "ltr";
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
+// node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
 var React9 = __toESM(require("react"), 1);
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-primitive/dist/index.mjs
+// node_modules/@radix-ui/react-primitive/dist/index.mjs
 var React6 = __toESM(require("react"), 1);
 var ReactDOM = __toESM(require("react-dom"), 1);
 var import_jsx_runtime6 = require("react/jsx-runtime");
@@ -3954,7 +3954,7 @@ function dispatchDiscreteCustomEvent(target, event) {
   if (target) ReactDOM.flushSync(() => target.dispatchEvent(event));
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-callback-ref/dist/index.mjs
+// node_modules/@radix-ui/react-use-callback-ref/dist/index.mjs
 var React7 = __toESM(require("react"), 1);
 function useCallbackRef(callback) {
   const callbackRef = React7.useRef(callback);
@@ -3964,7 +3964,7 @@ function useCallbackRef(callback) {
   return React7.useMemo(() => (...args) => callbackRef.current?.(...args), []);
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-escape-keydown/dist/index.mjs
+// node_modules/@radix-ui/react-use-escape-keydown/dist/index.mjs
 var React8 = __toESM(require("react"), 1);
 function useEscapeKeydown(onEscapeKeyDownProp, ownerDocument = globalThis?.document) {
   const onEscapeKeyDown = useCallbackRef(onEscapeKeyDownProp);
@@ -3979,7 +3979,7 @@ function useEscapeKeydown(onEscapeKeyDownProp, ownerDocument = globalThis?.docum
   }, [onEscapeKeyDown, ownerDocument]);
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
+// node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
 var import_jsx_runtime7 = require("react/jsx-runtime");
 var DISMISSABLE_LAYER_NAME = "DismissableLayer";
 var CONTEXT_UPDATE = "dismissableLayer.update";
@@ -4184,7 +4184,7 @@ function handleAndDispatchCustomEvent(name2, handler, detail, { discrete }) {
   }
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-focus-guards/dist/index.mjs
+// node_modules/@radix-ui/react-focus-guards/dist/index.mjs
 var React10 = __toESM(require("react"), 1);
 var count = 0;
 function useFocusGuards() {
@@ -4212,7 +4212,7 @@ function createFocusGuard() {
   return element;
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-focus-scope/dist/index.mjs
+// node_modules/@radix-ui/react-focus-scope/dist/index.mjs
 var React11 = __toESM(require("react"), 1);
 var import_jsx_runtime8 = require("react/jsx-runtime");
 var AUTOFOCUS_ON_MOUNT = "focusScope.autoFocusOnMount";
@@ -4416,15 +4416,15 @@ function removeLinks(items) {
   return items.filter((item) => item.tagName !== "A");
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-id/dist/index.mjs
+// node_modules/@radix-ui/react-id/dist/index.mjs
 var React13 = __toESM(require("react"), 1);
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-layout-effect/dist/index.mjs
+// node_modules/@radix-ui/react-use-layout-effect/dist/index.mjs
 var React12 = __toESM(require("react"), 1);
 var useLayoutEffect2 = globalThis?.document ? React12.useLayoutEffect : () => {
 };
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-id/dist/index.mjs
+// node_modules/@radix-ui/react-id/dist/index.mjs
 var useReactId = React13[" useId ".trim().toString()] || (() => void 0);
 var count2 = 0;
 function useId(deterministicId) {
@@ -4435,10 +4435,10 @@ function useId(deterministicId) {
   return deterministicId || (id2 ? `radix-${id2}` : "");
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-popper/dist/index.mjs
+// node_modules/@radix-ui/react-popper/dist/index.mjs
 var React17 = __toESM(require("react"), 1);
 
-// ../dsh-ptc-plus/node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
+// node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
 var sides = ["top", "right", "bottom", "left"];
 var min = Math.min;
 var max = Math.max;
@@ -4567,7 +4567,7 @@ function rectToClientRect(rect) {
   };
 }
 
-// ../dsh-ptc-plus/node_modules/@floating-ui/core/dist/floating-ui.core.mjs
+// node_modules/@floating-ui/core/dist/floating-ui.core.mjs
 function computeCoordsFromPlacement(_ref, placement, rtl) {
   let {
     reference,
@@ -5265,7 +5265,7 @@ var size = function(options2) {
   };
 };
 
-// ../dsh-ptc-plus/node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
+// node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
 function hasWindow() {
   return typeof window !== "undefined";
 }
@@ -5421,7 +5421,7 @@ function getFrameElement(win) {
   return win.parent && Object.getPrototypeOf(win.parent) ? win.frameElement : null;
 }
 
-// ../dsh-ptc-plus/node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
+// node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
 function getCssDimensions(element) {
   const css = getComputedStyle2(element);
   let width = parseFloat(css.width) || 0;
@@ -6030,7 +6030,7 @@ var computePosition2 = (reference, floating, options2) => {
   });
 };
 
-// ../dsh-ptc-plus/node_modules/@floating-ui/react-dom/dist/floating-ui.react-dom.mjs
+// node_modules/@floating-ui/react-dom/dist/floating-ui.react-dom.mjs
 var React14 = __toESM(require("react"), 1);
 var import_react3 = require("react");
 var ReactDOM2 = __toESM(require("react-dom"), 1);
@@ -6341,7 +6341,7 @@ var arrow3 = (options2, deps) => {
   };
 };
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-arrow/dist/index.mjs
+// node_modules/@radix-ui/react-arrow/dist/index.mjs
 var React15 = __toESM(require("react"), 1);
 var import_jsx_runtime9 = require("react/jsx-runtime");
 var NAME = "Arrow";
@@ -6363,7 +6363,7 @@ var Arrow = React15.forwardRef((props, forwardedRef) => {
 Arrow.displayName = NAME;
 var Root = Arrow;
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-size/dist/index.mjs
+// node_modules/@radix-ui/react-use-size/dist/index.mjs
 var React16 = __toESM(require("react"), 1);
 function useSize(element) {
   const [size4, setSize2] = React16.useState(void 0);
@@ -6400,7 +6400,7 @@ function useSize(element) {
   return size4;
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-popper/dist/index.mjs
+// node_modules/@radix-ui/react-popper/dist/index.mjs
 var import_jsx_runtime10 = require("react/jsx-runtime");
 var POPPER_NAME = "Popper";
 var [createPopperContext, createPopperScope] = createContextScope(POPPER_NAME);
@@ -6672,7 +6672,7 @@ var Anchor = PopperAnchor;
 var Content = PopperContent;
 var Arrow2 = PopperArrow;
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-portal/dist/index.mjs
+// node_modules/@radix-ui/react-portal/dist/index.mjs
 var React18 = __toESM(require("react"), 1);
 var import_react_dom2 = __toESM(require("react-dom"), 1);
 var import_jsx_runtime11 = require("react/jsx-runtime");
@@ -6686,7 +6686,7 @@ var Portal = React18.forwardRef((props, forwardedRef) => {
 });
 Portal.displayName = PORTAL_NAME;
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-controllable-state/dist/index.mjs
+// node_modules/@radix-ui/react-use-controllable-state/dist/index.mjs
 var React19 = __toESM(require("react"), 1);
 var React23 = __toESM(require("react"), 1);
 var useInsertionEffect = React19[" useInsertionEffect ".trim().toString()] || useLayoutEffect2;
@@ -6754,7 +6754,7 @@ function isFunction(value) {
   return typeof value === "function";
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-previous/dist/index.mjs
+// node_modules/@radix-ui/react-use-previous/dist/index.mjs
 var React20 = __toESM(require("react"), 1);
 function usePrevious(value) {
   const ref = React20.useRef({ value, previous: value });
@@ -6767,7 +6767,7 @@ function usePrevious(value) {
   }, [value]);
 }
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-visually-hidden/dist/index.mjs
+// node_modules/@radix-ui/react-visually-hidden/dist/index.mjs
 var React21 = __toESM(require("react"), 1);
 var import_jsx_runtime12 = require("react/jsx-runtime");
 var VISUALLY_HIDDEN_STYLES = Object.freeze({
@@ -6798,7 +6798,7 @@ var VisuallyHidden = React21.forwardRef(
 );
 VisuallyHidden.displayName = NAME2;
 
-// ../dsh-ptc-plus/node_modules/aria-hidden/dist/es2015/index.js
+// node_modules/aria-hidden/dist/es2015/index.js
 var getDefaultParent = function(originalTarget) {
   if (typeof document === "undefined") {
     return null;
@@ -6919,7 +6919,7 @@ var hideOthers = function(originalTarget, parentNode, markerName) {
   return applyAttributeToOthers(targets, activeParentNode, markerName, "aria-hidden");
 };
 
-// ../dsh-ptc-plus/node_modules/tslib/tslib.es6.mjs
+// node_modules/tslib/tslib.es6.mjs
 var __assign = function() {
   __assign = Object.assign || function __assign2(t2) {
     for (var s, i2 = 1, n = arguments.length; i2 < n; i2++) {
@@ -6951,19 +6951,19 @@ function __spreadArray(to, from2, pack) {
   return to.concat(ar || Array.prototype.slice.call(from2));
 }
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/Combination.js
+// node_modules/react-remove-scroll/dist/es2015/Combination.js
 var React30 = __toESM(require("react"));
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/UI.js
+// node_modules/react-remove-scroll/dist/es2015/UI.js
 var React26 = __toESM(require("react"));
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
+// node_modules/react-remove-scroll-bar/dist/es2015/constants.js
 var zeroRightClassName = "right-scroll-bar-position";
 var fullWidthClassName = "width-before-scroll-bar";
 var noScrollbarsClassName = "with-scroll-bars-hidden";
 var removedBarSizeVariable = "--removed-body-scroll-bar-size";
 
-// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/assignRef.js
+// node_modules/use-callback-ref/dist/es2015/assignRef.js
 function assignRef(ref, value) {
   if (typeof ref === "function") {
     ref(value);
@@ -6973,7 +6973,7 @@ function assignRef(ref, value) {
   return ref;
 }
 
-// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/useRef.js
+// node_modules/use-callback-ref/dist/es2015/useRef.js
 var import_react4 = require("react");
 function useCallbackRef2(initialValue, callback) {
   var ref = (0, import_react4.useState)(function() {
@@ -7001,7 +7001,7 @@ function useCallbackRef2(initialValue, callback) {
   return ref.facade;
 }
 
-// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/useMergeRef.js
+// node_modules/use-callback-ref/dist/es2015/useMergeRef.js
 var React24 = __toESM(require("react"));
 var useIsomorphicLayoutEffect = typeof window !== "undefined" ? React24.useLayoutEffect : React24.useEffect;
 var currentValues = /* @__PURE__ */ new WeakMap();
@@ -7033,7 +7033,7 @@ function useMergeRefs(refs, defaultValue) {
   return callbackRef;
 }
 
-// ../dsh-ptc-plus/node_modules/use-sidecar/dist/es2015/medium.js
+// node_modules/use-sidecar/dist/es2015/medium.js
 function ItoI(a) {
   return a;
 }
@@ -7119,7 +7119,7 @@ function createSidecarMedium(options2) {
   return medium;
 }
 
-// ../dsh-ptc-plus/node_modules/use-sidecar/dist/es2015/exports.js
+// node_modules/use-sidecar/dist/es2015/exports.js
 var React25 = __toESM(require("react"));
 var SideCar = function(_a2) {
   var sideCar = _a2.sideCar, rest = __rest(_a2, ["sideCar"]);
@@ -7138,10 +7138,10 @@ function exportSidecar(medium, exported) {
   return SideCar;
 }
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/medium.js
+// node_modules/react-remove-scroll/dist/es2015/medium.js
 var effectCar = createSidecarMedium();
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/UI.js
+// node_modules/react-remove-scroll/dist/es2015/UI.js
 var nothing = function() {
   return;
 };
@@ -7173,16 +7173,16 @@ RemoveScroll.classNames = {
   zeroRight: zeroRightClassName
 };
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/SideEffect.js
+// node_modules/react-remove-scroll/dist/es2015/SideEffect.js
 var React29 = __toESM(require("react"));
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/component.js
+// node_modules/react-remove-scroll-bar/dist/es2015/component.js
 var React28 = __toESM(require("react"));
 
-// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/hook.js
+// node_modules/react-style-singleton/dist/es2015/hook.js
 var React27 = __toESM(require("react"));
 
-// ../dsh-ptc-plus/node_modules/get-nonce/dist/es2015/index.js
+// node_modules/get-nonce/dist/es2015/index.js
 var currentNonce;
 var getNonce = function() {
   if (currentNonce) {
@@ -7194,7 +7194,7 @@ var getNonce = function() {
   return void 0;
 };
 
-// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/singleton.js
+// node_modules/react-style-singleton/dist/es2015/singleton.js
 function makeStyleTag() {
   if (!document)
     return null;
@@ -7240,7 +7240,7 @@ var stylesheetSingleton = function() {
   };
 };
 
-// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/hook.js
+// node_modules/react-style-singleton/dist/es2015/hook.js
 var styleHookSingleton = function() {
   var sheet = stylesheetSingleton();
   return function(styles, isDynamic) {
@@ -7253,7 +7253,7 @@ var styleHookSingleton = function() {
   };
 };
 
-// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/component.js
+// node_modules/react-style-singleton/dist/es2015/component.js
 var styleSingleton = function() {
   var useStyle = styleHookSingleton();
   var Sheet = function(_a2) {
@@ -7264,7 +7264,7 @@ var styleSingleton = function() {
   return Sheet;
 };
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/utils.js
+// node_modules/react-remove-scroll-bar/dist/es2015/utils.js
 var zeroGap = {
   left: 0,
   top: 0,
@@ -7299,7 +7299,7 @@ var getGapWidth = function(gapMode) {
   };
 };
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/component.js
+// node_modules/react-remove-scroll-bar/dist/es2015/component.js
 var Style = styleSingleton();
 var lockAttribute = "data-scroll-locked";
 var getStyles = function(_a2, allowRelative, gapMode, important) {
@@ -7339,7 +7339,7 @@ var RemoveScrollBar = function(_a2) {
   return React28.createElement(Style, { styles: getStyles(gap, !noRelative, gapMode, !noImportant ? "!important" : "") });
 };
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/aggresiveCapture.js
+// node_modules/react-remove-scroll/dist/es2015/aggresiveCapture.js
 var passiveSupported = false;
 if (typeof window !== "undefined") {
   try {
@@ -7358,7 +7358,7 @@ if (typeof window !== "undefined") {
 var options;
 var nonPassive = passiveSupported ? { passive: false } : false;
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/handleScroll.js
+// node_modules/react-remove-scroll/dist/es2015/handleScroll.js
 var alwaysContainsScroll = function(node) {
   return node.tagName === "TEXTAREA";
 };
@@ -7458,7 +7458,7 @@ var handleScroll = function(axis, endTarget, event, sourceDelta, noOverscroll) {
   return shouldCancelScroll;
 };
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/SideEffect.js
+// node_modules/react-remove-scroll/dist/es2015/SideEffect.js
 var getTouchXY = function(event) {
   return "changedTouches" in event ? [event.changedTouches[0].clientX, event.changedTouches[0].clientY] : [0, 0];
 };
@@ -7629,17 +7629,17 @@ function getOutermostShadowParent(node) {
   return shadowParent;
 }
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/sidecar.js
+// node_modules/react-remove-scroll/dist/es2015/sidecar.js
 var sidecar_default = exportSidecar(effectCar, RemoveScrollSideCar);
 
-// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/Combination.js
+// node_modules/react-remove-scroll/dist/es2015/Combination.js
 var ReactRemoveScroll = React30.forwardRef(function(props, ref) {
   return React30.createElement(RemoveScroll, __assign({}, props, { ref, sideCar: sidecar_default }));
 });
 ReactRemoveScroll.classNames = RemoveScroll.classNames;
 var Combination_default = ReactRemoveScroll;
 
-// ../dsh-ptc-plus/node_modules/@radix-ui/react-select/dist/index.mjs
+// node_modules/@radix-ui/react-select/dist/index.mjs
 var import_jsx_runtime13 = require("react/jsx-runtime");
 var OPEN_KEYS = [" ", "Enter", "ArrowUp", "ArrowDown"];
 var SELECTION_KEYS = [" ", "Enter"];
@@ -15147,7 +15147,7 @@ function createIndicatorView(React32, deps) {
   return { PTCPlusSessionIndicator };
 }
 
-// ../dsh-ptc-plus/node_modules/@marijn/find-cluster-break/src/index.js
+// node_modules/@marijn/find-cluster-break/src/index.js
 var rangeFrom = [];
 var rangeTo = [];
 (() => {
@@ -15221,7 +15221,7 @@ function codePointSize(code2) {
   return code2 < 65536 ? 1 : 2;
 }
 
-// ../dsh-ptc-plus/node_modules/@codemirror/state/dist/index.js
+// node_modules/@codemirror/state/dist/index.js
 var Text = class _Text {
   /**
   Get the line description around the given position.
@@ -18633,7 +18633,7 @@ function findColumn(string2, col, tabSize, strict) {
   return strict === true ? -1 : string2.length;
 }
 
-// ../dsh-ptc-plus/node_modules/style-mod/src/style-mod.js
+// node_modules/style-mod/src/style-mod.js
 var C = "\u037C";
 var COUNT = typeof Symbol == "undefined" ? "__" + C : Symbol.for(C);
 var SET = typeof Symbol == "undefined" ? "__styleSet" + Math.floor(Math.random() * 1e8) : /* @__PURE__ */ Symbol("styleSet");
@@ -18769,7 +18769,7 @@ var StyleSet = class {
   }
 };
 
-// ../dsh-ptc-plus/node_modules/w3c-keyname/index.js
+// node_modules/w3c-keyname/index.js
 var base = {
   8: "Backspace",
   9: "Tab",
@@ -18875,7 +18875,7 @@ function keyName(event) {
   return name2;
 }
 
-// ../dsh-ptc-plus/node_modules/crelt/index.js
+// node_modules/crelt/index.js
 function crelt() {
   var elt = arguments[0];
   if (typeof elt == "string") elt = document.createElement(elt);
@@ -18904,7 +18904,7 @@ function add(elt, child) {
   }
 }
 
-// ../dsh-ptc-plus/node_modules/@codemirror/view/dist/index.js
+// node_modules/@codemirror/view/dist/index.js
 var nav = typeof navigator != "undefined" ? navigator : { userAgent: "", vendor: "", platform: "" };
 var doc = typeof document != "undefined" ? document : { documentElement: { style: {} } };
 var ie_edge = /* @__PURE__ */ /Edge\/(\d+)/.exec(nav.userAgent);
@@ -29553,7 +29553,7 @@ function highlightActiveLineGutter() {
   return activeLineGutterHighlighter;
 }
 
-// ../dsh-ptc-plus/node_modules/@lezer/common/dist/index.js
+// node_modules/@lezer/common/dist/index.js
 var DefaultBufferLength = 1024;
 var nextPropID = 0;
 var Range2 = class {
@@ -31223,7 +31223,7 @@ var StringInput = class {
 };
 var stoppedInner = new NodeProp({ perNode: true });
 
-// ../dsh-ptc-plus/node_modules/@lezer/highlight/dist/index.js
+// node_modules/@lezer/highlight/dist/index.js
 var nextTagID = 0;
 var Tag = class _Tag {
   /**
@@ -31947,7 +31947,7 @@ var classHighlighter = tagHighlighter([
   { tag: tags.punctuation, class: "tok-punctuation" }
 ]);
 
-// ../dsh-ptc-plus/node_modules/@codemirror/language/dist/index.js
+// node_modules/@codemirror/language/dist/index.js
 var _a;
 var languageDataProp = /* @__PURE__ */ new NodeProp();
 function defineLanguageFacet(baseData) {
@@ -33517,7 +33517,7 @@ var marks = {
   auto: /* @__PURE__ */ Decoration.mark({ class: "cm-iso", inclusive: true, attributes: { dir: "auto" }, bidiIsolate: null })
 };
 
-// ../dsh-ptc-plus/node_modules/@codemirror/commands/dist/index.js
+// node_modules/@codemirror/commands/dist/index.js
 var toggleComment = (target) => {
   let { state } = target, line = state.doc.lineAt(state.selection.main.from), config2 = getConfig(target.state, line.from);
   return config2.line ? toggleLineComment(target) : config2.block ? toggleBlockCommentByLine(target) : false;
@@ -34611,7 +34611,7 @@ var defaultKeymap = /* @__PURE__ */ [
   { key: "Ctrl-m", mac: "Shift-Alt-m", run: toggleTabFocusMode }
 ].concat(standardKeymap);
 
-// ../dsh-ptc-plus/node_modules/@codemirror/search/dist/index.js
+// node_modules/@codemirror/search/dist/index.js
 var basicNormalize = typeof String.prototype.normalize == "function" ? (x) => x.normalize("NFKD") : (x) => x;
 var SearchCursor = class {
   /**
@@ -35701,7 +35701,7 @@ var searchExtensions = [
   baseTheme3
 ];
 
-// ../dsh-ptc-plus/node_modules/@codemirror/autocomplete/dist/index.js
+// node_modules/@codemirror/autocomplete/dist/index.js
 var CompletionContext = class {
   /**
   Create a new completion context. (Mostly useful for testing
@@ -37518,7 +37518,7 @@ var completionKeymap = [
 ];
 var completionKeymapExt = /* @__PURE__ */ Prec.highest(/* @__PURE__ */ keymap.computeN([completionConfig], (state) => state.facet(completionConfig).defaultKeymap ? [completionKeymap] : []));
 
-// ../dsh-ptc-plus/node_modules/@codemirror/lint/dist/index.js
+// node_modules/@codemirror/lint/dist/index.js
 var SelectedDiagnostic = class {
   constructor(from2, to, diagnostic) {
     this.from = from2;
@@ -38127,7 +38127,7 @@ var lintExtensions = [
   baseTheme5
 ];
 
-// ../dsh-ptc-plus/node_modules/codemirror/dist/index.js
+// node_modules/codemirror/dist/index.js
 var basicSetup = /* @__PURE__ */ (() => [
   lineNumbers(),
   highlightActiveLineGutter(),
@@ -38157,7 +38157,7 @@ var basicSetup = /* @__PURE__ */ (() => [
   ])
 ])();
 
-// ../dsh-ptc-plus/node_modules/@lezer/lr/dist/index.js
+// node_modules/@lezer/lr/dist/index.js
 var Stack = class _Stack {
   /**
   @internal
@@ -39919,7 +39919,7 @@ function getSpecializer(spec) {
   return spec.get;
 }
 
-// ../dsh-ptc-plus/node_modules/@lezer/javascript/dist/index.js
+// node_modules/@lezer/javascript/dist/index.js
 var noSemi = 317;
 var noSemiType = 318;
 var incdec = 1;
@@ -40131,7 +40131,7 @@ var parser = LRParser.deserialize({
   tokenPrec: 15178
 });
 
-// ../dsh-ptc-plus/node_modules/@codemirror/lang-javascript/dist/index.js
+// node_modules/@codemirror/lang-javascript/dist/index.js
 var snippets = [
   /* @__PURE__ */ snippetCompletion("function ${name}(${params}) {\n	${}\n}", {
     label: "function",

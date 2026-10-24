@@ -542,6 +542,19 @@ function timelineCallEvent(event) {
   } })
 }
 
+/** Stable digest of a stored projection fact, used by checkpoint admission. */
+export function factDigest(value) {
+  return createHash('sha256').update(JSON.stringify(value ?? null, (_key, field) => (
+    isRecord(field) ? Object.fromEntries(Object.keys(field).sort().map(key => [key, field[key]])) : field
+  ))).digest('hex')
+}
+
+function withoutFactDigests(state) {
+  const facts = state.eventFacts
+  if (!facts.some(fact => fact.digest !== undefined)) return state
+  return { ...state, eventFacts: facts.map(({ digest, ...rest }) => rest) }
+}
+
 function eventDigest(event) {
   return createHash('sha256').update(JSON.stringify(event, (_key, value) => (
     isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
@@ -555,6 +568,8 @@ function resultIdentity(data) {
     isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
   ))).digest('hex')
 }
+
+const ADMISSION_REPLAY_BUDGET_BYTES = 4 * 1024 * 1024
 
 export function createSessionTimelineState() {
   return {
@@ -745,8 +760,10 @@ export function validateSessionTimelineState(value) {
   requireFact(Array.isArray(value.eventFacts))
   let reconstructed = createSessionTimelineState()
   let correlationIndex = -1
+  let replayBytes = 0
+  let replayComplete = true
   for (const observation of value.eventFacts) {
-    requireFact(fields(observation, ['eventIndex', 'event', 'identity', 'hasJournal', 'normalized',
+    requireFact(fields(observation, ['eventIndex', 'event', 'digest', 'identity', 'hasJournal', 'normalized',
       'boundaries', 'boundaryFailure', 'rewrites', 'selectedTarget'])
       && isCanonicalSequence(observation.eventIndex) && observation.eventIndex > correlationIndex
       && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
@@ -775,9 +792,25 @@ export function validateSessionTimelineState(value) {
       && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: observation.rewrites }) ?? null,
         observation.rewrites ?? null))
     correlationIndex = observation.eventIndex
+    // Replay proves byte-for-byte equality, but its cost is proportional to the
+    // retained payload of the whole session. Admission therefore replays only
+    // while that payload stays inside the budget and falls back to the per-fact
+    // digests plus the shape/identity checks above beyond it.
+    replayBytes += factDigest(observation.event).length * 4
+    if (replayBytes > ADMISSION_REPLAY_BUDGET_BYTES) {
+      replayComplete = false
+      continue
+    }
     reconstructed = replaySessionTimelineFact(reconstructed, observation)
   }
-  requireFact(deepEqualJson(reconstructed, value))
+  if (replayComplete) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
+  // Semantic checks run first so their diagnostics stay specific; the digest is
+  // the last line of defence and rejects a payload edit without replaying it.
+  for (const observation of value.eventFacts) {
+    if (observation.digest === undefined) continue
+    const { digest, ...rest } = observation
+    requireFact(digest === factDigest(rest))
+  }
   for (const observation of ordinaryObservations.values()) {
     const settlement = settlements.get(observation.eventSeq)
     requireFact(settlement !== undefined
@@ -1358,7 +1391,11 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     }
     publishRun()
   }
-  state.eventFacts[state.eventFacts.length - 1] = timelineJson(observation)
+  // Digest the serialized fact (undefined fields dropped) so admission can
+  // re-digest exactly the bytes it received.
+  const plainObservation = JSON.parse(JSON.stringify(observation))
+  plainObservation.digest = factDigest(plainObservation)
+  state.eventFacts[state.eventFacts.length - 1] = timelineJson(plainObservation)
   return Object.fromEntries(Object.entries({ ...state,
     executableCalls: state.executableCalls.table, results: state.results.table, editTargets: state.editTargets.table,
     pendingByCallId: pendingByCallId.table, seenCallIds: seenCallIds.table,

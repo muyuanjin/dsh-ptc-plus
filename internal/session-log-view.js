@@ -222,7 +222,7 @@ export function createSessionLogProjection() {
           }
         }
         const timeline = timelineFact === undefined ? reconstructed.timeline
-          : replaySessionTimelineFact(reconstructed.timeline, timelineFact)
+          : replaySessionTimelineFact(reconstructed.timeline, timelineFact, value.timeline.executableCalls)
         reconstructed = applyLogEvent(reconstructed, fact.event, fact.index, timeline)
       }
       // A compacted checkpoint cannot be compared with the fold that produced it:

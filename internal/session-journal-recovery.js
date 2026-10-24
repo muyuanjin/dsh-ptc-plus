@@ -26,8 +26,8 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, chainOfEntries, extendSummary, settlementBytes, summaryEntry,
-  summaryRecordOf,
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, chainOfEntries, digestOf, extendSummary, settlementBytes,
+  summaryEntry, summaryRecordOf,
 } from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
@@ -454,6 +454,28 @@ function republishedTimelineResult(result, event) {
   return { ...result, eventSeq: event.seq, positionSeq: result.positionSeq ?? result.eventSeq }
 }
 
+/**
+ * Fact-shaped data for a `tool/call`: the arguments are represented by their
+ * digest pair so a stored event fact never carries the text. The text itself is
+ * retained once, in `timelineCallEvent` inside `executableCalls`. A fact that is
+ * already digested passes through unchanged, which keeps re-deriving a fact from
+ * a compacted observation byte-identical.
+ */
+function callFactData(event) {
+  const data = event?.data ?? {}
+  const value = data.arguments
+  const digested = value === undefined && typeof data.argumentsDigest === 'string'
+    ? { argumentsDigest: data.argumentsDigest, argumentsBytes: data.argumentsBytes }
+    : typeof value === 'string'
+      ? { argumentsDigest: digestOf(value), argumentsBytes: byteLength(value) }
+      : {}
+  return {
+    callId: data.callId,
+    ...(typeof data.name === 'string' ? { name: data.name } : {}),
+    ...digested,
+  }
+}
+
 function correlationEvent(event) {
   return timelineJson({ seq: event.seq, type: event.type,
     ...(['tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(event.type) ? { data: {
@@ -474,7 +496,7 @@ function correlationEvent(event) {
       } : {}),
     } } : {}),
     ...(event.type === 'tool/call' && typeof event.data?.callId === 'string'
-      ? { data: timelineCallEvent(event).data } : {}),
+      ? { data: callFactData(event) } : {}),
     ...(event.type === 'tool/result' ? { data: { message: { source: {
       ...(typeof event.data?.message?.source?.callId === 'string'
         ? { callId: event.data.message.source.callId } : {}),
@@ -569,13 +591,25 @@ function timelineCalls(timeline) {
   return calls
 }
 
-function timelineCallEvent(event) {
+/**
+ * The canonical call event retained in `executableCalls`.
+ *
+ * This is the only place the argument text is kept. A replay that only has a
+ * digested fact resolves the text from the entry already stored for that seq, so
+ * a checkpointed call and a re-derived one stay byte-identical.
+ */
+function timelineCallEvent(event, executableCalls) {
+  const entry = executableCalls?.get?.(event.seq) ?? executableCalls?.[`k${event.seq}`]?.[1]
+  const stored = entry?.event?.data?.arguments
+  const text = typeof event.data.arguments === 'string'
+    ? event.data.arguments
+    : typeof stored === 'string' ? stored : undefined
   return timelineJson({ seq: event.seq, type: event.type, data: {
     callId: event.data.callId, name: event.data.name,
     ...(REPL_TOOL_NAMES.has(event.data.name)
-      ? (event.data.arguments === undefined
+      ? (text === undefined
         ? { argumentsDigest: event.data.argumentsDigest, argumentsBytes: event.data.argumentsBytes }
-        : { arguments: event.data.arguments })
+        : { arguments: text })
       : {}),
   } })
 }
@@ -1033,7 +1067,7 @@ export function validateSessionTimelineState(value, logFacts) {
       replayComplete = false
       continue
     }
-    reconstructed = replaySessionTimelineFact(reconstructed, observation)
+    reconstructed = replaySessionTimelineFact(reconstructed, observation, executable)
   }
   const summary = retentionSummaryOf(value)
   // A compacted state that lost its summary must be rejected: dropping the summary
@@ -1171,8 +1205,8 @@ export function advanceSessionTimeline(previous, inputEvent, eventIndex = inputE
 }
 
 /** Reconstruct an already validated normalized fact at its recorded cut. */
-export function replaySessionTimelineFact(previous, fact) {
-  return advanceTimelineEvent(previous, fact.event, fact.eventIndex, fact)
+export function replaySessionTimelineFact(previous, fact, retainedCalls) {
+  return advanceTimelineEvent(previous, fact.event, fact.eventIndex, fact, retainedCalls)
 }
 
 function dispatchPairWithinRoot(facts, call, resultEvent, startSeq) {
@@ -1279,7 +1313,7 @@ function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit,
     ...(rewrites === undefined ? {} : { rewrites }) }
 }
 
-function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
+function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, retainedCalls) {
   const nested = inputEvent?.type === 'tool/ptc-dispatch-start'
     || inputEvent?.type === 'tool/ptc-dispatch'
   if (nested && inputEvent.data?.name !== 'edit_run_code'
@@ -1377,7 +1411,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     if (event?.type === 'tool/ptc-dispatch') continue
     if (event?.type === 'tool/call' && typeof event.data?.callId === 'string') {
       const executable = REPL_TOOL_NAMES.has(event.data.name)
-      let entry = { event: timelineCallEvent(event), eventIndex, scope }
+      let entry = { event: timelineCallEvent(event, retainedCalls ?? state.executableCalls), eventIndex, scope }
       if (executable) {
         if (isCanonicalSequence(event.seq) && state.executableCalls.has(event.seq)) {
           // A sequence collision disproves both sources, but not the earlier

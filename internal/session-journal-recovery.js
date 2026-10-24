@@ -435,7 +435,12 @@ function correlationEvent(event) {
       parentCallId: event.data?.parentCallId,
       subCallId: event.data?.subCallId,
       name: event.data?.name,
-      arguments: event.data?.arguments,
+      // A compacted dispatch keeps its digest pair, so re-deriving this fact from a
+      // pruned observation reproduces exactly what was stored.
+      ...(event.data?.arguments === undefined
+        ? (event.data?.argumentsDigest === undefined ? {}
+          : { argumentsDigest: event.data.argumentsDigest, argumentsBytes: event.data.argumentsBytes })
+        : { arguments: event.data.arguments }),
       ...(event.type === 'tool/ptc-dispatch' ? {
         isError: event.data?.isError,
         ...(event.data?.name === 'run_code' && event.data.meta?.[JOURNAL_KEY] !== undefined
@@ -1428,6 +1433,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
   const plainObservation = JSON.parse(JSON.stringify(observation))
   plainObservation.digest = factDigest(plainObservation)
   state.eventFacts[state.eventFacts.length - 1] = timelineJson(plainObservation)
+  pruneRetention(state, { settled: settledResultsByEventSeq, executable: state.executableCalls, results: state.results })
   return Object.fromEntries(Object.entries({ ...state,
     executableCalls: state.executableCalls.table, results: state.results.table, editTargets: state.editTargets.table,
     pendingByCallId: pendingByCallId.table, seenCallIds: seenCallIds.table,
@@ -1435,6 +1441,60 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
     ordinaryResultSeqs: ordinaryResultSeqs.table, settledResultsByEventSeq: settledResultsByEventSeq.table,
     pruneReplacementWindow, scope,
   }).filter(([_key, value]) => value !== undefined))
+}
+
+/**
+ * Drop the payload of the oldest settlements until both caps hold.
+ *
+ * The projection is a fold shortcut, not the log: beyond the window only digests
+ * and positions remain, so a checkpoint stays bounded no matter how much code or
+ * file content the session wrote. Consumers that need dropped text must report
+ * `retention-pruned` rather than guessing it.
+ */
+function pruneRetention(state, tables) {
+  const entries = Object.entries(tables.settled.table)
+    .map(([, pair]) => ({ settlement: pair[1], resultSeq: pair[0] }))
+    .filter(entry => entry.settlement !== undefined)
+    .sort((left, right) => left.settlement.observedIndex - right.settlement.observedIndex)
+  if (entries.length === 0) return
+  const total = entries.reduce((sum, entry) => sum + (entry.settlement.pruned === true ? 0 : settlementBytes(entry.settlement)), 0)
+  if (total <= MAX_RETAINED_BYTES && entries.length <= MAX_RETAINED_RUNS) return
+  const prunedCallSeqs = new Set()
+  const prunedResultSeqs = new Set()
+  let bytes = total
+  let count = entries.length
+  for (const entry of entries) {
+    if (bytes <= MAX_RETAINED_BYTES && count <= MAX_RETAINED_RUNS) break
+    if (entry.settlement.pruned === true || entry.resultSeq === undefined) continue
+    const freed = settlementBytes(entry.settlement)
+    const callSeq = entry.settlement.call?.seq
+    tables.settled.set(entry.resultSeq, prunedSettlement(entry.settlement))
+    const stored = callSeq === undefined ? undefined : tables.executable.get(callSeq)
+    if (stored !== undefined) tables.executable.set(callSeq, { ...stored, event: prunedCallEvent(stored.event) })
+    if (tables.results.has(entry.resultSeq)) tables.results.set(entry.resultSeq, prunedNormalized(tables.results.get(entry.resultSeq)))
+    if (callSeq !== undefined) prunedCallSeqs.add(callSeq)
+    prunedResultSeqs.add(entry.resultSeq)
+    bytes -= freed
+    count -= 1
+  }
+  if (prunedCallSeqs.size === 0 && prunedResultSeqs.size === 0) return
+  state.retainedBytes = Math.max(0, bytes)
+  state.eventFacts = state.eventFacts.map(fact => {
+    const callPruned = fact.event?.type === 'tool/call' && prunedCallSeqs.has(fact.event.seq)
+    const resultPruned = fact.normalized !== undefined && prunedResultSeqs.has(fact.normalized.eventSeq)
+    if (!callPruned && !resultPruned) return fact
+    let next = fact
+    if (callPruned) next = { ...next, event: prunedCallEvent(next.event) }
+    if (resultPruned) next = { ...next, normalized: prunedNormalized(next.normalized) }
+    const { digest: _previous, ...rest } = next
+    return timelineJson({ ...rest, digest: factDigest(rest) })
+  })
+}
+function findResultSeq(table, settlement) {
+  for (const [key, candidate] of Object.entries(table.table)) {
+    if (candidate === settlement) return candidate[0]
+  }
+  return undefined
 }
 
 export function sessionTimelineValue(checkpoint) {

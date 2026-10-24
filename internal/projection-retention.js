@@ -11,8 +11,8 @@ import { createHash } from 'node:crypto'
  * positions remain, and consumers that need the text must report that the entry
  * was pruned instead of guessing.
  */
-export const MAX_RETAINED_RUNS = 32
-export const MAX_RETAINED_BYTES = 8 * 1024 * 1024
+export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? 32)
+export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? 8 * 1024 * 1024)
 
 /** Shout when the retention window cannot hold the payload a consumer needs. */
 export const PRUNED_EDIT = '该单元格超出保留窗口，已不可编辑'

@@ -74,6 +74,26 @@ test('configuration wins over the environment, which may only tighten it', () =>
   },
 ))
 
+test('a window below the supported floor falls back to the default instead of clamping', () => withEnvironment(
+  {},
+  () => {
+    // The floor is a contract: a fold with fewer cells in flight than this cannot
+    // keep its stored publication and its replay equal, so a smaller request is
+    // rejected rather than quietly honoured.
+    assert.deepEqual(resolveRetentionLimits({ retentionPayloadRuns: 7, retentionPayloadBytes: 524288 }),
+      DEFAULT_RETENTION_LIMITS)
+    assert.deepEqual(resolveRetentionLimits({ retentionPayloadRuns: 8, retentionPayloadBytes: 1048576 }),
+      { runs: 8, bytes: 1048576, clusters: DEFAULT_RETENTION_LIMITS.clusters })
+  },
+))
+
+test('the environment lever is held to the same floor', () => withEnvironment(
+  { RUNS: '7', BYTES: '524288' },
+  () => {
+    assert.deepEqual(resolveRetentionLimits({}), DEFAULT_RETENTION_LIMITS)
+  },
+))
+
 test('a cluster cap of 0 means unlimited while a positive cap bounds the count window', () => withEnvironment({}, () => {
   assert.equal(retainedClusterCount({ runs: 32, bytes: 1, clusters: 0 }), Number.POSITIVE_INFINITY)
   assert.equal(retainedClusterCount({ runs: 32, bytes: 1, clusters: 10 }), 10)

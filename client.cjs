@@ -2399,6 +2399,9 @@ var CONFIG_GROUPS = Object.freeze([
       "capabilityDirectoryBytes",
       "capabilityRecoveryBytes",
       "modelPreviewTokens",
+      "retentionPayloadRuns",
+      "retentionPayloadBytes",
+      "retentionClusters",
       "capabilityPromptTextEnabled",
       "promptText"
     ])

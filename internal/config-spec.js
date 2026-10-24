@@ -525,7 +525,7 @@ export const CONFIG_GROUPS = Object.freeze([
   },
   { key: 'capabilities', label: '能力与上下文', labelEn: 'Capabilities and context',
     fields: Object.freeze(['capabilityContextEnabled', 'capabilityManagementEnabled', 'capabilityBaseline', 'capabilityOverrides',
-      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens', 'capabilityPromptTextEnabled', 'promptText']) },
+      'capabilityStatistics', 'capabilityPolicy', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'capabilityProfiles', 'capabilityBudgetBytes', 'capabilityDirectoryBytes', 'capabilityRecoveryBytes', 'modelPreviewTokens', 'retentionPayloadRuns', 'retentionPayloadBytes', 'retentionClusters', 'capabilityPromptTextEnabled', 'promptText']) },
 ])
 
 /** Functional modules share the same section order across every settings entry. */

@@ -167,3 +167,35 @@ test('a compacted state keeps its boundary and admits a refolded digest', () => 
     { fromSeq: 1, toSeq: 2, count: 1, chainDigest: 'a'.repeat(64), entries: [] }),
   /retention|summary|invalid/iu)
 })
+
+// The floor is 8 cells: a window any smaller cannot keep the stored publication and
+// the replay equal. At exactly that floor the property users buy must still hold —
+// a digested cluster keeps what recovery reads, and an edit can refold its source.
+test('at the supported floor a digested cluster still recovers bindings and refolds its source', () => {
+  const events = []
+  for (let index = 0; index < 12; index += 1) {
+    const id = `floor-${index}`
+    events.push(call(`return 'floor-${index}'`, id), result(id))
+  }
+  const state = fold(events)
+  const settlements = settlementList(state)
+  assert.equal(settlements.length, 12, 'no cluster is folded at the floor')
+  const digested = settlements.filter(settlement => typeof settlement.call.data.argumentsDigest === 'string')
+  assert.equal(digested.length, 4, 'cells beyond the floor window carry digests')
+  for (const settlement of digested) {
+    // Recovery reads the normalized result and the recorded observation, not the
+    // argument text: both must survive for a cluster the window digested.
+    assert.ok(settlement.normalized !== undefined, 'the normalized result survives digestion')
+    assert.ok(settlement.publication !== undefined, 'the publication survives digestion')
+    assert.equal(typeof settlement.identity, 'string', 'the observation identity survives digestion')
+  }
+  assert.equal(new Set(digested.map(settlement => settlement.identity)).size, 4,
+    'each digested cluster keeps its own observation identity')
+  // The edit path refolds the same slice at full retention and gets the source back.
+  let full
+  withFullRetention(() => { full = fold(lastHistory) })
+  const recovered = Object.values(full.settledResultsByEventSeq)
+    .map(pair => pair[1])
+    .filter(settlement => typeof settlement.call.data.argumentsDigest !== 'string')
+  assert.equal(recovered.length, 12, 'the refold restores the text for every cluster')
+})

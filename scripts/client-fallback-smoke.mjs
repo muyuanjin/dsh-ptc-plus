@@ -1028,7 +1028,7 @@ if (values.list) {
         if (width === 1920 && theme === 'light' && !native && locale === 'en') {
           await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
           await page.locator('.ptcPlusPromptTable').waitFor()
-          await page.screenshot({ path: 'G:/Temp/pane-view2.png', fullPage: false })
+          await page.screenshot({ path: 'G:/Temp/pane-native-view.png', fullPage: false })
           // The dialog is height-capped and scrolls, so an element screenshot would clip
           // every row past the fold. Expand it for the capture and restore afterwards.
           await page.evaluate(() => {
@@ -1046,7 +1046,7 @@ if (values.list) {
               if (style.overflowY === 'auto' || style.overflowY === 'scroll') expand(element)
             }
           })
-          await page.locator('.ptcPlusPromptTable').screenshot({ path: 'G:/Temp/pane-view2-table.png' })
+          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: 'G:/Temp/pane-native.png' })
           await page.evaluate(() => {
             for (const [element, style] of window.__paneRestore) element.setAttribute('style', style)
             delete window.__paneRestore
@@ -1066,8 +1066,32 @@ if (values.list) {
           await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
           await page.locator('.ptcPlusPromptText').waitFor()
           await page.locator('.ptcPlusPromptTable').scrollIntoViewIfNeeded()
-          await page.screenshot({ path: 'G:\\Temp\\pane-view.png' })
-          await page.locator('.ptcPlusPromptText').screenshot({ path: 'G:\\Temp\\pane-after.png' })
+          await page.screenshot({ path: 'G:\\Temp\\pane-v6-view.png' })
+          // The dialog scrolls, so expand it before the element capture or every card
+          // past the fold is clipped out of the image.
+          await page.evaluate(() => {
+            const modal = document.querySelector('.ptcPlusSettingsModal')
+            window.__paneRestore = []
+            const expand = element => {
+              window.__paneRestore.push([element, element.getAttribute('style') ?? ''])
+              element.style.height = 'auto'
+              element.style.maxHeight = 'none'
+              if (getComputedStyle(element).overflowY !== 'visible') element.style.overflow = 'visible'
+            }
+            expand(modal)
+            for (const element of modal.querySelectorAll('*')) {
+              const style = getComputedStyle(element)
+              if (style.overflowY === 'auto' || style.overflowY === 'scroll') expand(element)
+            }
+          })
+          // The pane lives inside a height-capped dialog, so the element itself clips
+          // once the dialog is expanded; capture the dialog element instead, which then
+          // contains the whole pane at its natural height.
+          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: 'G:\\Temp\\pane-v6-match.png' })
+          await page.evaluate(() => {
+            for (const [element, style] of window.__paneRestore) element.setAttribute('style', style)
+            delete window.__paneRestore
+          })
           await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         }
         const editor = page.locator('.ptcPlusCapabilityEditorDialog')

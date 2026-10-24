@@ -1,5 +1,5 @@
 import { CAPABILITY_POLICY_DEFAULT } from '../internal/capability-policy.js'
-import { PROMPT_ASSETS } from '../internal/prompt-text.js'
+import { PROMPT_ASSETS, PROMPT_TEXT_MAX_SLOT_BYTES } from '../internal/prompt-text.js'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterEach, beforeAll, expect, test, vi } from 'vitest'
@@ -8198,8 +8198,8 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   }
   // Dropping a card would leave its label missing, and an owner whose slots are all
   // unconnected must say so instead of printing a misleading measured 0 B.
-  expect(view.getAllByText(copy['capabilities.prompt.cardUnwired'].replace('{count}', '2')).length).toBeGreaterThan(0)
   expect(view.container.querySelector('[data-owner="B"]').textContent).not.toContain('0 B ·')
+  expect(view.container.querySelector('[data-prompt-slot-counts]').textContent).toContain('2 unmeasured slots')
   // The totals line separates the two slot labels: 未测槽 counts slots on channels
   // this build has not wired (2 today: the capability appendix prose and its
   // declarations), 动态槽 counts slots on wired anchors whose composer produces the
@@ -8208,10 +8208,9 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   // 未纳管 is gone on purpose: the captured-surface gate and the mandatory slot
   // owner already cover it, and a counter that is structurally zero only gives
   // false assurance.
-  const totals = view.getByText(/unmeasured slots \d+ · dynamic slots \d+/u).textContent
+  const totals = view.container.querySelector('[data-prompt-strip]').textContent
   expect(totals).toContain('13 anchors')
-  expect(totals).toContain('unmeasured slots 2')
-  expect(totals).toContain('dynamic slots 5')
+  expect(view.container.querySelector('[data-prompt-slot-counts]').textContent).toContain('2 unmeasured slots')
   expect(totals).not.toContain('unowned')
   // The capture state is not something the pane can observe, so it must not appear
   // as a hardcoded claim; the totals line stops at what accounting measured.
@@ -8225,65 +8224,59 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
     .map(node => node.textContent).join(' ')
   expect(chromeText).not.toMatch(/\{[a-zA-Z]+\}/u)
   // The 他人所有 card accounts for its dynamic slots, which carry no measured bytes.
+  // The 他人所有 card names its anchors; the dynamic slots it owns are counted on the
+  // accounting line, because a dynamic slot carries no measured bytes to print.
   const otherOwner = view.container.querySelector('[data-owner="C"]')
-  expect(otherOwner?.textContent).toContain(copy['capabilities.prompt.cardDynamic'].replace('{count}', '2'))
+  expect(otherOwner?.textContent).toContain('anchors')
+  expect(view.container.querySelector('[data-prompt-slot-counts]').textContent).toContain('5 dynamic slots')
 
-  // A projected slot reports its template bytes, because the holes are filled from
-  // runtime facts and the delivered byte count is larger than the number shown. A
-  // literal slot carries no such marker, so the note cannot be read as decoration.
-  const templateMarkers = [...view.container.querySelectorAll('[data-slot-kind]')]
-    .filter(node => node.querySelector('[data-prompt-template-bytes]') !== null)
+  // A projected slot carries the template-bytes marker, because the holes are filled
+  // from runtime facts and the delivered byte count is larger than the number shown.
+  // A literal chip carries no such marker, so the marker cannot be read as decoration.
+  await act(async () => { fireEvent.click(view.container.querySelector('[data-anchor-id="tools:ptc-plus-repl"]')) })
+  // A projected slot carries the template-bytes marker, because the holes are filled
+  // from runtime facts and the delivered byte count is larger than the number shown.
+  // A literal chip carries no such marker, so the marker cannot be read as decoration.
+  const chipsFor = async anchorId => {
+    await act(async () => { fireEvent.click(view.container.querySelector(`[data-anchor-id="${anchorId}"]`)) })
+    return [...view.container.querySelectorAll('[data-prompt-panel="anchor"] [data-slot-id]')]
+  }
+  const tableRows = [...view.container.querySelectorAll('tr[data-anchor-id]')]
+  const everyChip = []
+  for (const row of tableRows) everyChip.push(...await chipsFor(row.dataset.anchorId))
+  const templateMarkers = everyChip.filter(node => node.dataset.promptTemplateBytes === 'true')
   expect(templateMarkers.length).toBeGreaterThan(0)
   for (const node of templateMarkers) expect(node.dataset.slotKind).toBe('projected')
-  const literalRows = [...view.container.querySelectorAll('[data-slot-kind="literal"]')]
-    .filter(node => node.querySelector('[data-prompt-template-bytes]') === null)
-  expect(literalRows.length).toBeGreaterThan(0)
+  expect(everyChip.filter(node => node.dataset.slotKind === 'literal')
+    .every(node => node.dataset.promptTemplateBytes === undefined)).toBe(true)
 
-  // The frozen item set is one aggregate row: its note says member text is editable
-  // while adding or removing an item moves neighbouring bytes, and no literal row
-  // carries that note.
-  const aggregateRows = [...view.container.querySelectorAll('[data-slot-kind="aggregate"]')]
-  expect(aggregateRows.length).toBe(1)
-  expect(aggregateRows[0].querySelector('[data-prompt-aggregate-set]')?.textContent)
-    .toBe(copy['capabilities.prompt.aggregateFrozen'])
-  expect(literalRows.every(node => node.querySelector('[data-prompt-aggregate-set]') === null)).toBe(true)
+  // The frozen item set is one aggregate chip: adding or removing an item moves the
+  // neighbouring bytes, and no literal chip carries that marker.
+  const aggregateRows = everyChip.filter(node => node.dataset.slotKind === 'aggregate')
+  expect(aggregateRows).toHaveLength(1)
+  expect(aggregateRows[0].dataset.promptAggregateSet).toBe('true')
+  expect(aggregateRows[0].title).toContain(copy['capabilities.prompt.aggregateFrozen'])
+  expect(everyChip.filter(node => node.dataset.slotKind === 'literal')
+    .every(node => node.dataset.promptAggregateSet === undefined)).toBe(true)
 
   // A declared anchor whose channel is not wired is listed as such, with no bytes.
   expect(view.getAllByText(/channel not connected/u).length).toBe(1)
-  expect(view.getByText(copy['capabilities.prompt.unwiredSummary'].replace('{anchors}', '1').replace('{slots}', '2'))).toBeTruthy()
+  expect(view.container.querySelector('[data-prompt-strip]').textContent).toContain('1 anchors not wired')
 
-  // Only wired editable anchors get an editor: one textarea per anchor that has an
-  // editable slot with a literal default (repl, run_code, edit_run_code, binding label,
-  // the three plan anchors, the tip bodies and the rewrite feedback).
-  expect(view.container.querySelectorAll('textarea').length).toBe(10)
-  // Every anchor renders a row; an unwired row carries no interactive control at
-  // all, so the panel can never promise an effect this build cannot deliver.
-  const rows = [...view.container.querySelectorAll('[data-anchor-id]')]
-  expect(rows).toHaveLength(13)
-  const unwiredRows = rows.filter(row => row.dataset.wired === 'false')
-  expect(unwiredRows).toHaveLength(1)
-  for (const row of unwiredRows) {
-    expect(row.querySelectorAll('textarea, input, button')).toHaveLength(0)
-  }
-  const unwiredRow = view.getByText('tools:sdk#capability-appendix').closest('tr')
-  expect(unwiredRow.querySelector('textarea')).toBeNull()
+  // Every anchor renders one table row and the pane holds exactly one editor, in the
+  // expanded-row panel, so a duplicated field can never appear under a second row.
+  const anchorRows = [...view.container.querySelectorAll('tr[data-anchor-id]')]
+  expect(anchorRows).toHaveLength(13)
+  // Select a wired anchor that owns an editable slot: the pane then holds exactly one
+  // field, and it belongs to the expanded row rather than to a table cell.
+  await act(async () => { fireEvent.click(view.container.querySelector('[data-anchor-id="tools:ptc-plus-repl"]')) })
+  expect(view.container.querySelectorAll('textarea')).toHaveLength(1)
+  const unwiredRow = anchorRows.find(row => row.dataset.anchorId === 'tools:sdk#capability-appendix')
+  expect(unwiredRow.querySelectorAll('button').length).toBe(0)
+  await act(async () => { fireEvent.click(unwiredRow) })
+  expect(unwiredRow.getAttribute('aria-selected')).toBe('true')
+  expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
 
-  // Structure: one compact block per anchor. Each editable anchor owns exactly one
-  // textarea, so an extra field or a duplicated editor is a visible regression.
-  for (const row of rows) {
-    // The editor lives in the row's own full-width sub-row, so a wired editable
-    // anchor still owns exactly one field and a read-only one owns none. The chips
-    // sub-row sits between the data row and the editor row.
-    const chipsRow = row.nextElementSibling
-    const editorRow = chipsRow?.nextElementSibling?.classList?.contains('ptcPlusPromptEditorRow')
-      ? chipsRow.nextElementSibling : null
-    const textareas = editorRow === null ? [] : [...editorRow.querySelectorAll('textarea')]
-    expect(textareas.length).toBeLessThanOrEqual(1)
-    if (row.dataset.wired === 'true' && chipsRow.querySelector('[data-slot-id]') !== null) {
-      const editable = [...chipsRow.querySelectorAll('[data-slot-id]')].filter(chip => chip.tagName === 'BUTTON')
-      if (editable.length > 0) expect(textareas).toHaveLength(1)
-    }
-  }
   // A read-only slot is a chip, never a field: it carries its reason code and kind
   // and no textarea anywhere inside it.
   const readOnlyChips = [...view.container.querySelectorAll('[data-readonly="true"]')]
@@ -8292,15 +8285,14 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
     expect(chip.tagName).toBe('SPAN')
     expect(chip.querySelector('textarea')).toBeNull()
   }
-  // No slot id is printed twice on the page: the chip is the only text occurrence,
-  // and every block is one header line plus one chip row.
+  // No slot id is printed twice on the page: the chip is the only text occurrence.
   const slotIds = [...new Set([...view.container.querySelectorAll('[data-slot-id]')].map(node => node.dataset.slotId))]
   for (const slotId of slotIds) {
     const occurrences = [...view.container.querySelectorAll('*')]
       .filter(node => node.children.length === 0 && node.textContent === slotId)
     expect(occurrences).toHaveLength(1)
   }
-  for (const row of rows) {
+  for (const row of anchorRows) {
     expect(row.querySelectorAll('[data-anchor-id]').length).toBe(0)
   }
 
@@ -8326,76 +8318,139 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   expect(snapshot.value.promptText).toContain('guidance.removed')
 })
 
-test('prompt text pane stays a table, shows the built-in sentence as its value and lists host-owned sections', async () => {
+test('prompt text pane is a dense table whose expanded row owns the only editor', async () => {
   const copy = SETTINGS_COPY.en
   const promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} })
   const { view } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText } })
   await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
 
-  // A table-like structure: one header row plus one aligned row per anchor, each with
-  // the six documented columns (channel, anchor, presence, bytes, reason, kind). Slot
-  // chips live in a full-width sub-row, not in a seventh column: a narrow chip column
-  // stacked a five-slot anchor into a tall pile of buttons.
+  // Header, four summary cards, the strip and the slot accounting: the mockup's
+  // sections, in order, before the table starts.
+  expect(view.container.querySelector('.ptcPlusPromptTitle').textContent).toBe(copy['capabilities.prompt.title'])
+  expect(view.container.querySelector('.ptcPlusPromptSubtitle').textContent).toBe(copy['capabilities.prompt.subtitle'])
+  const cards = [...view.container.querySelectorAll('.ptcPlusPromptCard')]
+  expect(cards).toHaveLength(4)
+  for (const key of ['A', 'B', 'C', 'mixed']) {
+    expect(view.container.querySelector(`.ptcPlusPromptCard[data-owner="${key}"]`)).not.toBeNull()
+  }
+  const strip = view.container.querySelector('[data-prompt-strip]')
+  // The strip states the unwired anchors, the measured total with its KB form and the
+  // anchor count; the numbers come from the same account as the cards.
+  expect(strip.textContent).toMatch(/^\d+ anchors not wired · \d[\d ]* B \(\d+\.\d KB\) total · 13 anchors$/u)
+  const counts = view.container.querySelector('[data-prompt-slot-counts]').textContent
+  expect(counts).toContain('2 unmeasured slots')
+  expect(counts).toContain('5 dynamic slots')
+
+  // The table is the dense index: seven columns, one row per anchor, host rows last.
   const table = view.container.querySelector('.ptcPlusPromptTable')
   expect(table).not.toBeNull()
-  const header = table.querySelector('.ptcPlusPromptHeader')
-  expect([...header.querySelectorAll('[role="columnheader"]')].map(cell => cell.textContent))
-    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind'])
-  const rows = [...table.querySelectorAll('[data-anchor-id]')]
+  expect([...table.querySelectorAll('thead th')].map(th => th.textContent))
+    .toEqual(['', 'Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind'])
+  const rows = [...table.querySelectorAll('tbody tr[data-anchor-id]')]
   expect(rows).toHaveLength(13)
-  for (const row of rows) {
-    const cells = [...row.querySelectorAll(':scope > [data-cell]')]
-    expect(cells.map(cell => cell.dataset.cell))
-      .toEqual(['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind'])
-    expect(row.querySelector('[data-slot-id]')).toBeNull()
-    const chipsRow = row.nextElementSibling
-    expect(chipsRow.classList.contains('ptcPlusPromptChipsRow')).toBe(true)
-    expect(chipsRow.dataset.anchorChips).toBe(row.dataset.anchorId)
-    const chipCells = [...chipsRow.children]
-    expect(chipCells).toHaveLength(1)
-    expect(chipCells[0].getAttribute('colspan')).toBe('6')
-    expect(chipCells[0].querySelector('.ptcPlusPromptChips').children.length).toBeGreaterThan(0)
-    expect(chipsRow.querySelectorAll('[data-slot-id]').length).toBeGreaterThan(0)
-  }
-  // The owner label sits inline next to the anchor id instead of wrapping onto a second
-  // line inside the anchor cell.
-  const anchorCell = rows[0].querySelector('[data-cell=anchor]')
-  expect(getComputedStyle(anchorCell).flexDirection).toBe('row')
-  // The byte column carries the per-slot split when an anchor has more than one
-  // measured slot, so the split is visible without opening the editor.
+  expect(rows.map(row => row.querySelector('.ptcPlusPromptIndex').textContent)).toEqual(
+    Array.from({ length: 13 }, (_, index) => String(index + 1)))
+  expect(rows[0].querySelector('.ptcPlusPromptChannel').textContent).toBe('prompt')
+  expect(rows[0].querySelector('.ptcPlusPromptAnchorId').textContent).toBe(rows[0].dataset.anchorId)
+  // No editor and no chips live in the table; only one editor exists, in the panel.
+  expect(table.querySelectorAll('textarea').length).toBe(0)
+  expect(table.querySelectorAll('[data-slot-id]').length).toBe(0)
+  expect(view.container.querySelectorAll('textarea')).toHaveLength(1)
+  // The byte column carries the per-slot split for a multi-slot anchor.
   const runCodeRow = rows.find(row => row.dataset.anchorId === 'run_code')
   expect(runCodeRow.querySelector('[data-anchor-split]').textContent).toMatch(/\d+/u)
+  // An unwired channel is a row-level tag, not a fake zero.
+  const unwiredRow = rows.find(row => row.dataset.wired === 'false')
+  expect(unwiredRow.querySelector('[data-prompt-unwired-tag]').textContent)
+    .toBe(copy['capabilities.prompt.unwiredTag'])
+  // Host-owned context stays read-only and last.
+  const hostRows = [...table.querySelectorAll('tr[data-host-row]')]
+  expect(hostRows).toHaveLength(2)
+  for (const row of hostRows) {
+    expect(row.querySelector('textarea')).toBeNull()
+    expect(row.textContent).toContain(copy['capabilities.prompt.ownerHost'])
+  }
+  expect(table.querySelector('tbody tr:last-child').hasAttribute('data-host-row')).toBe(true)
 
-  // Editable text: the built-in sentence is the field's value, so a user can tweak the
-  // shipped wording without retyping it. A placeholder here would mean the field is
-  // empty and the sentence is only decoration.
-  const runCode = view.container.querySelector('[data-anchor-id="run_code"]')
-  const textarea = runCode.nextElementSibling.nextElementSibling.querySelector('textarea')
-  const builtIn = PROMPT_ASSETS.find(asset => asset.id === textarea.getAttribute('aria-label')).defaultText
+  // Selecting a row expands it: the panel names the row and owns that anchor's chips
+  // and its single editor, so the editor can never belong to a row that is not shown.
+  const panel = view.container.querySelector('[data-prompt-panel="anchor"]')
+  expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
+    copy['capabilities.prompt.rowExpand'].replace('{index}', '1'))
+  await act(async () => { fireEvent.click(runCodeRow) })
+  expect(runCodeRow.getAttribute('aria-selected')).toBe('true')
+  expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
+    copy['capabilities.prompt.rowExpand'].replace('{index}', String(rows.indexOf(runCodeRow) + 1)))
+  const chips = panel.querySelector('[data-anchor-chips]')
+  expect(chips.dataset.anchorChips).toBe('run_code')
+  expect(chips.querySelectorAll('[data-slot-id]').length).toBeGreaterThan(0)
+  const textarea = panel.querySelector('textarea')
+  expect(textarea.getAttribute('aria-label')).toBe('runCode.description')
+  const builtIn = PROMPT_ASSETS.find(asset => asset.id === 'runCode.description').defaultText
   expect(textarea.value).toBe(builtIn)
   expect(textarea.value.length).toBeGreaterThan(20)
-  expect(textarea.placeholder ?? '').toBe('')
   expect(textarea.disabled).toBe(false)
+  expect(panel.textContent).toContain(copy['capabilities.prompt.bytesOfLimit']
+    .replace('{used}', String(new TextEncoder().encode(builtIn).length))
+    .replace('{max}', String(PROMPT_TEXT_MAX_SLOT_BYTES)))
 
-  // Read-only slots keep showing their reason code and never become fields.
-  const readOnly = view.container.querySelectorAll('[data-readonly="true"]')
-  expect(readOnly.length).toBeGreaterThan(0)
-  for (const chip of readOnly) expect(chip.querySelector('textarea')).toBeNull()
-
-  // Host-owned context: the pane must answer what the host itself puts in the request,
-  // as read-only rows with an explicit owner, instead of silently showing only the
-  // plugin's own anchors.
-  const hostRows = [...view.container.querySelectorAll('[data-host-row]')]
-  expect(hostRows.length).toBe(2)
-  for (const row of hostRows) {
-    expect(row.textContent).toContain(copy['capabilities.prompt.ownerHost'])
-    expect(row.querySelector('textarea')).toBeNull()
+  // A read-only slot is an inert chip with its reason, never a field.
+  await act(async () => { fireEvent.click(view.container.querySelector('[data-anchor-id="tools:sdk#capability-appendix"]')) })
+  const readonlyChips = [...panel.querySelectorAll('[data-readonly="true"]')]
+  expect(readonlyChips.length).toBeGreaterThan(0)
+  for (const chip of readonlyChips) {
+    expect(chip.tagName).toBe('SPAN')
+    expect(chip.querySelector('textarea')).toBeNull()
   }
-  expect(view.container.textContent).toContain('host:tools:sdk')
-  expect(view.container.textContent).toContain(copy['capabilities.prompt.hostUnavailable'])
+  expect(panel.querySelector('textarea')).toBeNull()
+  expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
 })
 
-test('prompt text pane previews pending changes with their delta and channel effect', async () => {
+test('prompt text pane stages edits, previews their delta and only writes on save', async () => {
+  const copy = SETTINGS_COPY.en
+  const runCodeDescription = PROMPT_ASSETS.find(asset => asset.id === 'runCode.description').defaultText
+  const overridden = `${runCodeDescription} extra words`
+  const promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} })
+  const { view, snapshot } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText } })
+  await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
+
+  const panel = view.container.querySelector('[data-prompt-diff-panel]')
+  const diff = () => view.container.querySelector('[data-prompt-diff]')
+  expect(panel).not.toBeNull()
+  expect(diff()).toBeNull()
+  expect(panel.textContent).toContain(copy['capabilities.prompt.diffEmpty'])
+
+  const runCodeRow = view.container.querySelector('[data-anchor-id="run_code"]')
+  await act(async () => { fireEvent.click(runCodeRow) })
+  const textarea = view.container.querySelector('[data-prompt-panel="anchor"] textarea')
+  await act(async () => { fireEvent.change(textarea, { target: { value: overridden } }) })
+
+  // The draft is staged: the pair of buttons become usable, the preview names the slot
+  // with its before/after bytes and the channel effect, and nothing is written yet.
+  expect(diff()).not.toBeNull()
+  const row = diff().querySelector('[data-diff-slot="runCode.description"]')
+  expect(row.dataset.diffAnchor).toBe('run_code')
+  expect(row.textContent).toContain(copy['capabilities.prompt.effectPrompt'])
+  expect(row.textContent).toContain(copy['capabilities.prompt.diffBytes']
+    .replace('{before}', String(new TextEncoder().encode(runCodeDescription).length))
+    .replace('{after}', String(new TextEncoder().encode(overridden).length))
+    .replace('{delta}', `+${new TextEncoder().encode(overridden).length - new TextEncoder().encode(runCodeDescription).length}`))
+  expect(snapshot.value.promptText).toBe(promptText)
+
+  // 保存 writes once and clears the draft, so the preview stops describing a pending
+  // change while the saved document now carries it.
+  await act(async () => { fireEvent.click(diff().querySelector('.ptcPlusPromptPrimary')) })
+  expect(JSON.parse(snapshot.value.promptText).overrides['runCode.description']).toBe(overridden)
+
+  // 取消 drops a staged edit and leaves the saved document alone.
+  await act(async () => { fireEvent.change(view.container.querySelector('[data-prompt-panel="anchor"] textarea'), { target: { value: 'discarded' } }) })
+  expect(diff()).not.toBeNull()
+  await act(async () => { fireEvent.click([...diff().querySelectorAll('button')].find(button => button.textContent === copy['capabilities.prompt.cancel'])) })
+  expect(view.container.querySelector('[data-prompt-panel="anchor"] textarea').value).toBe(overridden)
+  expect(JSON.parse(snapshot.value.promptText).overrides['runCode.description']).toBe(overridden)
+})
+
+test('prompt text pane previews an already saved difference and can restore it', async () => {
   const copy = SETTINGS_COPY.en
   const runCodeDescription = PROMPT_ASSETS.find(asset => asset.id === 'runCode.description').defaultText
   const overridden = `${runCodeDescription} extra words`
@@ -8409,14 +8464,12 @@ test('prompt text pane previews pending changes with their delta and channel eff
   expect(preview).not.toBeNull()
   const row = preview.querySelector('[data-diff-anchor="run_code"]')
   expect(row).not.toBeNull()
-  const delta = Number(row.querySelector('[data-diff-delta]').dataset.diffDelta)
-  expect(delta).toBeGreaterThan(0)
   expect(row.textContent).toContain(copy['capabilities.prompt.effectPrompt'])
   // 恢复内置 must be reachable from the preview, not only from the editor.
   const reset = [...row.querySelectorAll('button')].find(button => button.textContent === copy['capabilities.prompt.reset'])
   expect(reset).toBeDefined()
-  // Restoring the built-in text removes the pending change, so the panel must
-  // disappear instead of lingering with a stale delta.
+  // Restoring stages the built-in text, so that row leaves the preview instead of
+  // lingering with a stale delta.
   await act(async () => { fireEvent.click(reset) })
-  expect(view.container.querySelector('[data-prompt-diff]')).toBeNull()
+  expect(view.container.querySelector('[data-diff-slot="runCode.description"]')).toBeNull()
 })

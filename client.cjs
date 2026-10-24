@@ -10752,82 +10752,235 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const paused = value.capabilityPromptTextEnabled === false;
     const blocked = paused || disabled === true || typeof disabled === "function" && disabled("promptText") === true;
     const resolved = resolvePromptText(value.promptText);
-    const [openSlots, setOpenSlots] = React32.useState({});
     const account = accountPromptText(resolved);
-    const write2 = (overrides2) => {
-      onChange(
-        CONFIG_FIELDS.find((field2) => field2.key === "promptText"),
-        JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides: overrides2 })
-      );
-    };
+    const [draft, setDraft] = React32.useState(null);
+    const [selectedAnchorId, setSelectedAnchorId] = React32.useState(null);
+    const [openSlots, setOpenSlots] = React32.useState({});
+    const overrides2 = draft ?? document2.overrides;
+    const byteCount = (text) => new TextEncoder().encode(text).length;
+    const group = (number2) => String(Math.round(number2)).replace(/\B(?=(\d{3})+(?!\d))/gu, " ");
+    const bytePair = (bytes) => t2("capabilities.prompt.bytesPair", {
+      bytes: group(bytes),
+      kb: (bytes / 1024).toFixed(1)
+    });
+    const write2 = (next) => onChange(
+      CONFIG_FIELDS.find((field2) => field2.key === "promptText"),
+      JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides: next })
+    );
     const update = (slotId, next) => {
-      const overrides2 = { ...document2.overrides };
-      if (next === void 0) delete overrides2[slotId];
-      else overrides2[slotId] = next;
-      write2(overrides2);
+      const base2 = { ...overrides2 };
+      if (next === void 0) delete base2[slotId];
+      else base2[slotId] = next;
+      setDraft(base2);
     };
+    const save = () => {
+      if (draft === null) return;
+      write2(draft);
+      setDraft(null);
+    };
+    const cancel = () => setDraft(null);
+    const pending = draft !== null;
     const unmeasuredSlots = account.counts.unmeasuredSlots;
     const dynamicSlots = account.counts.dynamicSlots;
     const unwiredAnchors = account.anchors.filter((anchor) => anchor.wired !== true);
     const measuredBytes = account.owners.A + account.owners.B + account.owners.C;
-    const card = (key, labelKey) => {
-      const unmeasured = account.counts.unmeasured[key];
-      const dynamic = account.counts.dynamic[key];
-      const bytes = account.owners[key];
-      const projected = account.slots.some((slot) => slot.owner === key && slot.measured && slot.kind === "projected");
-      const measured = bytes > 0 ? h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardBytes", { bytes })) : null;
+    const ownerOf = (anchor) => anchor.owner === "mixed" ? "mixed" : anchor.owner;
+    const ownerAnchors = (key) => account.anchors.filter((anchor) => ownerOf(anchor) === key).length;
+    const icon = (path) => h("svg", {
+      viewBox: "0 0 20 20",
+      width: 16,
+      height: 16,
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": 1.6,
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      "aria-hidden": "true"
+    }, ...path.map((d, index2) => h("path", { key: index2, d })));
+    const card = (key, labelKey, glyph) => {
+      const mixed = key === "mixed";
+      const bytes = account.owners[key] ?? 0;
+      const value_ = mixed ? t2("capabilities.prompt.cardMixed", { count: ownerAnchors("mixed") }) : bytes > 0 ? `${bytePair(bytes)} \xB7 ${t2("capabilities.prompt.cardMetaAnchors", { count: ownerAnchors(key) })}` : t2("capabilities.prompt.cardMetaAnchors", { count: ownerAnchors(key) });
       return h(
         "div",
-        { key, className: "ptcPlusCapabilityField", "data-owner": key },
-        h("span", null, t2(labelKey)),
-        measured,
-        projected ? h(
+        { key, className: "ptcPlusPromptCard", "data-owner": key },
+        h("span", { className: "ptcPlusPromptCardIcon" }, glyph),
+        h(
           "span",
-          { className: "ptcPlusDetail", "data-prompt-template-bytes": "true" },
-          t2("capabilities.prompt.templateBytes")
-        ) : null,
-        unmeasured === 0 ? null : h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardUnwired", { count: unmeasured })),
-        // A dynamic slot is measured at assembly, so it carries no bytes here; the
-        // card must still account for it or the owner reads as if it had nothing.
-        dynamic === 0 ? null : h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardDynamic", { count: dynamic }))
+          { className: "ptcPlusPromptCardBody" },
+          h("span", { className: "ptcPlusPromptCardLabel" }, t2(labelKey)),
+          mixed ? h("span", { className: "ptcPlusPromptCardMeta" }, value_) : h("span", { className: "ptcPlusPromptCardValue", "data-owner-bytes": String(account.owners[key] ?? 0) }, value_)
+        )
       );
     };
     const cards = h(
       "div",
       { className: "ptcPlusPromptCards" },
-      card("A", "capabilities.prompt.ownerEditable"),
-      card("B", "capabilities.prompt.ownerReadOnly"),
-      card("C", "capabilities.prompt.ownerOther"),
+      card("A", "capabilities.prompt.ownerEditable", icon(["M4 16h3l9-9-3-3-9 9v3Z", "M12.5 4.5 15.5 7.5"])),
+      card("B", "capabilities.prompt.ownerReadOnly", icon(["M5.5 9V6.5a4.5 4.5 0 0 1 9 0V9", "M4.5 9h11v7h-11Z"])),
+      card("C", "capabilities.prompt.ownerOther", icon(["M10 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z", "M4 17c0-3 2.7-5 6-5s6 2 6 5"])),
+      card("mixed", "capabilities.prompt.ownerMixed", icon(["M4 6h12", "M4 10h12", "M4 14h12", "M13 4v4", "M7 8v4"]))
+    );
+    const strip = h(
+      "p",
+      { className: "ptcPlusPromptStrip", "data-prompt-strip": String(unwiredAnchors.length) },
+      t2("capabilities.prompt.strip", {
+        anchors: unwiredAnchors.length,
+        bytes: group(measuredBytes),
+        kb: (measuredBytes / 1024).toFixed(1),
+        total: account.counts.total
+      })
+    );
+    const reasonsOf = (anchor) => {
+      const reasons = [...new Set(anchor.slots.map((slot) => slot.reason).filter(Boolean))];
+      return reasons.length === 0 ? "\u2014" : reasons.map((reason) => promptReasonLabel(t2, reason)).join(" + ");
+    };
+    const kindsOf = (anchor) => [...new Set(anchor.slots.map((slot) => slot.kind))].map((kind) => promptKindLabel(t2, kind)).join(" + ");
+    const splitOf = (anchor) => {
+      const measured = anchor.slots.filter((slot) => slot.measured === true && slot.bytes > 0);
+      return measured.length > 1 ? t2("capabilities.prompt.anchorBytesSplit", {
+        parts: measured.map((slot) => `${slot.slotId.split(".").pop()} ${slot.bytes}`).join(" / ")
+      }) : null;
+    };
+    const select = (anchorId) => setSelectedAnchorId(anchorId);
+    const rowKey = (event, anchorId) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      select(anchorId);
+    };
+    const anchorRow = (anchor, index2) => {
+      const split = splitOf(anchor);
+      return h(
+        "tr",
+        {
+          key: anchor.anchorId,
+          className: "ptcPlusPromptRow",
+          "data-anchor-id": anchor.anchorId,
+          "data-wired": anchor.wired === true ? "true" : "false",
+          "aria-selected": selectedAnchorId === anchor.anchorId ? "true" : "false",
+          tabIndex: 0,
+          onClick: () => select(anchor.anchorId),
+          onKeyDown: (event) => rowKey(event, anchor.anchorId)
+        },
+        h("td", { className: "ptcPlusPromptIndex" }, String(index2)),
+        h("td", null, h("span", { className: "ptcPlusPromptChannel", "data-channel": anchor.channel }, anchor.channel)),
+        h("td", null, h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId)),
+        h("td", null, h("span", { className: "ptcPlusPromptPresence", title: t2(anchor.presence) }, t2(anchor.presence))),
+        h(
+          "td",
+          { className: "ptcPlusPromptBytesCell" },
+          anchor.wired !== true ? h("span", { "data-anchor-bytes": "unwired" }, t2("capabilities.prompt.unwiredRow", { slots: anchor.unmeasuredSlots })) : h(
+            "span",
+            { "data-anchor-bytes": String(anchor.bytes) },
+            paused ? t2("capabilities.prompt.pausedBytes", { bytes: anchor.bytes }) : t2("capabilities.prompt.cardBytes", { bytes: anchor.bytes }),
+            split === null ? null : h("small", { className: "ptcPlusPromptSplit", "data-anchor-split": "true" }, split)
+          )
+        ),
+        h("td", { className: "ptcPlusPromptReasonCell" }, reasonsOf(anchor)),
+        h(
+          "td",
+          { className: "ptcPlusPromptKindCell" },
+          kindsOf(anchor),
+          anchor.wired !== true ? h(
+            "span",
+            { className: "ptcPlusPromptTag", "data-prompt-unwired-tag": "true" },
+            t2("capabilities.prompt.unwiredTag")
+          ) : null
+        )
+      );
+    };
+    const hostRow = (section, index2) => h(
+      "tr",
+      {
+        key: section.id,
+        className: "ptcPlusPromptRow ptcPlusPromptHostRow",
+        "data-host-row": section.id
+      },
+      h("td", { className: "ptcPlusPromptIndex" }, String(index2)),
+      h("td", null, h("span", { className: "ptcPlusPromptChannel" }, "prompt")),
+      h("td", null, h("code", { className: "ptcPlusPromptAnchorId", title: section.id }, section.id)),
+      h("td", null, h("span", { className: "ptcPlusPromptPresence" }, t2(section.presence))),
+      h("td", { className: "ptcPlusPromptBytesCell" }, t2("capabilities.prompt.hostUnavailable")),
+      h("td", { className: "ptcPlusPromptReasonCell" }, "\u2014"),
+      h("td", { className: "ptcPlusPromptKindCell" }, t2("capabilities.prompt.ownerHost"))
+    );
+    const table = h(
+      "table",
+      { className: "ptcPlusPromptTable" },
       h(
-        "div",
-        { key: "mixed", className: "ptcPlusCapabilityField" },
-        h("span", null, t2("capabilities.prompt.ownerMixed")),
-        h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.cardMixed", { count: account.counts.mixed }))
+        "colgroup",
+        null,
+        h("col", { className: "ptcPlusPromptColIndex" }),
+        h("col", { className: "ptcPlusPromptColChannel" }),
+        h("col", { className: "ptcPlusPromptColAnchor" }),
+        h("col", { className: "ptcPlusPromptColPresence" }),
+        h("col", { className: "ptcPlusPromptColBytes" }),
+        h("col", { className: "ptcPlusPromptColReason" }),
+        h("col", { className: "ptcPlusPromptColKind" })
+      ),
+      h("thead", null, h(
+        "tr",
+        null,
+        h("th", { scope: "col", className: "ptcPlusPromptIndex" }, ""),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnChannel")),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnAnchor")),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnPresence")),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnBytesSplit")),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnReason")),
+        h("th", { scope: "col" }, t2("capabilities.prompt.columnKind"))
+      )),
+      h(
+        "tbody",
+        null,
+        ...account.anchors.map((anchor, index2) => anchorRow(anchor, index2 + 1)),
+        ...HOST_CONTEXT_SECTIONS.map((section, index2) => hostRow(section, account.anchors.length + index2 + 1))
       )
     );
-    const totals = h("p", { className: "ptcPlusDetail" }, t2("capabilities.prompt.totals", {
-      bytes: measuredBytes,
-      anchors: account.counts.total,
-      unmeasured: unmeasuredSlots,
-      dynamic: dynamicSlots
-    }));
-    const slotLabel = (slot) => {
-      if (slot.measured) return t2("capabilities.prompt.slotBytes", { bytes: slot.bytes, owner: slot.owner });
-      if (slot.kind === "aggregate") return t2("capabilities.prompt.aggregateSlot");
-      return t2(slot.unwired === true ? "capabilities.prompt.unmeasuredSlot" : "capabilities.prompt.dynamicSlot");
+    const chip = (anchor, slot) => {
+      const templateBytes = slot.measured === true && slot.kind === "projected";
+      const aggregateSet = slot.kind === "aggregate";
+      const shared = {
+        className: "ptcPlusPromptChip",
+        "data-slot-id": slot.slotId,
+        "data-slot-kind": slot.kind,
+        ...templateBytes ? { "data-prompt-template-bytes": "true" } : {},
+        ...aggregateSet ? { "data-prompt-aggregate-set": "true" } : {},
+        title: templateBytes ? `${slot.slotId} \xB7 ${t2("capabilities.prompt.templateBytes")}` : aggregateSet ? `${slot.slotId} \xB7 ${t2("capabilities.prompt.aggregateFrozen")}` : slot.slotId
+      };
+      if (slot.owner !== "A") {
+        return h(
+          "span",
+          { key: slot.slotId, ...shared, "data-readonly": "true" },
+          h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
+          h(
+            "span",
+            { className: "ptcPlusPromptChipNote" },
+            t2("capabilities.prompt.readonlyReason", { reason: promptReasonLabel(t2, slot.reason), kind: promptKindLabel(t2, slot.kind) })
+          )
+        );
+      }
+      const selected = (openSlots[anchor.anchorId] ?? editableSlots(anchor)[0]?.slotId) === slot.slotId;
+      return h("button", {
+        key: slot.slotId,
+        ...shared,
+        type: "button",
+        disabled: blocked,
+        "aria-pressed": selected,
+        onClick: () => setOpenSlots((previous) => ({ ...previous, [anchor.anchorId]: slot.slotId }))
+      }, h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId));
     };
-    const slotControl = (anchor, slot) => {
-      const override = Object.hasOwn(document2.overrides, slot.slotId) ? document2.overrides[slot.slotId] : void 0;
+    const editableSlots = (anchor) => anchor.slots.filter((slot) => slot.owner === "A" && PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId)?.defaultText !== null);
+    const editorFor = (anchor) => {
+      const slots = editableSlots(anchor);
+      if (anchor.wired !== true || slots.length === 0) return null;
+      const selectedId = openSlots[anchor.anchorId] ?? slots[0].slotId;
+      const slot = slots.find((candidate) => candidate.slotId === selectedId) ?? slots[0];
       const asset = PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId);
-      if (asset === void 0 || slot.owner !== "A" || asset.defaultText === null) return null;
+      const override = Object.hasOwn(overrides2, slot.slotId) ? overrides2[slot.slotId] : void 0;
       const current = override ?? asset.defaultText;
       return h(
         "div",
-        {
-          key: `${slot.slotId}-control`,
-          className: "ptcPlusPromptEditor",
-          "data-editor-slot": slot.slotId
-        },
+        { key: slot.slotId, className: "ptcPlusPromptEditor", "data-editor-slot": slot.slotId },
         h("textarea", {
           id: `${id2}-prompt-${slot.slotId}`,
           rows: 3,
@@ -10841,219 +10994,124 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h(
           "div",
           { className: "ptcPlusPromptEditorFoot" },
-          h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.bytes", {
-            used: slot.bytes,
-            max: PROMPT_TEXT_MAX_SLOT_BYTES
-          })),
-          override === "" ? h("span", { className: "ptcPlusDetail" }, t2("capabilities.prompt.omitted")) : null,
-          h("button", {
-            type: "button",
-            disabled: blocked || override === void 0,
-            onClick: () => update(slot.slotId, void 0)
-          }, t2("capabilities.prompt.reset")),
-          asset.omittable ? h("button", {
-            type: "button",
-            disabled: blocked,
-            onClick: () => update(slot.slotId, "")
-          }, t2("capabilities.prompt.omit")) : null
-        )
-      );
-    };
-    const chip = (anchor, slot) => {
-      const markers = [
-        slot.measured && slot.kind === "projected" ? h(
-          "span",
-          { key: "template", className: "ptcPlusPromptChipNote", "data-prompt-template-bytes": "true" },
-          t2("capabilities.prompt.templateBytes")
-        ) : null,
-        slot.kind === "aggregate" ? h(
-          "span",
-          { key: "aggregate", className: "ptcPlusPromptChipNote", "data-prompt-aggregate-set": "true" },
-          t2("capabilities.prompt.aggregateFrozen")
-        ) : null
-      ].filter(Boolean);
-      const shared = {
-        className: "ptcPlusPromptChip",
-        "data-slot-id": slot.slotId,
-        "data-slot-kind": slot.kind,
-        title: slot.slotId
-      };
-      if (slot.owner !== "A") {
-        return h(
-          "span",
-          { key: slot.slotId, ...shared, "data-readonly": "true" },
-          h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
           h(
             "span",
-            { className: "ptcPlusPromptChipNote" },
-            t2("capabilities.prompt.readonlyReason", { reason: promptReasonLabel(t2, slot.reason), kind: promptKindLabel(t2, slot.kind) })
+            { className: "ptcPlusPromptHint" },
+            t2("capabilities.prompt.bytesOfLimit", { used: byteCount(current), max: PROMPT_TEXT_MAX_SLOT_BYTES })
           ),
-          ...markers
-        );
-      }
-      const selected = openSlots[anchor.anchorId] === slot.slotId;
-      return h(
-        "button",
-        {
-          key: slot.slotId,
-          ...shared,
-          type: "button",
-          disabled: blocked,
-          "aria-pressed": selected,
-          onClick: () => setOpenSlots((previous) => ({ ...previous, [anchor.anchorId]: slot.slotId }))
-        },
-        h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
-        ...markers
+          h(
+            "span",
+            { className: "ptcPlusPromptEditorActions" },
+            asset.omittable ? h("button", {
+              type: "button",
+              disabled: blocked,
+              onClick: () => update(slot.slotId, "")
+            }, t2("capabilities.prompt.omit")) : null,
+            h("button", {
+              type: "button",
+              disabled: blocked || override === void 0,
+              onClick: () => update(slot.slotId, void 0)
+            }, t2("capabilities.prompt.reset"))
+          )
+        )
       );
     };
-    const rows = account.anchors.map((anchor) => {
-      const editableSlots = anchor.slots.filter((slot) => slot.owner === "A" && PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId)?.defaultText !== null);
-      const selectedId = openSlots[anchor.anchorId] ?? editableSlots[0]?.slotId;
-      const selected = editableSlots.find((slot) => slot.slotId === selectedId);
-      const editor = anchor.wired !== true || editableSlots.length === 0 ? null : slotControl(anchor, selected);
-      const measuredSlots = anchor.slots.filter((slot) => slot.measured === true && slot.bytes > 0);
-      const split = measuredSlots.length > 1 ? t2("capabilities.prompt.anchorBytesSplit", {
-        parts: measuredSlots.map((slot) => `${slot.slotId.split(".").pop()} ${slot.bytes}`).join(" / ")
-      }) : null;
-      const bytes = anchor.wired !== true ? h(
-        "span",
-        { className: "ptcPlusPromptAnchorBytes", "data-anchor-bytes": "unwired" },
-        t2("capabilities.prompt.unwiredRow", { slots: anchor.unmeasuredSlots })
-      ) : h(
-        "span",
-        { className: "ptcPlusPromptAnchorBytes", "data-anchor-bytes": String(anchor.bytes) },
-        paused ? t2("capabilities.prompt.pausedBytes", { bytes: anchor.bytes }) : t2("capabilities.prompt.cardBytes", { bytes: anchor.bytes }),
-        split === null ? null : h("small", { className: "ptcPlusPromptChipNote", "data-anchor-split": "true" }, split)
-      );
-      const status = anchor.owner === "mixed" ? t2("capabilities.prompt.ownerMixed") : anchor.owner === "A" ? t2("capabilities.prompt.ownerEditable") : anchor.owner === "B" ? t2("capabilities.prompt.ownerReadOnly") : t2("capabilities.prompt.ownerOther");
-      const reasons = [...new Set(anchor.slots.map((slot) => slot.reason).filter(Boolean))];
-      const kinds2 = [...new Set(anchor.slots.map((slot) => slot.kind))];
-      const cells = [
-        h("td", { className: "ptcPlusPromptCell", "data-cell": "channel" }, anchor.channel),
-        h(
-          "td",
-          { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", "data-cell": "anchor" },
-          h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId),
-          h("span", { className: "ptcPlusPromptOwnerBadge", "data-owner-status": anchor.owner }, status)
-        ),
-        h("td", { className: "ptcPlusPromptCell", "data-cell": "presence", title: anchor.presence }, anchor.presence),
-        h("td", { className: "ptcPlusPromptCell ptcPlusPromptAnchorBytes", "data-cell": "bytes" }, bytes),
-        h(
-          "td",
-          { className: "ptcPlusPromptCell", "data-cell": "reason", title: reasons.join(" \xB7 ") },
-          reasons.length === 0 ? "\u2014" : reasons.map((reason) => promptReasonLabel(t2, reason)).join(" \xB7 ")
-        ),
-        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.map((kind) => promptKindLabel(t2, kind)).join(" \xB7 "))
-      ];
-      return [
-        h("tr", {
-          key: anchor.anchorId,
-          className: "ptcPlusPromptRow",
-          "data-anchor-id": anchor.anchorId,
-          "data-wired": anchor.wired === true ? "true" : "false",
-          "data-paused": paused ? "true" : "false"
-        }, ...cells),
-        h(
-          "tr",
-          { key: `${anchor.anchorId}-chips`, className: "ptcPlusPromptChipsRow", "data-anchor-chips": anchor.anchorId },
-          h(
-            "td",
-            { className: "ptcPlusPromptCell", colSpan: PROMPT_TABLE_COLUMNS },
-            h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot)))
-          )
-        ),
-        editor === null ? null : h(
-          "tr",
-          { key: `${anchor.anchorId}-editor`, className: "ptcPlusPromptEditorRow" },
-          h("td", { className: "ptcPlusPromptCell", colSpan: PROMPT_TABLE_COLUMNS }, editor)
-        )
-      ];
-    });
-    const headers = [
-      t2("capabilities.prompt.columnChannel"),
-      t2("capabilities.prompt.columnAnchor"),
-      t2("capabilities.prompt.columnPresence"),
-      t2("capabilities.prompt.columnBytesSplit"),
-      t2("capabilities.prompt.columnReason"),
-      t2("capabilities.prompt.columnKind")
-    ];
-    const header = h("thead", null, h(
-      "tr",
-      { className: "ptcPlusPromptHeader" },
-      ...headers.map((label, index2) => h("th", { key: label, scope: "col", role: "columnheader", "data-column": index2 }, label))
-    ));
-    const hostRows = HOST_CONTEXT_SECTIONS.map((section) => h(
-      "tr",
-      {
-        key: section.id,
-        className: "ptcPlusPromptRow ptcPlusPromptHostRow",
-        "data-host-row": section.id
-      },
-      h("td", { className: "ptcPlusPromptCell", "data-cell": "channel" }, "prompt"),
+    const defaultAnchor = account.anchors.find((anchor) => anchor.wired === true && editableSlots(anchor).length > 0);
+    const selectedAnchor = account.anchors.find((anchor) => anchor.anchorId === selectedAnchorId) ?? defaultAnchor;
+    const selectedIndex = selectedAnchor === void 0 ? 0 : account.anchors.indexOf(selectedAnchor) + 1;
+    const anchorPanel = h(
+      "section",
+      { className: "ptcPlusPromptPanel", "data-prompt-panel": "anchor" },
       h(
-        "td",
-        { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", "data-cell": "anchor" },
-        h("code", { className: "ptcPlusPromptAnchorId", title: section.id }, section.id)
+        "h5",
+        { className: "ptcPlusPromptPanelTitle" },
+        t2("capabilities.prompt.rowExpand", { index: selectedIndex })
       ),
-      h("td", { className: "ptcPlusPromptCell", "data-cell": "presence" }, t2(section.presence)),
-      h(
-        "td",
-        { className: "ptcPlusPromptCell", "data-cell": "bytes" },
-        t2("capabilities.prompt.hostUnavailable")
-      ),
-      h("td", { className: "ptcPlusPromptCell", "data-cell": "reason" }, t2("capabilities.prompt.ownerHost")),
-      h(
-        "td",
-        { className: "ptcPlusPromptCell", "data-cell": "kind" },
+      selectedAnchor === void 0 ? h("p", { className: "ptcPlusPromptHint" }, t2("capabilities.prompt.rowExpandHint")) : h(
+        "div",
+        { className: "ptcPlusPromptPanelBody" },
         h(
-          "span",
-          { className: "ptcPlusPromptChip", "data-readonly": "true" },
-          h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.hostSection"))
-        )
+          "div",
+          { className: "ptcPlusPromptChips", "data-anchor-chips": selectedAnchor.anchorId },
+          ...selectedAnchor.slots.map((slot) => chip(selectedAnchor, slot))
+        ),
+        selectedAnchor.wired !== true ? h("p", { className: "ptcPlusPromptHint" }, t2("capabilities.prompt.unwiredRow", { slots: selectedAnchor.unmeasuredSlots })) : editorFor(selectedAnchor)
       )
-    ));
-    const builtinBytes = (text) => new TextEncoder().encode(text).length;
-    const changed = account.anchors.map((anchor) => {
-      const slots = anchor.slots.map((slot) => ({ slot, builtin: PROMPT_ASSETS.find((asset) => asset.id === slot.slotId)?.defaultText })).filter((entry) => typeof entry.builtin === "string" && Object.hasOwn(document2.overrides, entry.slot.slotId) && document2.overrides[entry.slot.slotId] !== entry.builtin).map((entry) => ({ ...entry, effective: document2.overrides[entry.slot.slotId] }));
-      if (slots.length === 0) return void 0;
-      const before = slots.reduce((sum, entry) => sum + builtinBytes(entry.builtin), 0);
-      const after = slots.reduce((sum, entry) => sum + builtinBytes(entry.effective), 0);
+    );
+    const changes = account.anchors.flatMap((anchor) => anchor.slots.map((slot) => ({ slot, builtin: PROMPT_ASSETS.find((asset) => asset.id === slot.slotId)?.defaultText })).filter((entry) => typeof entry.builtin === "string" && Object.hasOwn(overrides2, entry.slot.slotId) && overrides2[entry.slot.slotId] !== entry.builtin).map((entry) => {
+      const effective = overrides2[entry.slot.slotId];
       const effect = anchor.channel === "plan" ? t2("capabilities.prompt.effectPlan") : anchor.channel === "install" ? t2("capabilities.prompt.effectInstall") : anchor.channel === "prompt" ? t2("capabilities.prompt.effectPrompt") : t2("capabilities.prompt.effectTrigger");
-      return { anchor, delta: after - before, effect, slots };
-    }).filter(Boolean);
-    const diff = changed.length === 0 ? null : h(
+      return {
+        anchor,
+        slot: entry.slot,
+        effect,
+        before: byteCount(entry.builtin),
+        after: byteCount(effective),
+        delta: byteCount(effective) - byteCount(entry.builtin)
+      };
+    }));
+    const restoreSlot = (slotId) => update(slotId, void 0);
+    const diffPanel = h(
       "section",
       {
-        className: "ptcPlusPromptDiff",
-        "data-prompt-diff": "true"
+        className: "ptcPlusPromptPanel",
+        ...changes.length === 0 ? {} : { "data-prompt-diff": "true" },
+        "data-prompt-diff-panel": "true"
       },
-      h("h5", null, t2("capabilities.prompt.diffTitle")),
-      ...changed.map((entry) => h(
+      h("h5", { className: "ptcPlusPromptPanelTitle" }, t2("capabilities.prompt.diffTitle")),
+      changes.length === 0 ? h("p", { className: "ptcPlusPromptHint" }, t2("capabilities.prompt.diffEmpty")) : h(
+        "ul",
+        { className: "ptcPlusPromptDiffList" },
+        ...changes.map((entry, index2) => h(
+          "li",
+          {
+            key: entry.slot.slotId,
+            className: "ptcPlusPromptDiffRow",
+            "data-diff-anchor": entry.anchor.anchorId,
+            "data-diff-slot": entry.slot.slotId
+          },
+          h("span", { className: "ptcPlusPromptDot", "data-tone": String(index2 % 3) }),
+          h(
+            "span",
+            { className: "ptcPlusPromptDiffBody" },
+            h(
+              "span",
+              { className: "ptcPlusPromptDiffHead" },
+              h("code", { className: "ptcPlusPromptDiffSlot" }, entry.slot.slotId),
+              h("span", { className: "ptcPlusPromptHint" }, entry.effect)
+            ),
+            h(
+              "span",
+              { className: "ptcPlusPromptDiffDelta" },
+              t2("capabilities.prompt.diffBytes", {
+                before: group(entry.before),
+                after: group(entry.after),
+                delta: entry.delta > 0 ? `+${group(entry.delta)}` : group(entry.delta)
+              }),
+              h("button", {
+                type: "button",
+                disabled: blocked,
+                onClick: () => restoreSlot(entry.slot.slotId)
+              }, t2("capabilities.prompt.reset"))
+            )
+          )
+        ))
+      ),
+      h(
         "div",
-        {
-          key: entry.anchor.anchorId,
-          className: "ptcPlusPromptDiffRow",
-          "data-diff-anchor": entry.anchor.anchorId
-        },
-        h("code", { className: "ptcPlusPromptAnchorId" }, entry.anchor.anchorId),
-        h(
-          "span",
-          { className: "ptcPlusPromptChipNote", "data-diff-delta": String(entry.delta) },
-          t2("capabilities.prompt.diffDelta", {
-            delta: entry.delta > 0 ? `+${entry.delta}` : String(entry.delta)
-          })
-        ),
-        h("span", { className: "ptcPlusPromptChipNote" }, entry.effect),
+        { className: "ptcPlusPromptActions" },
         h("button", {
           type: "button",
-          disabled: blocked,
-          onClick: () => {
-            const overrides2 = { ...document2.overrides };
-            for (const item of entry.slots) delete overrides2[item.slot.slotId];
-            write2(overrides2);
-          }
-        }, t2("capabilities.prompt.reset"))
-      ))
+          className: "ptcPlusPromptPrimary",
+          disabled: blocked || !pending,
+          onClick: save
+        }, t2("capabilities.prompt.save")),
+        h(
+          "button",
+          { type: "button", disabled: blocked || !pending, onClick: cancel },
+          t2("capabilities.prompt.cancel")
+        )
+      )
     );
     return h(
       "section",
@@ -11061,49 +11119,41 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         className: "ptcPlusPromptText",
         "data-prompt-paused": paused ? "true" : "false"
       },
-      h("p", null, t2("capabilities.prompt.intro")),
+      h(
+        "header",
+        { className: "ptcPlusPromptHeader" },
+        h("span", { className: "ptcPlusPromptHeaderIcon" }, icon(["M10 2.5 12 8l5.5 2-5.5 2-2 5.5-2-5.5L2.5 10 8 8Z"])),
+        h(
+          "span",
+          { className: "ptcPlusPromptHeaderBody" },
+          h("h4", { className: "ptcPlusPromptTitle" }, t2("capabilities.prompt.title")),
+          h("p", { className: "ptcPlusPromptSubtitle" }, t2("capabilities.prompt.subtitle"))
+        )
+      ),
       paused ? h(
         "p",
         { className: "ptcPlusPromptPaused", role: "status", "data-prompt-paused-notice": "true" },
         t2("capabilities.prompt.paused")
       ) : null,
-      readError === void 0 ? null : h("p", { className: "ptcPlusDetail" }, t2("capabilities.prompt.unreadable", { error: readError })),
+      readError === void 0 ? null : h("p", { className: "ptcPlusPromptHint" }, t2("capabilities.prompt.unreadable", { error: readError })),
       ...resolved.reported.map((entry, index2) => h(
         "p",
-        { key: `report-${index2}`, className: "ptcPlusDetail" },
+        { key: `report-${index2}`, className: "ptcPlusPromptHint" },
         t2("capabilities.prompt.reported", {
           asset: entry.slotId ?? entry.anchorId ?? "document",
           reason: entry.reason
         })
       )),
       cards,
-      totals,
+      strip,
       h(
         "p",
-        { className: "ptcPlusDetail", "data-prompt-retention": "true" },
-        t2("capabilities.prompt.retention", {
-          runs: value?.retentionPayloadRuns ?? 32,
-          bytes: `${Math.round((value?.retentionPayloadBytes ?? 8388608) / 1024)} KiB`,
-          clusters: value?.retentionClusters === 0 ? t2("capabilities.prompt.retentionUnlimited") : value?.retentionClusters ?? 5e3
-        })
+        { className: "ptcPlusPromptHint", "data-prompt-slot-counts": "true" },
+        t2("capabilities.prompt.slotCounts", { bytes: group(measuredBytes), unmeasured: unmeasuredSlots, dynamic: dynamicSlots })
       ),
-      diff,
-      unwiredAnchors.length === 0 ? null : h(
-        "p",
-        { className: "ptcPlusDetail" },
-        t2("capabilities.prompt.unwiredSummary", { anchors: unwiredAnchors.length, slots: unmeasuredSlots })
-      ),
-      h(
-        "table",
-        { className: "ptcPlusPromptTable" },
-        h(
-          "colgroup",
-          null,
-          PROMPT_TABLE_COLUMN_KEYS.map((key) => h("col", { key, className: `ptcPlusPromptCol-${key}` }))
-        ),
-        header,
-        h("tbody", null, ...rows.flat(1).filter(Boolean), ...hostRows)
-      )
+      table,
+      h("div", { className: "ptcPlusPromptPanels" }, anchorPanel, diffPanel),
+      h("p", { className: "ptcPlusPromptIntro" }, t2("capabilities.prompt.intro"))
     );
   }
   function CapabilityWorkbench({
@@ -11184,7 +11234,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           "aria-labelledby": `${id2}-tab-${key}`,
           hidden: tab !== key
         },
-        h(
+        key === "prompt" ? null : h(
           "div",
           { className: "ptcPlusTaskHead" },
           h("h4", null, t2(`capabilities.title.${key}`)),
@@ -40478,48 +40528,68 @@ var CLIENT_CSS = `
 .ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelectTrigger{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityFilterFields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex:1 1 160px}.ptcPlusCapabilityOnlyCommon{display:flex;align-items:center;gap:6px;font-size:12px}.ptcPlusCapabilityOnlyCommon input{width:16px;height:16px;margin:0}.ptcPlusCapabilityResultLine,.ptcPlusActiveFilters{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}
 .ptcPlusCapabilityTable{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr);align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilitySort{appearance:none;display:inline-flex;align-items:center;justify-content:flex-start;gap:4px;width:100%;min-height:28px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusCapabilitySort>span{display:inline-flex;flex:none;align-items:center;justify-content:center;width:11px;height:11px;font-size:10px;line-height:1}.ptcPlusCapabilityColumns [aria-sort=ascending],.ptcPlusCapabilityColumns [aria-sort=descending]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityContextCell>.ptcPlusCapabilityContext{width:100%}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem:not([data-selected=true]){cursor:pointer}.ptcPlusCapabilityItem:not([data-selected=true]):hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityName{font-size:13px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityAvailability{display:flex;align-items:center;gap:6px;font-size:11px}.ptcPlusCapabilityAvailability[data-state=closed],.ptcPlusCapabilityAvailability[data-state=unapplied],.ptcPlusCapabilityAvailability[data-state=source-closed],.ptcPlusCapabilityAvailability[data-state=unknown],.ptcPlusCapabilityAvailability[data-state=unavailable]{color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityContext{appearance:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 2px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:center;cursor:pointer}.ptcPlusCapabilityContext{justify-content:space-between;text-align:start}.ptcPlusCapabilityContext svg{flex:none;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .ptcPlusCapabilityEditorFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
-.ptcPlusPromptText{display:flex;flex-direction:column;gap:10px;min-width:0}
-.ptcPlusPromptCards{display:flex;flex-wrap:wrap;gap:10px}
-.ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
-.ptcPlusPromptTable{width:100%;border-collapse:collapse;table-layout:fixed;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
-.ptcPlusPromptCol-channel{width:56px}
-.ptcPlusPromptCol-anchor{width:26%}
-.ptcPlusPromptCol-presence{width:11%}
-.ptcPlusPromptCol-bytes{width:22%}
-.ptcPlusPromptCol-reason{width:12%}
-.ptcPlusPromptCol-kind{width:12%}
-.ptcPlusPromptRow{border-top:1px solid var(--dsw-alias-border-l2)}
-.ptcPlusPromptRow:first-child{border-top:0}
-.ptcPlusPromptRow:hover>td{background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptRow[data-host-row]>td{background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptHeader>th{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;text-align:left;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
-.ptcPlusPromptCell{padding:8px 10px;font-size:11px;line-height:18px;vertical-align:top;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
-.ptcPlusPromptCell[data-cell=anchor]{color:var(--dsw-alias-label-primary)}
-.ptcPlusPromptCell[data-cell=bytes]{white-space:normal;text-overflow:clip}.ptcPlusPromptCell[data-cell=bytes] small{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:2px}
-.ptcPlusPromptCell[data-cell=reason]{white-space:normal}
-.ptcPlusPromptChipsRow>td{padding:0 10px 6px;white-space:normal;border-top:0}
-.ptcPlusPromptChipsRow:hover>td{background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptEditorRow>td{padding:0 10px 10px;background:transparent}.ptcPlusPromptEditorRow textarea{width:100%}
-.ptcPlusPromptTextarea{color:var(--dsw-alias-label-primary)}
-@media(max-width:720px){.ptcPlusPromptTable{table-layout:auto}.ptcPlusPromptHeader>th:nth-child(1),.ptcPlusPromptHeader>th:nth-child(3),.ptcPlusPromptHeader>th:nth-child(5),.ptcPlusPromptHeader>th:nth-child(6){display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=channel],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=reason],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=kind]{display:none}}
-.ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
-.ptcPlusPromptAnchorCell{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;min-width:0}
-.ptcPlusPromptOwnerBadge{display:inline-flex;align-items:center;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;font-size:10px;line-height:16px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}.ptcPlusPromptDiff{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-state-business-primary,#4d6bfe);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPromptDiff h5{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-primary)}.ptcPlusPromptDiffRow{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}.ptcPlusPromptAnchorId{display:block;min-width:0;flex:1 1 auto;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ptcPlusPromptAnchorMeta{flex:1 1 220px;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
-.ptcPlusPromptAnchorBytes{flex:none;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.ptcPlusPromptChips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;grid-column:1/-1}
-.ptcPlusPromptChip{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:1px 4px;appearance:none;max-width:100%;padding:2px 6px;font-size:10px;line-height:16px;8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:16px;text-align:start;cursor:pointer}
-.ptcPlusPromptChip[aria-pressed=true]{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-state-business-primary,#4d6bfe)}
+.ptcPlusPromptText{display:flex;flex-direction:column;gap:12px;min-width:0}
+.ptcPlusPromptHeader{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.ptcPlusPromptHeaderIcon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:20px;height:20px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptHeaderBody{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ptcPlusPromptTitle{margin:0;font-size:15px;line-height:22px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptSubtitle{margin:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptCards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.ptcPlusPromptCard{display:flex;align-items:center;gap:10px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.ptcPlusPromptCardIcon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptCardBody{display:flex;flex-direction:column;gap:1px;min-width:0}
+.ptcPlusPromptCardLabel{font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptCardValue,.ptcPlusPromptCardMeta{font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.ptcPlusPromptCardMeta{color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptStrip{margin:0;padding:6px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptIntro{margin:0;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptTable{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11.5px;line-height:18px;color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptTable th{padding:6px 8px;font-size:11px;font-weight:500;text-align:left;color:var(--dsw-alias-label-secondary);border-bottom:1px solid var(--dsw-alias-border-l2);white-space:nowrap}
+.ptcPlusPromptTable td{padding:6.5px 8px;border-bottom:1px solid color-mix(in srgb,var(--dsw-alias-border-l2) 55%,transparent);vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ptcPlusPromptTable tbody tr:nth-child(even){background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 45%,transparent)}
+.ptcPlusPromptTable tbody tr{cursor:pointer}
+.ptcPlusPromptTable tbody tr:hover{background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 80%,transparent)}
+.ptcPlusPromptTable tbody tr[aria-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 10%,transparent)}
+.ptcPlusPromptTable tbody tr:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}
+.ptcPlusPromptColIndex{width:30px}.ptcPlusPromptColChannel{width:64px}.ptcPlusPromptColPresence{width:13%}.ptcPlusPromptColBytes{width:32%}.ptcPlusPromptColReason{width:16%}.ptcPlusPromptColKind{width:12%}
+.ptcPlusPromptIndex{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary);text-align:right}
+.ptcPlusPromptChannel{display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-size:10.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:11px;color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptPresence{display:inline-flex;align-items:center;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;font-size:10.5px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptBytesCell{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10.5px}
+.ptcPlusPromptSplit{margin-left:4px;font-family:inherit;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptReasonCell,.ptcPlusPromptKindCell{font-size:10.5px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.ptcPlusPromptTag{display:inline-flex;align-items:center;margin-left:6px;padding:0 5px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;font-size:10px;line-height:16px;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptHostRow{background:var(--dsw-alias-bg-layer-2);cursor:default}
+.ptcPlusPromptPanels{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;align-items:stretch}
+.ptcPlusPromptPanel{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.ptcPlusPromptPanelTitle{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptPanelBody,.ptcPlusPromptEditor{display:flex;flex-direction:column;gap:8px;min-width:0}
+.ptcPlusPromptHint{margin:0;font-size:10.5px;line-height:17px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptChips{display:flex;flex-wrap:wrap;gap:6px;min-width:0}
+.ptcPlusPromptChip{display:inline-flex;align-items:center;gap:4px;appearance:none;max-width:100%;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-1);font-size:10.5px;line-height:18px;color:var(--dsw-alias-label-primary);cursor:pointer}
+.ptcPlusPromptChip[aria-pressed=true]{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff}
 .ptcPlusPromptChip[data-readonly=true]{cursor:default;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
 .ptcPlusPromptChipLabel{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);overflow-wrap:anywhere}
 .ptcPlusPromptChipNote{color:var(--dsw-alias-label-tertiary);overflow-wrap:anywhere}
-.ptcPlusPromptEditor{display:flex;flex-direction:column;gap:6px;min-width:0}
-.ptcPlusPromptEditor textarea{width:100%;box-sizing:border-box;min-height:64px;resize:vertical;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px}
-.ptcPlusPromptEditorFoot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}
-.ptcPlusPromptEditorFoot>.ptcPlusDetail{margin:0}
-.ptcPlusPromptPaused{padding:8px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}.ptcPlusCapabilityField{display:flex;flex-direction:column;gap:6px;min-width:0;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityField>.ptcPlusSelectTrigger{width:100%;max-width:100%}.ptcPlusCapabilitySwitchRow{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:16px}.ptcPlusCapabilitySwitchText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilitySwitchLabel{font-size:13px}.ptcPlusCapabilitySwitchHint{font-size:11px;color:var(--dsw-alias-label-tertiary)}@media(max-width:520px){.ptcPlusCapabilityEditorFields{grid-template-columns:minmax(0,1fr)}}.ptcPlusCapabilityNotice{padding:10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);font-size:12px;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection{margin-top:16px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}.ptcPlusCapabilityEditorSection h5{margin:0 0 8px;font-size:11px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityEditorSection>.ptcPlusCapabilityProse{margin:0;font-size:12px;line-height:20px;white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityEditorSection>.ptcPlusDetail{margin:0 0 8px}.ptcPlusCapabilityEmpty{padding:20px 10px;text-align:center}
+.ptcPlusPromptChip[aria-pressed=true] .ptcPlusPromptChipNote{color:inherit;opacity:.85}
+.ptcPlusPromptTextarea{width:100%;box-sizing:border-box;min-height:132px;resize:vertical;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:11px;line-height:18px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptEditorFoot{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.ptcPlusPromptEditorActions{display:flex;gap:8px;margin-left:auto}
+.ptcPlusPromptDiffList{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none;min-width:0}
+.ptcPlusPromptDiffRow{display:flex;align-items:flex-start;gap:8px;min-width:0}
+.ptcPlusPromptDot{flex:none;width:7px;height:7px;margin-top:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#22a06b)}
+.ptcPlusPromptDot[data-tone="1"]{background:var(--dsw-alias-state-business-primary,#4d6bfe)}
+.ptcPlusPromptDot[data-tone="2"]{background:var(--dsw-alias-state-warn-primary,#d98e04)}
+.ptcPlusPromptDiffBody{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
+.ptcPlusPromptDiffHead{display:flex;align-items:baseline;justify-content:space-between;gap:8px;min-width:0}
+.ptcPlusPromptDiffSlot{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ptcPlusPromptDiffDelta{display:flex;align-items:center;gap:8px;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptDiffDelta button{font-family:inherit;font-size:10px}
+.ptcPlusPromptActions{display:flex;justify-content:flex-end;gap:8px;margin-top:auto;padding-top:6px}
+.ptcPlusPromptPrimary{border-color:var(--dsw-alias-state-business-primary,#4d6bfe)!important;background:var(--dsw-alias-state-business-primary,#4d6bfe)!important;color:#fff!important}
+.ptcPlusPromptPaused{padding:8px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px;margin:0}
+@media(max-width:900px){.ptcPlusPromptCards{grid-template-columns:repeat(2,minmax(0,1fr))}.ptcPlusPromptPanels{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusPolicyRules{padding:14px;margin:12px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPolicyRules h4{margin:0}.ptcPlusPolicyRule{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}.ptcPlusPolicyRule>strong{flex:1 1 100px;min-width:0;overflow-wrap:anywhere;font-size:12px}.ptcPlusPolicyRule>.ptcPlusCapabilityFilter{flex:1 1 160px}
 .ptcPlusContextLayout{display:grid;grid-template-columns:minmax(140px,27%) minmax(0,1fr);gap:20px;margin-top:16px}.ptcPlusContextNavigation{display:flex;flex-direction:column;gap:6px;padding:12px 12px 12px 0;border-right:1px solid var(--dsw-alias-border-l2)}.ptcPlusContextNavigation button{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px;appearance:none;border:0;border-left:3px solid transparent;border-radius:4px;padding:14px 12px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;text-align:start;cursor:pointer}.ptcPlusContextNavigation [aria-selected=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusContextState{font-size:11px;line-height:18px;white-space:nowrap;color:var(--dsw-alias-label-secondary)}.ptcPlusContextState[data-enabled=true]{color:var(--dsw-alias-state-success-primary)}.ptcPlusContextState[data-paused=true]{color:var(--dsw-alias-state-warn-primary)}.ptcPlusContextSummary{flex-basis:100%;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:normal;overflow-wrap:anywhere}.ptcPlusContextContent{min-width:0;padding:12px 0}.ptcPlusContextContent h4{font-size:16px;margin:0}.ptcPlusContextContent h5{font-size:13px;line-height:20px;margin:0 0 12px}.ptcPlusContextContent>.ptcPlusCapabilityFilter{margin-top:16px}.ptcPlusPolicyAllocation{margin:18px 0}.ptcPlusAllocationChoices{display:flex;flex-wrap:wrap;gap:16px}.ptcPlusAllocationChoices label{display:flex;align-items:center;gap:8px;font-size:12px}.ptcPlusContextQuota,.ptcPlusAllocationPreview{margin:16px 0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
 .ptcPlusCapabilityWorkbench .ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff);border-color:transparent}.ptcPlusCapabilityWorkbench summary{cursor:pointer;line-height:22px;font-size:12px}.ptcPlusCapabilityWorkbench summary:focus-visible,.ptcPlusCapabilityWorkbench button:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilitySessionTools{margin-top:18px;padding-top:10px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityApply{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin:12px 0}.ptcPlusCapabilityApply>.ptcPlusCapabilityFilter{flex:1 1 200px}.ptcPlusCapabilityRefresh{display:flex;flex-wrap:wrap;align-items:center;gap:8px;min-width:0}.ptcPlusCapabilityRefresh p{flex-basis:100%;margin:0;overflow-wrap:anywhere}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh{flex:1;align-self:stretch}.ptcPlusMenuUtilities .ptcPlusCapabilityRefresh>.ptcPlusMenuButton{width:100%}
@@ -41500,6 +41570,20 @@ var CHROME_COPY = Object.freeze({
     "capabilities.tab.manual": "\u80FD\u529B\u914D\u7F6E",
     "capabilities.tab.prompt": "\u63D0\u793A\u6587\u672C",
     "capabilities.title.prompt": "\u6A21\u578B\u53EF\u89C1\u7684\u56FA\u5B9A\u63D0\u793A\u6587\u672C",
+    "capabilities.prompt.title": "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587 \xB7 \u63D0\u793A\u6587\u672C",
+    "capabilities.prompt.subtitle": "\u6A21\u578B\u53EF\u89C1\u4E0A\u4E0B\u6587\u7EDF\u4E00\u88C5\u914D\u53F0 \xB7 \u5168\u90E8\u5728\u518C",
+    "capabilities.prompt.bytesPair": "{bytes} B\uFF08{kb} KB\uFF09",
+    "capabilities.prompt.slotCounts": "\u5DF2\u6D4B {bytes} B \xB7 \u672A\u6D4B\u69FD {unmeasured} \xB7 \u52A8\u6001\u69FD {dynamic}",
+    "capabilities.prompt.cardMetaAnchors": "{count} \u4E2A\u951A\u70B9",
+    "capabilities.prompt.strip": "\u672A\u7EB3\u7BA1 {anchors} \u4E2A\u951A\u70B9 \xB7 \u5408\u8BA1 {bytes} B\uFF08{kb} KB\uFF09\xB7 \u5171 {total} \u4E2A\u951A\u70B9",
+    "capabilities.prompt.rowExpand": "\u7B2C {index} \u884C\u5C55\u5F00",
+    "capabilities.prompt.rowExpandHint": "\u9009\u62E9\u4E0A\u8868\u7684\u4E00\u884C\uFF0C\u5728\u8FD9\u91CC\u7F16\u8F91\u5B83\u7684\u69FD\u4F4D\u3002",
+    "capabilities.prompt.bytesOfLimit": "{used} / {max} B\uFF08\u69FD\u4E0A\u9650\uFF09",
+    "capabilities.prompt.unwiredTag": "\u901A\u9053\u672A\u63A5\u901A",
+    "capabilities.prompt.diffEmpty": "\u8FD8\u6CA1\u6709\u5F85\u4FDD\u5B58\u7684\u6539\u52A8\u3002",
+    "capabilities.prompt.diffBytes": "{before} B \u2192 {after} B\uFF08{delta}\uFF09",
+    "capabilities.prompt.save": "\u4FDD\u5B58",
+    "capabilities.prompt.cancel": "\u53D6\u6D88",
     "capabilities.prompt.intro": "\u6309\u951A\u70B9\u4E0E\u69FD\u4F4D\u8986\u76D6\u63D2\u4EF6\u5199\u7ED9\u6A21\u578B\u7684\u56FA\u5B9A\u6587\u672C\uFF1B\u6BCF\u4E00\u884C\u6807\u6CE8\u6240\u5C5E\u901A\u9053\u3001\u5B58\u5728\u6761\u4EF6\u4E0E\u53EA\u8BFB\u539F\u56E0\uFF0C\u751F\u6548\u65F6\u673A\u968F\u901A\u9053\u4E0D\u540C\uFF08\u4E0B\u4E00\u6B21\u8BF7\u6C42\u3001\u65B0\u4F1A\u8BDD\u6216\u4E0B\u6B21\u89E6\u53D1\uFF09\u3002\u7F16\u8F91\u6846\u7559\u7A7A\u8868\u793A\u6062\u590D\u5185\u7F6E\u6587\u672C\uFF1B\u201C\u7701\u7565\u8BE5\u6BB5\u201D\u53EA\u5728\u53EF\u7701\u7565\u7684\u69FD\u4F4D\u4E0A\u51FA\u73B0\uFF0C\u8868\u793A\u4E0D\u6295\u9012\u90A3\u4E00\u6BB5\u3002\u534F\u8BAE\u6587\u672C\u3001\u7531\u914D\u7F6E\u6216\u8FD0\u884C\u4E8B\u5B9E\u751F\u6210\u7684\u53E5\u5B50\uFF0C\u4EE5\u53CA\u4F60\u81EA\u5DF1\u5199\u7684\u7ED1\u5B9A\u8BF4\u660E\u53EA\u8BFB\u5C55\u793A\u3002",
     "capabilities.prompt.bytes": "{used} / {max} \u5B57\u8282",
     "capabilities.prompt.reset": "\u6062\u590D\u5185\u7F6E",
@@ -42200,6 +42284,20 @@ var CHROME_COPY = Object.freeze({
     "capabilities.tab.manual": "Capability configuration",
     "capabilities.tab.prompt": "Prompt text",
     "capabilities.title.prompt": "Fixed prompt text the model reads",
+    "capabilities.prompt.title": "Capabilities & Context \xB7 Prompt text",
+    "capabilities.prompt.subtitle": "One surface for the model-visible context \xB7 everything on record",
+    "capabilities.prompt.bytesPair": "{bytes} B ({kb} KB)",
+    "capabilities.prompt.slotCounts": "Measured {bytes} B \xB7 {unmeasured} unmeasured slots \xB7 {dynamic} dynamic slots",
+    "capabilities.prompt.cardMetaAnchors": "{count} anchors",
+    "capabilities.prompt.strip": "{anchors} anchors not wired \xB7 {bytes} B ({kb} KB) total \xB7 {total} anchors",
+    "capabilities.prompt.rowExpand": "Row {index} expanded",
+    "capabilities.prompt.rowExpandHint": "Select a row above to edit its slots here.",
+    "capabilities.prompt.bytesOfLimit": "{used} / {max} B (slot limit)",
+    "capabilities.prompt.unwiredTag": "channel not wired",
+    "capabilities.prompt.diffEmpty": "No pending changes.",
+    "capabilities.prompt.diffBytes": "{before} B \u2192 {after} B ({delta})",
+    "capabilities.prompt.save": "Save",
+    "capabilities.prompt.cancel": "Cancel",
     "capabilities.prompt.intro": "Override the fixed text the plugin writes, per anchor and slot. Each row names its channel, presence condition and read-only reason, and when an edit takes effect depends on that channel (next request, new session, or next trigger). Clearing the editor restores the built-in text; \u201Comit this paragraph\u201D appears only on omittable slots and means the paragraph is not delivered. Protocol text, sentences generated from configuration or runtime facts, and the binding notes you wrote yourself stay read-only.",
     "capabilities.prompt.bytes": "{used} / {max} bytes",
     "capabilities.prompt.reset": "Use built-in",

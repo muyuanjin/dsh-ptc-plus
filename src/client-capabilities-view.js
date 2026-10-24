@@ -955,133 +955,171 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const paused = value.capabilityPromptTextEnabled === false
     const blocked = paused || disabled === true
       || (typeof disabled === 'function' && disabled('promptText') === true)
-    // The pane accounts for the saved document, which is what a save would write;
-    // when the feature is paused the notice and the per-anchor label say the bytes
-    // are not applied, so a number here can never read as a delivered byte.
     const resolved = resolvePromptText(value.promptText)
-    const [openSlots, setOpenSlots] = React.useState({})
-    // The panel is the accounting view: cards, totals and per-anchor rows all come
-    // from accountPromptText, so a number on screen can be traced to a slot.
     const account = accountPromptText(resolved)
-    const write = overrides => {
-      onChange(CONFIG_FIELDS.find(field => field.key === 'promptText'),
-        JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides }))
-    }
+    // The pane stages edits in a draft and writes the document once, so the fields
+    // and the preview always describe the same pending bytes. 保存 writes the draft;
+    // 取消 drops it; a saved document still differs from the built-ins, so reopening
+    // the pane shows that difference without a draft.
+    const [draft, setDraft] = React.useState(null)
+    const [selectedAnchorId, setSelectedAnchorId] = React.useState(null)
+    const [openSlots, setOpenSlots] = React.useState({})
+    const overrides = draft ?? document.overrides
+    const byteCount = text => new TextEncoder().encode(text).length
+    const group = number => String(Math.round(number)).replace(/\B(?=(\d{3})+(?!\d))/gu, ' ')
+    const bytePair = bytes => t('capabilities.prompt.bytesPair', {
+      bytes: group(bytes), kb: (bytes / 1024).toFixed(1),
+    })
+    const write = next => onChange(CONFIG_FIELDS.find(field => field.key === 'promptText'),
+      JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, overrides: next }))
     const update = (slotId, next) => {
-      const overrides = { ...document.overrides }
-      if (next === undefined) delete overrides[slotId]
-      else overrides[slotId] = next
-      write(overrides)
+      const base = { ...overrides }
+      if (next === undefined) delete base[slotId]
+      else base[slotId] = next
+      setDraft(base)
     }
-    // Two slot labels, never derived from each other:
-    // - 未测槽: slots on a channel this build has not wired to the resolver yet,
-    // - 动态槽: slots on a wired anchor whose composer produces the bytes at
-    //   assembly time (policy prose, user-supplied instructions).
-    // 投递未证 stays out of this panel: only a boundary capture lane can report it.
+    const save = () => {
+      if (draft === null) return
+      write(draft)
+      setDraft(null)
+    }
+    const cancel = () => setDraft(null)
+    const pending = draft !== null
     const unmeasuredSlots = account.counts.unmeasuredSlots
     const dynamicSlots = account.counts.dynamicSlots
     const unwiredAnchors = account.anchors.filter(anchor => anchor.wired !== true)
     const measuredBytes = account.owners.A + account.owners.B + account.owners.C
-    // A card prints the bytes this build can actually measure, and names how many
-    // of that owner's slots are still unconnected. An owner with nothing measured
-    // prints only the suffix: a bare 0 B would read as "this owner costs nothing".
-    // A card that carries projected slots also says those numbers are template
-    // bytes, because the holes are filled from runtime facts when the slot renders.
-    const card = (key, labelKey) => {
-      const unmeasured = account.counts.unmeasured[key]
-      const dynamic = account.counts.dynamic[key]
-      const bytes = account.owners[key]
-      const projected = account.slots.some(slot => slot.owner === key && slot.measured && slot.kind === 'projected')
-      const measured = bytes > 0
-        ? h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardBytes', { bytes }))
-        : null
-      return h('div', { key, className: 'ptcPlusCapabilityField', 'data-owner': key },
-        h('span', null, t(labelKey)),
-        measured,
-        projected
-          ? h('span', { className: 'ptcPlusDetail', 'data-prompt-template-bytes': 'true' },
-            t('capabilities.prompt.templateBytes'))
-          : null,
-        unmeasured === 0
-          ? null
-          : h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardUnwired', { count: unmeasured })),
-        // A dynamic slot is measured at assembly, so it carries no bytes here; the
-        // card must still account for it or the owner reads as if it had nothing.
-        dynamic === 0
-          ? null
-          : h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardDynamic', { count: dynamic })))
+    const ownerOf = anchor => (anchor.owner === 'mixed' ? 'mixed' : anchor.owner)
+    const ownerAnchors = key => account.anchors.filter(anchor => ownerOf(anchor) === key).length
+    // Icons are monochrome inline SVG: the mockup's cards carry a glyph, and an
+    // icon font or an emoji would bring its own colour into the settings surface.
+    const icon = path => h('svg', {
+      viewBox: '0 0 20 20', width: 16, height: 16, fill: 'none', stroke: 'currentColor',
+      'stroke-width': 1.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true',
+    }, ...path.map((d, index) => h('path', { key: index, d })))
+    const card = (key, labelKey, glyph) => {
+      const mixed = key === 'mixed'
+      const bytes = account.owners[key] ?? 0
+      const value_ = mixed
+        ? t('capabilities.prompt.cardMixed', { count: ownerAnchors('mixed') })
+        : bytes > 0
+          ? `${bytePair(bytes)} · ${t('capabilities.prompt.cardMetaAnchors', { count: ownerAnchors(key) })}`
+          : t('capabilities.prompt.cardMetaAnchors', { count: ownerAnchors(key) })
+      return h('div', { key, className: 'ptcPlusPromptCard', 'data-owner': key },
+        h('span', { className: 'ptcPlusPromptCardIcon' }, glyph),
+        h('span', { className: 'ptcPlusPromptCardBody' },
+          h('span', { className: 'ptcPlusPromptCardLabel' }, t(labelKey)),
+          mixed
+            ? h('span', { className: 'ptcPlusPromptCardMeta' }, value_)
+            : h('span', { className: 'ptcPlusPromptCardValue', 'data-owner-bytes': String(account.owners[key] ?? 0) }, value_)))
     }
     const cards = h('div', { className: 'ptcPlusPromptCards' },
-      card('A', 'capabilities.prompt.ownerEditable'),
-      card('B', 'capabilities.prompt.ownerReadOnly'),
-      card('C', 'capabilities.prompt.ownerOther'),
-      h('div', { key: 'mixed', className: 'ptcPlusCapabilityField' },
-        h('span', null, t('capabilities.prompt.ownerMixed')),
-        h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.cardMixed', { count: account.counts.mixed }))))
-    const totals = h('p', { className: 'ptcPlusDetail' }, t('capabilities.prompt.totals', {
-      bytes: measuredBytes,
-      anchors: account.counts.total,
-      unmeasured: unmeasuredSlots,
-      dynamic: dynamicSlots,
-    }))
-    const slotLabel = slot => {
-      if (slot.measured) return t('capabilities.prompt.slotBytes', { bytes: slot.bytes, owner: slot.owner })
-      if (slot.kind === 'aggregate') return t('capabilities.prompt.aggregateSlot')
-      return t(slot.unwired === true ? 'capabilities.prompt.unmeasuredSlot' : 'capabilities.prompt.dynamicSlot')
+      card('A', 'capabilities.prompt.ownerEditable', icon(['M4 16h3l9-9-3-3-9 9v3Z', 'M12.5 4.5 15.5 7.5'])),
+      card('B', 'capabilities.prompt.ownerReadOnly', icon(['M5.5 9V6.5a4.5 4.5 0 0 1 9 0V9', 'M4.5 9h11v7h-11Z'])),
+      card('C', 'capabilities.prompt.ownerOther', icon(['M10 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z', 'M4 17c0-3 2.7-5 6-5s6 2 6 5'])),
+      card('mixed', 'capabilities.prompt.ownerMixed', icon(['M4 6h12', 'M4 10h12', 'M4 14h12', 'M13 4v4', 'M7 8v4'])))
+    const strip = h('p', { className: 'ptcPlusPromptStrip', 'data-prompt-strip': String(unwiredAnchors.length) },
+      t('capabilities.prompt.strip', {
+        anchors: unwiredAnchors.length, bytes: group(measuredBytes),
+        kb: (measuredBytes / 1024).toFixed(1), total: account.counts.total,
+      }))
+    const reasonsOf = anchor => {
+      const reasons = [...new Set(anchor.slots.map(slot => slot.reason).filter(Boolean))]
+      return reasons.length === 0 ? '—' : reasons.map(reason => promptReasonLabel(t, reason)).join(' + ')
     }
-    const slotControl = (anchor, slot) => {
-      const override = Object.hasOwn(document.overrides, slot.slotId) ? document.overrides[slot.slotId] : undefined
-      const asset = PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)
-      if (asset === undefined || slot.owner !== 'A' || asset.defaultText === null) return null
-      const current = override ?? asset.defaultText
-      // The built-in sentence is the field's value, not a placeholder: the user must be
-      // able to tweak the shipped wording without retyping it. Only a read-only slot is
-      // muted, and it never renders a textarea at all.
-      return h('div', { key: `${slot.slotId}-control`, className: 'ptcPlusPromptEditor',
-        'data-editor-slot': slot.slotId },
-        h('textarea', {
-          id: `${id}-prompt-${slot.slotId}`, rows: 3, disabled: blocked, spellCheck: false,
-          className: 'ptcPlusPromptTextarea', 'aria-label': slot.slotId, value: current,
-          onChange: event => update(slot.slotId, event.target.value === '' ? undefined : event.target.value),
-        }),
-        h('div', { className: 'ptcPlusPromptEditorFoot' },
-          h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.bytes', {
-            used: slot.bytes, max: PROMPT_TEXT_MAX_SLOT_BYTES,
-          })),
-          override === '' ? h('span', { className: 'ptcPlusDetail' }, t('capabilities.prompt.omitted')) : null,
-          h('button', { type: 'button', disabled: blocked || override === undefined,
-            onClick: () => update(slot.slotId, undefined) }, t('capabilities.prompt.reset')),
-          asset.omittable ? h('button', { type: 'button', disabled: blocked,
-            onClick: () => update(slot.slotId, '') }, t('capabilities.prompt.omit')) : null))
+    const kindsOf = anchor => [...new Set(anchor.slots.map(slot => slot.kind))]
+      .map(kind => promptKindLabel(t, kind)).join(' + ')
+    const splitOf = anchor => {
+      const measured = anchor.slots.filter(slot => slot.measured === true && slot.bytes > 0)
+      return measured.length > 1
+        ? t('capabilities.prompt.anchorBytesSplit', {
+          parts: measured.map(slot => `${slot.slotId.split('.').pop()} ${slot.bytes}`).join(' / '),
+        })
+        : null
     }
-    // A slot chip is the only place a slot id appears. Editable slots are buttons
-    // that open the anchor's single editor; read-only slots are inert chips that
-    // carry their reason code and slot kind instead of a full-width field.
+    const select = anchorId => setSelectedAnchorId(anchorId)
+    const rowKey = (event, anchorId) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      select(anchorId)
+    }
+    const anchorRow = (anchor, index) => {
+      const split = splitOf(anchor)
+      return h('tr', {
+        key: anchor.anchorId,
+        className: 'ptcPlusPromptRow',
+        'data-anchor-id': anchor.anchorId,
+        'data-wired': anchor.wired === true ? 'true' : 'false',
+        'aria-selected': selectedAnchorId === anchor.anchorId ? 'true' : 'false',
+        tabIndex: 0,
+        onClick: () => select(anchor.anchorId),
+        onKeyDown: event => rowKey(event, anchor.anchorId),
+      },
+        h('td', { className: 'ptcPlusPromptIndex' }, String(index)),
+        h('td', null, h('span', { className: 'ptcPlusPromptChannel', 'data-channel': anchor.channel }, anchor.channel)),
+        h('td', null, h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId)),
+        h('td', null, h('span', { className: 'ptcPlusPromptPresence', title: t(anchor.presence) }, t(anchor.presence))),
+        h('td', { className: 'ptcPlusPromptBytesCell' },
+          anchor.wired !== true
+            ? h('span', { 'data-anchor-bytes': 'unwired' }, t('capabilities.prompt.unwiredRow', { slots: anchor.unmeasuredSlots }))
+            : h('span', { 'data-anchor-bytes': String(anchor.bytes) },
+              paused ? t('capabilities.prompt.pausedBytes', { bytes: anchor.bytes }) : t('capabilities.prompt.cardBytes', { bytes: anchor.bytes }),
+              split === null ? null : h('small', { className: 'ptcPlusPromptSplit', 'data-anchor-split': 'true' }, split))),
+        h('td', { className: 'ptcPlusPromptReasonCell' }, reasonsOf(anchor)),
+        h('td', { className: 'ptcPlusPromptKindCell' }, kindsOf(anchor),
+          anchor.wired !== true ? h('span', { className: 'ptcPlusPromptTag', 'data-prompt-unwired-tag': 'true' },
+            t('capabilities.prompt.unwiredTag')) : null))
+    }
+    const hostRow = (section, index) => h('tr', {
+      key: section.id, className: 'ptcPlusPromptRow ptcPlusPromptHostRow', 'data-host-row': section.id,
+    },
+      h('td', { className: 'ptcPlusPromptIndex' }, String(index)),
+      h('td', null, h('span', { className: 'ptcPlusPromptChannel' }, 'prompt')),
+      h('td', null, h('code', { className: 'ptcPlusPromptAnchorId', title: section.id }, section.id)),
+      h('td', null, h('span', { className: 'ptcPlusPromptPresence' }, t(section.presence))),
+      h('td', { className: 'ptcPlusPromptBytesCell' }, t('capabilities.prompt.hostUnavailable')),
+      h('td', { className: 'ptcPlusPromptReasonCell' }, '—'),
+      h('td', { className: 'ptcPlusPromptKindCell' }, t('capabilities.prompt.ownerHost')))
+    const table = h('table', { className: 'ptcPlusPromptTable' },
+      h('colgroup', null,
+        h('col', { className: 'ptcPlusPromptColIndex' }),
+        h('col', { className: 'ptcPlusPromptColChannel' }),
+        h('col', { className: 'ptcPlusPromptColAnchor' }),
+        h('col', { className: 'ptcPlusPromptColPresence' }),
+        h('col', { className: 'ptcPlusPromptColBytes' }),
+        h('col', { className: 'ptcPlusPromptColReason' }),
+        h('col', { className: 'ptcPlusPromptColKind' })),
+      h('thead', null, h('tr', null,
+        h('th', { scope: 'col', className: 'ptcPlusPromptIndex' }, ''),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnChannel')),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnAnchor')),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnPresence')),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnBytesSplit')),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnReason')),
+        h('th', { scope: 'col' }, t('capabilities.prompt.columnKind')))),
+      h('tbody', null,
+        ...account.anchors.map((anchor, index) => anchorRow(anchor, index + 1)),
+        ...HOST_CONTEXT_SECTIONS.map((section, index) => hostRow(section, account.anchors.length + index + 1))))
     const chip = (anchor, slot) => {
-      const markers = [
-        slot.measured && slot.kind === 'projected'
-          ? h('span', { key: 'template', className: 'ptcPlusPromptChipNote', 'data-prompt-template-bytes': 'true' },
-            t('capabilities.prompt.templateBytes'))
-          : null,
-        slot.kind === 'aggregate'
-          ? h('span', { key: 'aggregate', className: 'ptcPlusPromptChipNote', 'data-prompt-aggregate-set': 'true' },
-            t('capabilities.prompt.aggregateFrozen'))
-          : null,
-      ].filter(Boolean)
+      const templateBytes = slot.measured === true && slot.kind === 'projected'
+      const aggregateSet = slot.kind === 'aggregate'
       const shared = {
         className: 'ptcPlusPromptChip',
         'data-slot-id': slot.slotId,
         'data-slot-kind': slot.kind,
-        title: slot.slotId,
+        ...(templateBytes ? { 'data-prompt-template-bytes': 'true' } : {}),
+        ...(aggregateSet ? { 'data-prompt-aggregate-set': 'true' } : {}),
+        title: templateBytes
+          ? `${slot.slotId} · ${t('capabilities.prompt.templateBytes')}`
+          : aggregateSet ? `${slot.slotId} · ${t('capabilities.prompt.aggregateFrozen')}` : slot.slotId,
       }
       if (slot.owner !== 'A') {
         return h('span', { key: slot.slotId, ...shared, 'data-readonly': 'true' },
           h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
           h('span', { className: 'ptcPlusPromptChipNote' },
-            t('capabilities.prompt.readonlyReason', { reason: promptReasonLabel(t, slot.reason), kind: promptKindLabel(t, slot.kind) })),
-          ...markers)
+            t('capabilities.prompt.readonlyReason', { reason: promptReasonLabel(t, slot.reason), kind: promptKindLabel(t, slot.kind) })))
       }
-      const selected = openSlots[anchor.anchorId] === slot.slotId
+      const selected = (openSlots[anchor.anchorId] ?? editableSlots(anchor)[0]?.slotId) === slot.slotId
       return h('button', {
         key: slot.slotId,
         ...shared,
@@ -1089,175 +1127,133 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         disabled: blocked,
         'aria-pressed': selected,
         onClick: () => setOpenSlots(previous => ({ ...previous, [anchor.anchorId]: slot.slotId })),
-      },
-        h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
-        ...markers)
+      }, h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId))
     }
-    const rows = account.anchors.map(anchor => {
-      // One editor per anchor: the chips choose which editable slot is open, and the
-      // run_code anchor keeps its three descriptions behind one textarea.
-      const editableSlots = anchor.slots.filter(slot => slot.owner === 'A'
-        && PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)?.defaultText !== null)
-      const selectedId = openSlots[anchor.anchorId] ?? editableSlots[0]?.slotId
-      const selected = editableSlots.find(slot => slot.slotId === selectedId)
-      // An unwired anchor renders no control at all: its bytes are not delivered yet,
-      // so an editor here would promise an effect the build cannot produce.
-      const editor = anchor.wired !== true || editableSlots.length === 0 ? null : slotControl(anchor, selected)
-      // Byte column follows design §11.7: the anchor total plus the per-slot split,
-      // so a reader can see which slot the bytes come from without opening the editor.
-      const measuredSlots = anchor.slots.filter(slot => slot.measured === true && slot.bytes > 0)
-      const split = measuredSlots.length > 1
-        ? t('capabilities.prompt.anchorBytesSplit', {
-          parts: measuredSlots.map(slot => `${slot.slotId.split('.').pop()} ${slot.bytes}`).join(' / '),
-        })
-        : null
-      const bytes = anchor.wired !== true
-        ? h('span', { className: 'ptcPlusPromptAnchorBytes', 'data-anchor-bytes': 'unwired' },
-          t('capabilities.prompt.unwiredRow', { slots: anchor.unmeasuredSlots }))
-        : h('span', { className: 'ptcPlusPromptAnchorBytes', 'data-anchor-bytes': String(anchor.bytes) },
-          paused
-            ? t('capabilities.prompt.pausedBytes', { bytes: anchor.bytes })
-            : t('capabilities.prompt.cardBytes', { bytes: anchor.bytes }),
-          split === null ? null
-            : h('small', { className: 'ptcPlusPromptChipNote', 'data-anchor-split': 'true' }, split))
-      // The row carries its identity and wiring so a test can assert "one row per
-      // anchor", "no control on an unwired row" and "one textarea per wired anchor"
-      // without trusting the renderer. Cells follow the header columns, so the table
-      // stays aligned instead of turning into a pile of chips.
-      const status = anchor.owner === 'mixed'
-        ? t('capabilities.prompt.ownerMixed')
-        : anchor.owner === 'A' ? t('capabilities.prompt.ownerEditable')
-          : anchor.owner === 'B' ? t('capabilities.prompt.ownerReadOnly') : t('capabilities.prompt.ownerOther')
-      // Design §11.7 fixes six columns: channel, anchor, presence, bytes, reason code
-      // and slot kind. The codes and kinds come from the anchor's own slots so the
-      // table states what protects each row instead of hiding it in the chips.
-      const reasons = [...new Set(anchor.slots.map(slot => slot.reason).filter(Boolean))]
-      const kinds = [...new Set(anchor.slots.map(slot => slot.kind))]
-      const cells = [
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'channel' }, anchor.channel),
-        h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', 'data-cell': 'anchor' },
-          h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId),
-          h('span', { className: 'ptcPlusPromptOwnerBadge', 'data-owner-status': anchor.owner }, status)),
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence', title: anchor.presence }, anchor.presence),
-        h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', 'data-cell': 'bytes' }, bytes),
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason', title: reasons.join(' · ') },
-          reasons.length === 0 ? '—' : reasons.map(reason => promptReasonLabel(t, reason)).join(' · ')),
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind', title: kinds.join(' · ') }, kinds.map(kind => promptKindLabel(t, kind)).join(' · ')),
-      ]
-      // Chips live in their own full-width sub-row: a narrow slot column stacked one
-      // chip per line and turned every five-slot anchor into a 200 px block.
-      return [
-        h('tr', {
-          key: anchor.anchorId,
-          className: 'ptcPlusPromptRow',
-          'data-anchor-id': anchor.anchorId,
-          'data-wired': anchor.wired === true ? 'true' : 'false',
-          'data-paused': paused ? 'true' : 'false',
-        }, ...cells),
-        h('tr', { key: `${anchor.anchorId}-chips`, className: 'ptcPlusPromptChipsRow', 'data-anchor-chips': anchor.anchorId },
-          h('td', { className: 'ptcPlusPromptCell', colSpan: PROMPT_TABLE_COLUMNS },
-            h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot))))),
-        editor === null ? null : h('tr', { key: `${anchor.anchorId}-editor`, className: 'ptcPlusPromptEditorRow' },
-          h('td', { className: 'ptcPlusPromptCell', colSpan: PROMPT_TABLE_COLUMNS }, editor)),
-      ]
-    })
-    const headers = [
-      t('capabilities.prompt.columnChannel'), t('capabilities.prompt.columnAnchor'),
-      t('capabilities.prompt.columnPresence'), t('capabilities.prompt.columnBytesSplit'),
-      t('capabilities.prompt.columnReason'), t('capabilities.prompt.columnKind'),
-    ]
-    const header = h('thead', null, h('tr', { className: 'ptcPlusPromptHeader' },
-      ...headers.map((label, index) => h('th', { key: label, scope: 'col', role: 'columnheader', 'data-column': index }, label))))
-    // Host-owned context: read-only rows so the pane also answers what the host puts in
-    // the request. The plugin cannot edit these bytes and does not pretend otherwise.
-    const hostRows = HOST_CONTEXT_SECTIONS.map(section => h('tr', {
-      key: section.id, className: 'ptcPlusPromptRow ptcPlusPromptHostRow',
-      'data-host-row': section.id,
+    // One editor per anchor: the chips choose which editable slot is open, so the
+    // run_code anchor keeps its three descriptions behind one field.
+    const editableSlots = anchor => anchor.slots.filter(slot => slot.owner === 'A'
+      && PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)?.defaultText !== null)
+    const editorFor = anchor => {
+      const slots = editableSlots(anchor)
+      if (anchor.wired !== true || slots.length === 0) return null
+      const selectedId = openSlots[anchor.anchorId] ?? slots[0].slotId
+      const slot = slots.find(candidate => candidate.slotId === selectedId) ?? slots[0]
+      const asset = PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)
+      const override = Object.hasOwn(overrides, slot.slotId) ? overrides[slot.slotId] : undefined
+      const current = override ?? asset.defaultText
+      // The built-in sentence is the field's value, not a placeholder: the user must be
+      // able to tweak the shipped wording without retyping it.
+      return h('div', { key: slot.slotId, className: 'ptcPlusPromptEditor', 'data-editor-slot': slot.slotId },
+        h('textarea', {
+          id: `${id}-prompt-${slot.slotId}`, rows: 3, disabled: blocked, spellCheck: false,
+          className: 'ptcPlusPromptTextarea', 'aria-label': slot.slotId, value: current,
+          onChange: event => update(slot.slotId, event.target.value === '' ? undefined : event.target.value),
+        }),
+        h('div', { className: 'ptcPlusPromptEditorFoot' },
+          h('span', { className: 'ptcPlusPromptHint' },
+            t('capabilities.prompt.bytesOfLimit', { used: byteCount(current), max: PROMPT_TEXT_MAX_SLOT_BYTES })),
+          h('span', { className: 'ptcPlusPromptEditorActions' },
+            asset.omittable ? h('button', {
+              type: 'button', disabled: blocked,
+              onClick: () => update(slot.slotId, ''),
+            }, t('capabilities.prompt.omit')) : null,
+            h('button', {
+              type: 'button', disabled: blocked || override === undefined,
+              onClick: () => update(slot.slotId, undefined),
+            }, t('capabilities.prompt.reset')))))
+    }
+    const defaultAnchor = account.anchors.find(anchor => anchor.wired === true && editableSlots(anchor).length > 0)
+    const selectedAnchor = account.anchors.find(anchor => anchor.anchorId === selectedAnchorId) ?? defaultAnchor
+    const selectedIndex = selectedAnchor === undefined ? 0 : account.anchors.indexOf(selectedAnchor) + 1
+    const anchorPanel = h('section', { className: 'ptcPlusPromptPanel', 'data-prompt-panel': 'anchor' },
+      h('h5', { className: 'ptcPlusPromptPanelTitle' },
+        t('capabilities.prompt.rowExpand', { index: selectedIndex })),
+      selectedAnchor === undefined
+        ? h('p', { className: 'ptcPlusPromptHint' }, t('capabilities.prompt.rowExpandHint'))
+        : h('div', { className: 'ptcPlusPromptPanelBody' },
+          h('div', { className: 'ptcPlusPromptChips', 'data-anchor-chips': selectedAnchor.anchorId },
+            ...selectedAnchor.slots.map(slot => chip(selectedAnchor, slot))),
+          selectedAnchor.wired !== true
+            ? h('p', { className: 'ptcPlusPromptHint' }, t('capabilities.prompt.unwiredRow', { slots: selectedAnchor.unmeasuredSlots }))
+            : editorFor(selectedAnchor)))
+    // Saving shows what will change. The preview is derived from the same draft the
+    // editors write, so it cannot disagree with them; a saved document that already
+    // differs from the built-ins shows here too, because saving would rewrite it.
+    const changes = account.anchors.flatMap(anchor => anchor.slots
+      .map(slot => ({ slot, builtin: PROMPT_ASSETS.find(asset => asset.id === slot.slotId)?.defaultText }))
+      .filter(entry => typeof entry.builtin === 'string'
+        && Object.hasOwn(overrides, entry.slot.slotId)
+        && overrides[entry.slot.slotId] !== entry.builtin)
+      .map(entry => {
+        const effective = overrides[entry.slot.slotId]
+        const effect = anchor.channel === 'plan' ? t('capabilities.prompt.effectPlan')
+          : anchor.channel === 'install' ? t('capabilities.prompt.effectInstall')
+            : anchor.channel === 'prompt' ? t('capabilities.prompt.effectPrompt')
+              : t('capabilities.prompt.effectTrigger')
+        return {
+          anchor, slot: entry.slot, effect,
+          before: byteCount(entry.builtin), after: byteCount(effective), delta: byteCount(effective) - byteCount(entry.builtin),
+        }
+      }))
+    const restoreSlot = slotId => update(slotId, undefined)
+    const diffPanel = h('section', {
+      className: 'ptcPlusPromptPanel',
+      ...(changes.length === 0 ? {} : { 'data-prompt-diff': 'true' }),
+      'data-prompt-diff-panel': 'true',
     },
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'channel' }, 'prompt'),
-      h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', 'data-cell': 'anchor' },
-        h('code', { className: 'ptcPlusPromptAnchorId', title: section.id }, section.id)),
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence' }, t(section.presence)),
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'bytes' },
-        t('capabilities.prompt.hostUnavailable')),
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason' }, t('capabilities.prompt.ownerHost')),
-      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind' },
-        h('span', { className: 'ptcPlusPromptChip', 'data-readonly': 'true' },
-          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection'))))))
-    // Design §5/§11.7: saving shows what will change. The preview is derived from the
-    // same document the editors write, so it cannot disagree with them, and it only
-    // appears while at least one slot differs from its built-in text.
-    const builtinBytes = text => new TextEncoder().encode(text).length
-    const changed = account.anchors.map(anchor => {
-      const slots = anchor.slots
-        .map(slot => ({ slot, builtin: PROMPT_ASSETS.find(asset => asset.id === slot.slotId)?.defaultText }))
-        .filter(entry => typeof entry.builtin === 'string'
-          && Object.hasOwn(document.overrides, entry.slot.slotId)
-          && document.overrides[entry.slot.slotId] !== entry.builtin)
-        .map(entry => ({ ...entry, effective: document.overrides[entry.slot.slotId] }))
-      if (slots.length === 0) return undefined
-      const before = slots.reduce((sum, entry) => sum + builtinBytes(entry.builtin), 0)
-      const after = slots.reduce((sum, entry) => sum + builtinBytes(entry.effective), 0)
-      const effect = anchor.channel === 'plan' ? t('capabilities.prompt.effectPlan')
-        : anchor.channel === 'install' ? t('capabilities.prompt.effectInstall')
-          : anchor.channel === 'prompt' ? t('capabilities.prompt.effectPrompt')
-            : t('capabilities.prompt.effectTrigger')
-      return { anchor, delta: after - before, effect, slots }
-    }).filter(Boolean)
-    const diff = changed.length === 0 ? null : h('section', {
-      className: 'ptcPlusPromptDiff', 'data-prompt-diff': 'true',
-    },
-      h('h5', null, t('capabilities.prompt.diffTitle')),
-      ...changed.map(entry => h('div', {
-        key: entry.anchor.anchorId, className: 'ptcPlusPromptDiffRow',
-        'data-diff-anchor': entry.anchor.anchorId,
-      },
-        h('code', { className: 'ptcPlusPromptAnchorId' }, entry.anchor.anchorId),
-        h('span', { className: 'ptcPlusPromptChipNote', 'data-diff-delta': String(entry.delta) },
-          t('capabilities.prompt.diffDelta', {
-            delta: entry.delta > 0 ? `+${entry.delta}` : String(entry.delta),
-          })),
-        h('span', { className: 'ptcPlusPromptChipNote' }, entry.effect),
-        h('button', {
-          type: 'button', disabled: blocked,
-          onClick: () => {
-            const overrides = { ...document.overrides }
-            for (const item of entry.slots) delete overrides[item.slot.slotId]
-            write(overrides)
+      h('h5', { className: 'ptcPlusPromptPanelTitle' }, t('capabilities.prompt.diffTitle')),
+      changes.length === 0
+        ? h('p', { className: 'ptcPlusPromptHint' }, t('capabilities.prompt.diffEmpty'))
+        : h('ul', { className: 'ptcPlusPromptDiffList' },
+          ...changes.map((entry, index) => h('li', {
+            key: entry.slot.slotId, className: 'ptcPlusPromptDiffRow',
+            'data-diff-anchor': entry.anchor.anchorId, 'data-diff-slot': entry.slot.slotId,
           },
-        }, t('capabilities.prompt.reset')))))
+            h('span', { className: 'ptcPlusPromptDot', 'data-tone': String(index % 3) }),
+            h('span', { className: 'ptcPlusPromptDiffBody' },
+              h('span', { className: 'ptcPlusPromptDiffHead' },
+                h('code', { className: 'ptcPlusPromptDiffSlot' }, entry.slot.slotId),
+                h('span', { className: 'ptcPlusPromptHint' }, entry.effect)),
+              h('span', { className: 'ptcPlusPromptDiffDelta' },
+                t('capabilities.prompt.diffBytes', {
+                  before: group(entry.before), after: group(entry.after),
+                  delta: entry.delta > 0 ? `+${group(entry.delta)}` : group(entry.delta),
+                }),
+                h('button', {
+                  type: 'button', disabled: blocked,
+                  onClick: () => restoreSlot(entry.slot.slotId),
+                }, t('capabilities.prompt.reset'))))))),
+      h('div', { className: 'ptcPlusPromptActions' },
+        h('button', {
+          type: 'button', className: 'ptcPlusPromptPrimary', disabled: blocked || !pending,
+          onClick: save,
+        }, t('capabilities.prompt.save')),
+        h('button', { type: 'button', disabled: blocked || !pending, onClick: cancel },
+          t('capabilities.prompt.cancel'))))
     return h('section', {
       className: 'ptcPlusPromptText', 'data-prompt-paused': paused ? 'true' : 'false',
     },
-      h('p', null, t('capabilities.prompt.intro')),
+      h('header', { className: 'ptcPlusPromptHeader' },
+        h('span', { className: 'ptcPlusPromptHeaderIcon' }, icon(['M10 2.5 12 8l5.5 2-5.5 2-2 5.5-2-5.5L2.5 10 8 8Z'])),
+        h('span', { className: 'ptcPlusPromptHeaderBody' },
+          h('h4', { className: 'ptcPlusPromptTitle' }, t('capabilities.prompt.title')),
+          h('p', { className: 'ptcPlusPromptSubtitle' }, t('capabilities.prompt.subtitle')))),
       paused
         ? h('p', { className: 'ptcPlusPromptPaused', role: 'status', 'data-prompt-paused-notice': 'true' },
           t('capabilities.prompt.paused'))
         : null,
-      readError === undefined ? null : h('p', { className: 'ptcPlusDetail' }, t('capabilities.prompt.unreadable', { error: readError })),
-      ...resolved.reported.map((entry, index) => h('p', { key: `report-${index}`, className: 'ptcPlusDetail' },
+      readError === undefined ? null : h('p', { className: 'ptcPlusPromptHint' }, t('capabilities.prompt.unreadable', { error: readError })),
+      ...resolved.reported.map((entry, index) => h('p', { key: `report-${index}`, className: 'ptcPlusPromptHint' },
         t('capabilities.prompt.reported', {
           asset: entry.slotId ?? entry.anchorId ?? 'document', reason: entry.reason,
         }))),
       cards,
-      totals,
-      h('p', { className: 'ptcPlusDetail', 'data-prompt-retention': 'true' },
-        t('capabilities.prompt.retention', {
-          runs: value?.retentionPayloadRuns ?? 32,
-          bytes: `${Math.round((value?.retentionPayloadBytes ?? 8388608) / 1024)} KiB`,
-          clusters: value?.retentionClusters === 0
-            ? t('capabilities.prompt.retentionUnlimited')
-            : (value?.retentionClusters ?? 5000),
-        })),
-      diff,
-      unwiredAnchors.length === 0 ? null : h('p', { className: 'ptcPlusDetail' },
-        t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),
-      h('table', { className: 'ptcPlusPromptTable' },
-        h('colgroup', null,
-          PROMPT_TABLE_COLUMN_KEYS.map(key =>
-            h('col', { key, className: `ptcPlusPromptCol-${key}` }))),
-        header,
-        h('tbody', null, ...rows.flat(1).filter(Boolean), ...hostRows)))
+      strip,
+      h('p', { className: 'ptcPlusPromptHint', 'data-prompt-slot-counts': 'true' },
+        t('capabilities.prompt.slotCounts', { bytes: group(measuredBytes), unmeasured: unmeasuredSlots, dynamic: dynamicSlots })),
+      table,
+      h('div', { className: 'ptcPlusPromptPanels' }, anchorPanel, diffPanel),
+      h('p', { className: 'ptcPlusPromptIntro' }, t('capabilities.prompt.intro')))
   }
 
   function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
@@ -1280,7 +1276,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         }, t(`capabilities.tab.${key}`)))),
       ...tabs.map(key => h('div', { key, className: 'ptcPlusCapabilityPane', role: 'tabpanel', id: `${id}-pane-${key}`,
         'aria-labelledby': `${id}-tab-${key}`, hidden: tab !== key },
-        h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, t(`capabilities.title.${key}`)),
+        key === 'prompt' ? null : h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, t(`capabilities.title.${key}`)),
           key === 'manual' ? h('label', { className: 'ptcPlusCapabilityManagement' }, h('span', null, t('capabilities.management')),
             h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value.capabilityManagementEnabled === true,
               disabled: disabled('capabilityManagementEnabled'), 'aria-label': t('capabilities.management'),

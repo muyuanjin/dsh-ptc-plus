@@ -25,7 +25,7 @@ export const RETENTION_BOUNDS = Object.freeze({
 })
 
 export const DEFAULT_RETENTION_LIMITS = Object.freeze({
-  runs: 16,
+  runs: 8,
   bytes: 8 * 1024 * 1024,
   clusters: 5000,
 })
@@ -52,6 +52,21 @@ function normalizeLimit(kind, raw, fallback) {
   return kind === 'clusters' && value === 0 ? 0 : Math.min(value, fallback)
 }
 
+/**
+ * A configured window is honoured as written: it is the user's setting, bounded by
+ * `RETENTION_BOUNDS` only. The clamp in `normalizeLimit` exists for the environment
+ * lever, which may tighten a configured window but never widen it.
+ */
+function normalizeConfigured(kind, raw) {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_RETENTION_LIMITS[kind]
+  const value = Number(raw)
+  const { min, max } = RETENTION_BOUNDS[kind]
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < min || value > max) {
+    return DEFAULT_RETENTION_LIMITS[kind]
+  }
+  return value
+}
+
 let activeLimits = resolveRetentionLimits({})
 
 /** The limits the current fold prunes against. */
@@ -72,12 +87,9 @@ export function resolveRetentionLimits(config = {}) {
   }
   const resolved = {}
   for (const kind of ['runs', 'bytes', 'clusters']) {
-    const base = normalizeLimit(kind, configured[kind], DEFAULT_RETENTION_LIMITS[kind])
+    const base = normalizeConfigured(kind, configured[kind])
     // The environment may only tighten the configured bound, never widen it.
-    const fallback = configured[kind] === undefined || configured[kind] === null || configured[kind] === ''
-      ? DEFAULT_RETENTION_LIMITS[kind]
-      : base
-    resolved[kind] = normalizeLimit(kind, process.env[ENVIRONMENT_KEYS[kind]], fallback)
+    resolved[kind] = normalizeLimit(kind, process.env[ENVIRONMENT_KEYS[kind]], base)
   }
   return Object.freeze(resolved)
 }

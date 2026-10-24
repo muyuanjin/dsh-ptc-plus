@@ -2079,7 +2079,7 @@ var CONFIG_FIELDS = Object.freeze([
   {
     key: "retentionPayloadRuns",
     type: "integer",
-    default: 16,
+    default: 8,
     min: 8,
     max: 512,
     label: "\u4FDD\u7559\u6700\u8FD1\u5355\u5143\u683C\u6570",

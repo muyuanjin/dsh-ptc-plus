@@ -1950,8 +1950,24 @@ function pruneRetention(state, tables) {
     && (droppedCallSeqs.has(state.latestRun.callSeq) || digestedHotCell)) {
     state.latestRun = undefined
     state.editableRun = undefined
-    state.hotCellDropped = true
   }
+  // `hotCellDropped` describes the retained set, not the route the fold took to it.
+  // It holds exactly when the newest settlement no longer carries its payload:
+  // either it was folded away, or its argument text was digested. Recomputing it
+  // from the table on every prune keeps a replayed fold — which reaches the same set
+  // by a different route — from disagreeing with the stored one.
+  const newestEntry = entries[entries.length - 1]
+  const newestStored = newestEntry === undefined ? undefined : tables.settled.get(newestEntry.resultSeq)
+  state.hotCellDropped = newestEntry !== undefined
+    && (newestStored === undefined || newestStored.call?.data?.arguments === undefined)
+  // `retainedBytes` is a property of the retained set, not a running total: a fold
+  // that digests a cluster after it was counted would otherwise carry a different
+  // value than a fold that reaches the same set by another route. Recompute it from
+  // the table so both sides agree, and so the number always describes what is there.
+  state.retainedBytes = entries.reduce((total, entry) => {
+    const stored = tables.settled.get(entry.resultSeq)
+    return stored === undefined ? total : total + settlementBytes(stored)
+  }, 0)
   if (dropped.length === 0 && digested.size === 0) return
   if (dropped.length !== 0) {
     state.compacted = true

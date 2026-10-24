@@ -81,6 +81,9 @@ Capability management is experimental and defaults to off. These inputs are froz
 | `capabilityRecoveryEnabled` | `false` | Select optional description recovery independently |
 | `capabilityRecoveryBytes` | `8192` | Separate description-recovery budget in UTF-8 bytes, minimum 1 |
 | `modelPreviewEnabled` | `false` | Select plugin result/log previews; otherwise delegate to the Host policy |
+| `retentionPayloadRuns` | `32` | Newest cells whose argument text stays in the session-log checkpoint, 1–512; older cells must be refolded from the log to be edited or republished |
+| `retentionPayloadBytes` | `8388608` | Cumulative budget for that retained text, 64 KiB–64 MiB; the oldest payload is dropped past it and a single larger cell is dropped as well, so the checkpoint never grows with what the session wrote |
+| `retentionClusters` | `5000` | Cell clusters that keep identity and observations before the oldest fold into an interval summary, 0–50000; `0` means unlimited (no count-based folding, the payload budget is the only bound) |
 | `modelPreviewTokens` | `4096` | Estimated model-presentation token cap, minimum 1 |
 
 The configuration uses `ptc-plus` as the DSH plugin ID and `dsh-ptc-plus` as the package name. The distinction is intentional: the former is the runtime/settings identity, while the latter is the repository and npm package identity.

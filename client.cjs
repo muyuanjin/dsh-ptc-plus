@@ -34,9 +34,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// node_modules/react-is/cjs/react-is.development.js
+// ../dsh-ptc-plus/node_modules/react-is/cjs/react-is.development.js
 var require_react_is_development = __commonJS({
-  "node_modules/react-is/cjs/react-is.development.js"(exports) {
+  "../dsh-ptc-plus/node_modules/react-is/cjs/react-is.development.js"(exports) {
     "use strict";
     (function() {
       function typeOf(object) {
@@ -127,9 +127,9 @@ var require_react_is_development = __commonJS({
   }
 });
 
-// node_modules/react-is/index.js
+// ../dsh-ptc-plus/node_modules/react-is/index.js
 var require_react_is = __commonJS({
-  "node_modules/react-is/index.js"(exports, module2) {
+  "../dsh-ptc-plus/node_modules/react-is/index.js"(exports, module2) {
     "use strict";
     if (false) {
       module2.exports = null;
@@ -146,7 +146,7 @@ __export(client_exports, {
 });
 module.exports = __toCommonJS(client_exports);
 
-// node_modules/@deepseek-ai/cosmokit/lib/index.js
+// ../dsh-ptc-plus/node_modules/@deepseek-ai/cosmokit/lib/index.js
 function isNullable(value) {
   return value === null || value === void 0;
 }
@@ -371,7 +371,7 @@ var Time;
   Time2.template = template;
 })(Time || (Time = {}));
 
-// node_modules/@deepseek-ai/schemastery/lib/index.mjs
+// ../dsh-ptc-plus/node_modules/@deepseek-ai/schemastery/lib/index.mjs
 var kSchema = /* @__PURE__ */ Symbol.for("schemastery");
 var kValidationError = /* @__PURE__ */ Symbol.for("ValidationError");
 globalThis.__schemastery_index__ ??= 0;
@@ -2077,6 +2077,39 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
+    key: "retentionPayloadRuns",
+    type: "integer",
+    default: 32,
+    min: 1,
+    max: 512,
+    label: "\u4FDD\u7559\u6700\u8FD1\u5355\u5143\u683C\u6570",
+    labelEn: "Retained recent cells",
+    description: "\u68C0\u67E5\u70B9\u4FDD\u7559\u6700\u8FD1\u591A\u5C11\u4E2A\u5355\u5143\u683C\u7684\u53C2\u6570\u539F\u6587\u3002\u8C03\u5927\u80FD\u76F4\u63A5\u7F16\u8F91\u66F4\u4E45\u4EE5\u524D\u7684\u8BA1\u7B97\uFF0C\u4F46\u68C0\u67E5\u70B9\u66F4\u5927\uFF1B\u66F4\u65E9\u7684\u5355\u5143\u683C\u9700\u8981\u4ECE\u4F1A\u8BDD\u65E5\u5FD7\u91CD\u65B0\u6298\u53E0\u624D\u80FD\u7F16\u8F91\u6216\u91CD\u65B0\u53D1\u5E03\u3002",
+    descriptionEn: "How many recent cells keep their argument text in the checkpoint. A larger window keeps more history editable without a log read but grows the checkpoint; older cells must be refolded from the session log to be edited or republished."
+  },
+  {
+    key: "retentionPayloadBytes",
+    type: "integer",
+    default: 8388608,
+    min: 65536,
+    max: 67108864,
+    label: "\u4FDD\u7559\u8F7D\u8377\u9884\u7B97 (UTF-8 bytes)",
+    labelEn: "Retained payload budget (UTF-8 bytes)",
+    description: "\u4FDD\u7559\u5355\u5143\u683C\u53C2\u6570\u539F\u6587\u7684\u7D2F\u8BA1\u4E0A\u9650\u3002\u8FBE\u5230\u4E0A\u9650\u540E\u6700\u65E7\u7684\u539F\u6587\u88AB\u79FB\u9664\uFF0C\u68C0\u67E5\u70B9\u4F53\u79EF\u56E0\u6B64\u4E0E\u4F1A\u8BDD\u5199\u5165\u603B\u91CF\u65E0\u5173\uFF1B\u5355\u4E2A\u8D85\u8FC7\u9884\u7B97\u7684\u5355\u5143\u683C\u4E5F\u4F1A\u88AB\u79FB\u9664\u5E76\u4ECE\u65E5\u5FD7\u91CD\u6298\u3002",
+    descriptionEn: "Cumulative budget for the retained argument text. Past it the oldest payload is removed, which keeps the checkpoint independent of how much the session wrote; a single cell larger than the budget is removed as well and refolded from the log."
+  },
+  {
+    key: "retentionClusters",
+    type: "integer",
+    default: 5e3,
+    min: 0,
+    max: 5e4,
+    label: "\u4FDD\u7559\u5355\u5143\u683C\u7C07\u4E0A\u9650",
+    labelEn: "Retained cluster limit",
+    description: "\u68C0\u67E5\u70B9\u4FDD\u7559\u591A\u5C11\u4E2A\u5355\u5143\u683C\u7C07\u7684\u8EAB\u4EFD\u4E0E\u89C2\u6D4B\uFF0C\u8D85\u8FC7\u540E\u6700\u65E7\u7684\u7C07\u6298\u8FDB\u533A\u95F4\u6458\u8981\uFF08\u5176\u540E\u7EED\u64CD\u4F5C\u9700\u8981\u4ECE\u65E5\u5FD7\u91CD\u6298\uFF09\u3002\u586B 0 \u8868\u793A\u4E0D\u9650\u5236\uFF1A\u4E0D\u505A\u6309\u6570\u91CF\u7684\u6298\u53E0\uFF0C\u53EA\u7531\u8F7D\u8377\u9884\u7B97\u7EA6\u675F\u4F53\u79EF\u3002",
+    descriptionEn: "How many cell clusters keep their identity and observations in the checkpoint; older ones fold into an interval summary and need a log refold afterwards. 0 means unlimited: no count-based folding, with the payload budget as the only bound."
+  },
+  {
     key: "capabilityPromptTextEnabled",
     type: "boolean",
     default: true,
@@ -3592,16 +3625,16 @@ function readCapabilityCommandReceipt(text) {
   }
 }
 
-// node_modules/@radix-ui/react-select/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-select/dist/index.mjs
 var React31 = __toESM(require("react"), 1);
 var ReactDOM4 = __toESM(require("react-dom"), 1);
 
-// node_modules/@radix-ui/number/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/number/dist/index.mjs
 function clamp(value, [min2, max2]) {
   return Math.min(max2, Math.max(min2, value));
 }
 
-// node_modules/@radix-ui/primitive/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/primitive/dist/index.mjs
 var canUseDOM = !!(typeof window !== "undefined" && window.document && window.document.createElement);
 function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForDefaultPrevented = true } = {}) {
   return function handleEvent(event) {
@@ -3612,10 +3645,10 @@ function composeEventHandlers(originalEventHandler, ourEventHandler, { checkForD
   };
 }
 
-// node_modules/@radix-ui/react-collection/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-collection/dist/index.mjs
 var import_react = __toESM(require("react"), 1);
 
-// node_modules/@radix-ui/react-context/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-context/dist/index.mjs
 var React = __toESM(require("react"), 1);
 var import_jsx_runtime = require("react/jsx-runtime");
 function createContextScope(scopeName, createContextScopeDeps = []) {
@@ -3676,7 +3709,7 @@ function composeContextScopes(...scopes) {
   return createScope;
 }
 
-// node_modules/@radix-ui/react-compose-refs/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-compose-refs/dist/index.mjs
 var React2 = __toESM(require("react"), 1);
 function setRef(ref, value) {
   if (typeof ref === "function") {
@@ -3713,7 +3746,7 @@ function useComposedRefs(...refs) {
   return React2.useCallback(composeRefs(...refs), refs);
 }
 
-// node_modules/@radix-ui/react-slot/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-slot/dist/index.mjs
 var React3 = __toESM(require("react"), 1);
 var import_jsx_runtime2 = require("react/jsx-runtime");
 // @__NO_SIDE_EFFECTS__
@@ -3799,7 +3832,7 @@ function getElementRef(element) {
   return element.props.ref || element.ref;
 }
 
-// node_modules/@radix-ui/react-collection/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-collection/dist/index.mjs
 var import_jsx_runtime3 = require("react/jsx-runtime");
 var import_react2 = __toESM(require("react"), 1);
 var import_jsx_runtime4 = require("react/jsx-runtime");
@@ -3866,7 +3899,7 @@ function createCollection(name2) {
   ];
 }
 
-// node_modules/@radix-ui/react-direction/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-direction/dist/index.mjs
 var React5 = __toESM(require("react"), 1);
 var import_jsx_runtime5 = require("react/jsx-runtime");
 var DirectionContext = React5.createContext(void 0);
@@ -3875,10 +3908,10 @@ function useDirection(localDir) {
   return localDir || globalDir || "ltr";
 }
 
-// node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
 var React9 = __toESM(require("react"), 1);
 
-// node_modules/@radix-ui/react-primitive/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-primitive/dist/index.mjs
 var React6 = __toESM(require("react"), 1);
 var ReactDOM = __toESM(require("react-dom"), 1);
 var import_jsx_runtime6 = require("react/jsx-runtime");
@@ -3918,7 +3951,7 @@ function dispatchDiscreteCustomEvent(target, event) {
   if (target) ReactDOM.flushSync(() => target.dispatchEvent(event));
 }
 
-// node_modules/@radix-ui/react-use-callback-ref/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-callback-ref/dist/index.mjs
 var React7 = __toESM(require("react"), 1);
 function useCallbackRef(callback) {
   const callbackRef = React7.useRef(callback);
@@ -3928,7 +3961,7 @@ function useCallbackRef(callback) {
   return React7.useMemo(() => (...args) => callbackRef.current?.(...args), []);
 }
 
-// node_modules/@radix-ui/react-use-escape-keydown/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-escape-keydown/dist/index.mjs
 var React8 = __toESM(require("react"), 1);
 function useEscapeKeydown(onEscapeKeyDownProp, ownerDocument = globalThis?.document) {
   const onEscapeKeyDown = useCallbackRef(onEscapeKeyDownProp);
@@ -3943,7 +3976,7 @@ function useEscapeKeydown(onEscapeKeyDownProp, ownerDocument = globalThis?.docum
   }, [onEscapeKeyDown, ownerDocument]);
 }
 
-// node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-dismissable-layer/dist/index.mjs
 var import_jsx_runtime7 = require("react/jsx-runtime");
 var DISMISSABLE_LAYER_NAME = "DismissableLayer";
 var CONTEXT_UPDATE = "dismissableLayer.update";
@@ -4148,7 +4181,7 @@ function handleAndDispatchCustomEvent(name2, handler, detail, { discrete }) {
   }
 }
 
-// node_modules/@radix-ui/react-focus-guards/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-focus-guards/dist/index.mjs
 var React10 = __toESM(require("react"), 1);
 var count = 0;
 function useFocusGuards() {
@@ -4176,7 +4209,7 @@ function createFocusGuard() {
   return element;
 }
 
-// node_modules/@radix-ui/react-focus-scope/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-focus-scope/dist/index.mjs
 var React11 = __toESM(require("react"), 1);
 var import_jsx_runtime8 = require("react/jsx-runtime");
 var AUTOFOCUS_ON_MOUNT = "focusScope.autoFocusOnMount";
@@ -4380,15 +4413,15 @@ function removeLinks(items) {
   return items.filter((item) => item.tagName !== "A");
 }
 
-// node_modules/@radix-ui/react-id/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-id/dist/index.mjs
 var React13 = __toESM(require("react"), 1);
 
-// node_modules/@radix-ui/react-use-layout-effect/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-layout-effect/dist/index.mjs
 var React12 = __toESM(require("react"), 1);
 var useLayoutEffect2 = globalThis?.document ? React12.useLayoutEffect : () => {
 };
 
-// node_modules/@radix-ui/react-id/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-id/dist/index.mjs
 var useReactId = React13[" useId ".trim().toString()] || (() => void 0);
 var count2 = 0;
 function useId(deterministicId) {
@@ -4399,10 +4432,10 @@ function useId(deterministicId) {
   return deterministicId || (id2 ? `radix-${id2}` : "");
 }
 
-// node_modules/@radix-ui/react-popper/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-popper/dist/index.mjs
 var React17 = __toESM(require("react"), 1);
 
-// node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
+// ../dsh-ptc-plus/node_modules/@floating-ui/utils/dist/floating-ui.utils.mjs
 var sides = ["top", "right", "bottom", "left"];
 var min = Math.min;
 var max = Math.max;
@@ -4531,7 +4564,7 @@ function rectToClientRect(rect) {
   };
 }
 
-// node_modules/@floating-ui/core/dist/floating-ui.core.mjs
+// ../dsh-ptc-plus/node_modules/@floating-ui/core/dist/floating-ui.core.mjs
 function computeCoordsFromPlacement(_ref, placement, rtl) {
   let {
     reference,
@@ -5229,7 +5262,7 @@ var size = function(options2) {
   };
 };
 
-// node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
+// ../dsh-ptc-plus/node_modules/@floating-ui/utils/dist/floating-ui.utils.dom.mjs
 function hasWindow() {
   return typeof window !== "undefined";
 }
@@ -5385,7 +5418,7 @@ function getFrameElement(win) {
   return win.parent && Object.getPrototypeOf(win.parent) ? win.frameElement : null;
 }
 
-// node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
+// ../dsh-ptc-plus/node_modules/@floating-ui/dom/dist/floating-ui.dom.mjs
 function getCssDimensions(element) {
   const css = getComputedStyle2(element);
   let width = parseFloat(css.width) || 0;
@@ -5994,7 +6027,7 @@ var computePosition2 = (reference, floating, options2) => {
   });
 };
 
-// node_modules/@floating-ui/react-dom/dist/floating-ui.react-dom.mjs
+// ../dsh-ptc-plus/node_modules/@floating-ui/react-dom/dist/floating-ui.react-dom.mjs
 var React14 = __toESM(require("react"), 1);
 var import_react3 = require("react");
 var ReactDOM2 = __toESM(require("react-dom"), 1);
@@ -6305,7 +6338,7 @@ var arrow3 = (options2, deps) => {
   };
 };
 
-// node_modules/@radix-ui/react-arrow/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-arrow/dist/index.mjs
 var React15 = __toESM(require("react"), 1);
 var import_jsx_runtime9 = require("react/jsx-runtime");
 var NAME = "Arrow";
@@ -6327,7 +6360,7 @@ var Arrow = React15.forwardRef((props, forwardedRef) => {
 Arrow.displayName = NAME;
 var Root = Arrow;
 
-// node_modules/@radix-ui/react-use-size/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-size/dist/index.mjs
 var React16 = __toESM(require("react"), 1);
 function useSize(element) {
   const [size4, setSize2] = React16.useState(void 0);
@@ -6364,7 +6397,7 @@ function useSize(element) {
   return size4;
 }
 
-// node_modules/@radix-ui/react-popper/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-popper/dist/index.mjs
 var import_jsx_runtime10 = require("react/jsx-runtime");
 var POPPER_NAME = "Popper";
 var [createPopperContext, createPopperScope] = createContextScope(POPPER_NAME);
@@ -6636,7 +6669,7 @@ var Anchor = PopperAnchor;
 var Content = PopperContent;
 var Arrow2 = PopperArrow;
 
-// node_modules/@radix-ui/react-portal/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-portal/dist/index.mjs
 var React18 = __toESM(require("react"), 1);
 var import_react_dom2 = __toESM(require("react-dom"), 1);
 var import_jsx_runtime11 = require("react/jsx-runtime");
@@ -6650,7 +6683,7 @@ var Portal = React18.forwardRef((props, forwardedRef) => {
 });
 Portal.displayName = PORTAL_NAME;
 
-// node_modules/@radix-ui/react-use-controllable-state/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-controllable-state/dist/index.mjs
 var React19 = __toESM(require("react"), 1);
 var React23 = __toESM(require("react"), 1);
 var useInsertionEffect = React19[" useInsertionEffect ".trim().toString()] || useLayoutEffect2;
@@ -6718,7 +6751,7 @@ function isFunction(value) {
   return typeof value === "function";
 }
 
-// node_modules/@radix-ui/react-use-previous/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-use-previous/dist/index.mjs
 var React20 = __toESM(require("react"), 1);
 function usePrevious(value) {
   const ref = React20.useRef({ value, previous: value });
@@ -6731,7 +6764,7 @@ function usePrevious(value) {
   }, [value]);
 }
 
-// node_modules/@radix-ui/react-visually-hidden/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-visually-hidden/dist/index.mjs
 var React21 = __toESM(require("react"), 1);
 var import_jsx_runtime12 = require("react/jsx-runtime");
 var VISUALLY_HIDDEN_STYLES = Object.freeze({
@@ -6762,7 +6795,7 @@ var VisuallyHidden = React21.forwardRef(
 );
 VisuallyHidden.displayName = NAME2;
 
-// node_modules/aria-hidden/dist/es2015/index.js
+// ../dsh-ptc-plus/node_modules/aria-hidden/dist/es2015/index.js
 var getDefaultParent = function(originalTarget) {
   if (typeof document === "undefined") {
     return null;
@@ -6883,7 +6916,7 @@ var hideOthers = function(originalTarget, parentNode, markerName) {
   return applyAttributeToOthers(targets, activeParentNode, markerName, "aria-hidden");
 };
 
-// node_modules/tslib/tslib.es6.mjs
+// ../dsh-ptc-plus/node_modules/tslib/tslib.es6.mjs
 var __assign = function() {
   __assign = Object.assign || function __assign2(t2) {
     for (var s, i2 = 1, n = arguments.length; i2 < n; i2++) {
@@ -6915,19 +6948,19 @@ function __spreadArray(to, from2, pack) {
   return to.concat(ar || Array.prototype.slice.call(from2));
 }
 
-// node_modules/react-remove-scroll/dist/es2015/Combination.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/Combination.js
 var React30 = __toESM(require("react"));
 
-// node_modules/react-remove-scroll/dist/es2015/UI.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/UI.js
 var React26 = __toESM(require("react"));
 
-// node_modules/react-remove-scroll-bar/dist/es2015/constants.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/constants.js
 var zeroRightClassName = "right-scroll-bar-position";
 var fullWidthClassName = "width-before-scroll-bar";
 var noScrollbarsClassName = "with-scroll-bars-hidden";
 var removedBarSizeVariable = "--removed-body-scroll-bar-size";
 
-// node_modules/use-callback-ref/dist/es2015/assignRef.js
+// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/assignRef.js
 function assignRef(ref, value) {
   if (typeof ref === "function") {
     ref(value);
@@ -6937,7 +6970,7 @@ function assignRef(ref, value) {
   return ref;
 }
 
-// node_modules/use-callback-ref/dist/es2015/useRef.js
+// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/useRef.js
 var import_react4 = require("react");
 function useCallbackRef2(initialValue, callback) {
   var ref = (0, import_react4.useState)(function() {
@@ -6965,7 +6998,7 @@ function useCallbackRef2(initialValue, callback) {
   return ref.facade;
 }
 
-// node_modules/use-callback-ref/dist/es2015/useMergeRef.js
+// ../dsh-ptc-plus/node_modules/use-callback-ref/dist/es2015/useMergeRef.js
 var React24 = __toESM(require("react"));
 var useIsomorphicLayoutEffect = typeof window !== "undefined" ? React24.useLayoutEffect : React24.useEffect;
 var currentValues = /* @__PURE__ */ new WeakMap();
@@ -6997,7 +7030,7 @@ function useMergeRefs(refs, defaultValue) {
   return callbackRef;
 }
 
-// node_modules/use-sidecar/dist/es2015/medium.js
+// ../dsh-ptc-plus/node_modules/use-sidecar/dist/es2015/medium.js
 function ItoI(a) {
   return a;
 }
@@ -7083,7 +7116,7 @@ function createSidecarMedium(options2) {
   return medium;
 }
 
-// node_modules/use-sidecar/dist/es2015/exports.js
+// ../dsh-ptc-plus/node_modules/use-sidecar/dist/es2015/exports.js
 var React25 = __toESM(require("react"));
 var SideCar = function(_a2) {
   var sideCar = _a2.sideCar, rest = __rest(_a2, ["sideCar"]);
@@ -7102,10 +7135,10 @@ function exportSidecar(medium, exported) {
   return SideCar;
 }
 
-// node_modules/react-remove-scroll/dist/es2015/medium.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/medium.js
 var effectCar = createSidecarMedium();
 
-// node_modules/react-remove-scroll/dist/es2015/UI.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/UI.js
 var nothing = function() {
   return;
 };
@@ -7137,16 +7170,16 @@ RemoveScroll.classNames = {
   zeroRight: zeroRightClassName
 };
 
-// node_modules/react-remove-scroll/dist/es2015/SideEffect.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/SideEffect.js
 var React29 = __toESM(require("react"));
 
-// node_modules/react-remove-scroll-bar/dist/es2015/component.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/component.js
 var React28 = __toESM(require("react"));
 
-// node_modules/react-style-singleton/dist/es2015/hook.js
+// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/hook.js
 var React27 = __toESM(require("react"));
 
-// node_modules/get-nonce/dist/es2015/index.js
+// ../dsh-ptc-plus/node_modules/get-nonce/dist/es2015/index.js
 var currentNonce;
 var getNonce = function() {
   if (currentNonce) {
@@ -7158,7 +7191,7 @@ var getNonce = function() {
   return void 0;
 };
 
-// node_modules/react-style-singleton/dist/es2015/singleton.js
+// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/singleton.js
 function makeStyleTag() {
   if (!document)
     return null;
@@ -7204,7 +7237,7 @@ var stylesheetSingleton = function() {
   };
 };
 
-// node_modules/react-style-singleton/dist/es2015/hook.js
+// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/hook.js
 var styleHookSingleton = function() {
   var sheet = stylesheetSingleton();
   return function(styles, isDynamic) {
@@ -7217,7 +7250,7 @@ var styleHookSingleton = function() {
   };
 };
 
-// node_modules/react-style-singleton/dist/es2015/component.js
+// ../dsh-ptc-plus/node_modules/react-style-singleton/dist/es2015/component.js
 var styleSingleton = function() {
   var useStyle = styleHookSingleton();
   var Sheet = function(_a2) {
@@ -7228,7 +7261,7 @@ var styleSingleton = function() {
   return Sheet;
 };
 
-// node_modules/react-remove-scroll-bar/dist/es2015/utils.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/utils.js
 var zeroGap = {
   left: 0,
   top: 0,
@@ -7263,7 +7296,7 @@ var getGapWidth = function(gapMode) {
   };
 };
 
-// node_modules/react-remove-scroll-bar/dist/es2015/component.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll-bar/dist/es2015/component.js
 var Style = styleSingleton();
 var lockAttribute = "data-scroll-locked";
 var getStyles = function(_a2, allowRelative, gapMode, important) {
@@ -7303,7 +7336,7 @@ var RemoveScrollBar = function(_a2) {
   return React28.createElement(Style, { styles: getStyles(gap, !noRelative, gapMode, !noImportant ? "!important" : "") });
 };
 
-// node_modules/react-remove-scroll/dist/es2015/aggresiveCapture.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/aggresiveCapture.js
 var passiveSupported = false;
 if (typeof window !== "undefined") {
   try {
@@ -7322,7 +7355,7 @@ if (typeof window !== "undefined") {
 var options;
 var nonPassive = passiveSupported ? { passive: false } : false;
 
-// node_modules/react-remove-scroll/dist/es2015/handleScroll.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/handleScroll.js
 var alwaysContainsScroll = function(node) {
   return node.tagName === "TEXTAREA";
 };
@@ -7422,7 +7455,7 @@ var handleScroll = function(axis, endTarget, event, sourceDelta, noOverscroll) {
   return shouldCancelScroll;
 };
 
-// node_modules/react-remove-scroll/dist/es2015/SideEffect.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/SideEffect.js
 var getTouchXY = function(event) {
   return "changedTouches" in event ? [event.changedTouches[0].clientX, event.changedTouches[0].clientY] : [0, 0];
 };
@@ -7593,17 +7626,17 @@ function getOutermostShadowParent(node) {
   return shadowParent;
 }
 
-// node_modules/react-remove-scroll/dist/es2015/sidecar.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/sidecar.js
 var sidecar_default = exportSidecar(effectCar, RemoveScrollSideCar);
 
-// node_modules/react-remove-scroll/dist/es2015/Combination.js
+// ../dsh-ptc-plus/node_modules/react-remove-scroll/dist/es2015/Combination.js
 var ReactRemoveScroll = React30.forwardRef(function(props, ref) {
   return React30.createElement(RemoveScroll, __assign({}, props, { ref, sideCar: sidecar_default }));
 });
 ReactRemoveScroll.classNames = RemoveScroll.classNames;
 var Combination_default = ReactRemoveScroll;
 
-// node_modules/@radix-ui/react-select/dist/index.mjs
+// ../dsh-ptc-plus/node_modules/@radix-ui/react-select/dist/index.mjs
 var import_jsx_runtime13 = require("react/jsx-runtime");
 var OPEN_KEYS = [" ", "Enter", "ArrowUp", "ArrowDown"];
 var SELECTION_KEYS = [" ", "Enter"];
@@ -11042,6 +11075,15 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       )),
       cards,
       totals,
+      h(
+        "p",
+        { className: "ptcPlusDetail", "data-prompt-retention": "true" },
+        t2("capabilities.prompt.retention", {
+          runs: value?.retentionPayloadRuns ?? 32,
+          bytes: `${Math.round((value?.retentionPayloadBytes ?? 8388608) / 1024)} KiB`,
+          clusters: value?.retentionClusters === 0 ? t2("capabilities.prompt.retentionUnlimited") : value?.retentionClusters ?? 5e3
+        })
+      ),
       diff,
       unwiredAnchors.length === 0 ? null : h(
         "p",
@@ -15102,7 +15144,7 @@ function createIndicatorView(React32, deps) {
   return { PTCPlusSessionIndicator };
 }
 
-// node_modules/@marijn/find-cluster-break/src/index.js
+// ../dsh-ptc-plus/node_modules/@marijn/find-cluster-break/src/index.js
 var rangeFrom = [];
 var rangeTo = [];
 (() => {
@@ -15176,7 +15218,7 @@ function codePointSize(code2) {
   return code2 < 65536 ? 1 : 2;
 }
 
-// node_modules/@codemirror/state/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/state/dist/index.js
 var Text = class _Text {
   /**
   Get the line description around the given position.
@@ -18588,7 +18630,7 @@ function findColumn(string2, col, tabSize, strict) {
   return strict === true ? -1 : string2.length;
 }
 
-// node_modules/style-mod/src/style-mod.js
+// ../dsh-ptc-plus/node_modules/style-mod/src/style-mod.js
 var C = "\u037C";
 var COUNT = typeof Symbol == "undefined" ? "__" + C : Symbol.for(C);
 var SET = typeof Symbol == "undefined" ? "__styleSet" + Math.floor(Math.random() * 1e8) : /* @__PURE__ */ Symbol("styleSet");
@@ -18724,7 +18766,7 @@ var StyleSet = class {
   }
 };
 
-// node_modules/w3c-keyname/index.js
+// ../dsh-ptc-plus/node_modules/w3c-keyname/index.js
 var base = {
   8: "Backspace",
   9: "Tab",
@@ -18830,7 +18872,7 @@ function keyName(event) {
   return name2;
 }
 
-// node_modules/crelt/index.js
+// ../dsh-ptc-plus/node_modules/crelt/index.js
 function crelt() {
   var elt = arguments[0];
   if (typeof elt == "string") elt = document.createElement(elt);
@@ -18859,7 +18901,7 @@ function add(elt, child) {
   }
 }
 
-// node_modules/@codemirror/view/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/view/dist/index.js
 var nav = typeof navigator != "undefined" ? navigator : { userAgent: "", vendor: "", platform: "" };
 var doc = typeof document != "undefined" ? document : { documentElement: { style: {} } };
 var ie_edge = /* @__PURE__ */ /Edge\/(\d+)/.exec(nav.userAgent);
@@ -29508,7 +29550,7 @@ function highlightActiveLineGutter() {
   return activeLineGutterHighlighter;
 }
 
-// node_modules/@lezer/common/dist/index.js
+// ../dsh-ptc-plus/node_modules/@lezer/common/dist/index.js
 var DefaultBufferLength = 1024;
 var nextPropID = 0;
 var Range2 = class {
@@ -31178,7 +31220,7 @@ var StringInput = class {
 };
 var stoppedInner = new NodeProp({ perNode: true });
 
-// node_modules/@lezer/highlight/dist/index.js
+// ../dsh-ptc-plus/node_modules/@lezer/highlight/dist/index.js
 var nextTagID = 0;
 var Tag = class _Tag {
   /**
@@ -31902,7 +31944,7 @@ var classHighlighter = tagHighlighter([
   { tag: tags.punctuation, class: "tok-punctuation" }
 ]);
 
-// node_modules/@codemirror/language/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/language/dist/index.js
 var _a;
 var languageDataProp = /* @__PURE__ */ new NodeProp();
 function defineLanguageFacet(baseData) {
@@ -33472,7 +33514,7 @@ var marks = {
   auto: /* @__PURE__ */ Decoration.mark({ class: "cm-iso", inclusive: true, attributes: { dir: "auto" }, bidiIsolate: null })
 };
 
-// node_modules/@codemirror/commands/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/commands/dist/index.js
 var toggleComment = (target) => {
   let { state } = target, line = state.doc.lineAt(state.selection.main.from), config2 = getConfig(target.state, line.from);
   return config2.line ? toggleLineComment(target) : config2.block ? toggleBlockCommentByLine(target) : false;
@@ -34566,7 +34608,7 @@ var defaultKeymap = /* @__PURE__ */ [
   { key: "Ctrl-m", mac: "Shift-Alt-m", run: toggleTabFocusMode }
 ].concat(standardKeymap);
 
-// node_modules/@codemirror/search/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/search/dist/index.js
 var basicNormalize = typeof String.prototype.normalize == "function" ? (x) => x.normalize("NFKD") : (x) => x;
 var SearchCursor = class {
   /**
@@ -35656,7 +35698,7 @@ var searchExtensions = [
   baseTheme3
 ];
 
-// node_modules/@codemirror/autocomplete/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/autocomplete/dist/index.js
 var CompletionContext = class {
   /**
   Create a new completion context. (Mostly useful for testing
@@ -37473,7 +37515,7 @@ var completionKeymap = [
 ];
 var completionKeymapExt = /* @__PURE__ */ Prec.highest(/* @__PURE__ */ keymap.computeN([completionConfig], (state) => state.facet(completionConfig).defaultKeymap ? [completionKeymap] : []));
 
-// node_modules/@codemirror/lint/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/lint/dist/index.js
 var SelectedDiagnostic = class {
   constructor(from2, to, diagnostic) {
     this.from = from2;
@@ -38082,7 +38124,7 @@ var lintExtensions = [
   baseTheme5
 ];
 
-// node_modules/codemirror/dist/index.js
+// ../dsh-ptc-plus/node_modules/codemirror/dist/index.js
 var basicSetup = /* @__PURE__ */ (() => [
   lineNumbers(),
   highlightActiveLineGutter(),
@@ -38112,7 +38154,7 @@ var basicSetup = /* @__PURE__ */ (() => [
   ])
 ])();
 
-// node_modules/@lezer/lr/dist/index.js
+// ../dsh-ptc-plus/node_modules/@lezer/lr/dist/index.js
 var Stack = class _Stack {
   /**
   @internal
@@ -39874,7 +39916,7 @@ function getSpecializer(spec) {
   return spec.get;
 }
 
-// node_modules/@lezer/javascript/dist/index.js
+// ../dsh-ptc-plus/node_modules/@lezer/javascript/dist/index.js
 var noSemi = 317;
 var noSemiType = 318;
 var incdec = 1;
@@ -40086,7 +40128,7 @@ var parser = LRParser.deserialize({
   tokenPrec: 15178
 });
 
-// node_modules/@codemirror/lang-javascript/dist/index.js
+// ../dsh-ptc-plus/node_modules/@codemirror/lang-javascript/dist/index.js
 var snippets = [
   /* @__PURE__ */ snippetCompletion("function ${name}(${params}) {\n	${}\n}", {
     label: "function",
@@ -41476,6 +41518,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.cardUnwired": "\u2014\uFF08{count} \u4E2A\u69FD\u672A\u63A5\u901A\uFF09",
     "capabilities.prompt.unwiredRow": "\u901A\u9053\u672A\u63A5\u901A \xB7 {slots} \u4E2A\u69FD\u672A\u6D4B",
     "capabilities.prompt.unwiredSummary": "{anchors} \u4E2A\u951A\u70B9\u3001{slots} \u4E2A\u69FD\u7684\u901A\u9053\u5C1A\u672A\u63A5\u901A\uFF1B\u5B83\u4EEC\u4E0D\u8BA1\u5165\u5B57\u8282\u5408\u8BA1\u3002",
+    "capabilities.prompt.retention": "\u68C0\u67E5\u70B9\u4FDD\u7559\uFF1A\u6700\u8FD1 {runs} \u683C \xB7 \u8F7D\u8377 {bytes} \xB7 \u7C07\u4E0A\u9650 {clusters}\u3002\u8C03\u5927\u4F1A\u8BA9\u66F4\u65E9\u7684\u8BA1\u7B97\u53EF\u76F4\u63A5\u7F16\u8F91\uFF0C\u4F46\u68C0\u67E5\u70B9\u66F4\u5927\u3002",
+    "capabilities.prompt.retentionUnlimited": "\u4E0D\u9650\u5236",
     "capabilities.prompt.dynamicSlot": "\u52A8\u6001\uFF08\u88C5\u914D\u671F\u5B9E\u6D4B\uFF0C\u65E0\u5B57\u9762\u9ED8\u8BA4\uFF09",
     "capabilities.prompt.anchorMeta": "{channel} \xB7 {presence} \xB7 {owner}",
     "capabilities.prompt.slotBytes": "{bytes} B \xB7 {owner} \u7C7B",
@@ -42174,6 +42218,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.cardUnwired": "\u2014 ({count} slots not connected)",
     "capabilities.prompt.unwiredRow": "channel not connected \xB7 {slots} slots unmeasured",
     "capabilities.prompt.unwiredSummary": "{anchors} anchors and {slots} slots have no connected channel; they are excluded from the byte total.",
+    "capabilities.prompt.retention": "Checkpoint retention: newest {runs} cells \xB7 {bytes} payload \xB7 {clusters} clusters. A larger window keeps older cells editable but grows the checkpoint.",
+    "capabilities.prompt.retentionUnlimited": "unlimited",
     "capabilities.prompt.dynamicSlot": "dynamic (measured at assembly; no literal default)",
     "capabilities.prompt.anchorMeta": "{channel} \xB7 {presence} \xB7 {owner}",
     "capabilities.prompt.slotBytes": "{bytes} B \xB7 owner {owner}",

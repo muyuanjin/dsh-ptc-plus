@@ -1241,6 +1241,14 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         }))),
       cards,
       totals,
+      h('p', { className: 'ptcPlusDetail', 'data-prompt-retention': 'true' },
+        t('capabilities.prompt.retention', {
+          runs: value?.retentionPayloadRuns ?? 32,
+          bytes: `${Math.round((value?.retentionPayloadBytes ?? 8388608) / 1024)} KiB`,
+          clusters: value?.retentionClusters === 0
+            ? t('capabilities.prompt.retentionUnlimited')
+            : (value?.retentionClusters ?? 5000),
+        })),
       diff,
       unwiredAnchors.length === 0 ? null : h('p', { className: 'ptcPlusDetail' },
         t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),

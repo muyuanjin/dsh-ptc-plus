@@ -30,7 +30,7 @@ The newest entry is not exempt from the cap. A single cell larger than the whole
 
 Dropping a cluster is not permanent. `withFullRetention` refolds the same session-log slice with pruning disabled, and the edit path uses it to recover a cell the window dropped, so an edit or republication that needs an old cell still succeeds while the log can supply it. Only when the log itself cannot supply the cell do consumers report `retention-pruned` with the edit or republication wording above.
 
-The window is enabled by default: 32 runs and a cumulative 8 MiB payload cap (`DSH_PTC_RETENTION_RUNS` / `DSH_PTC_RETENTION_BYTES` shrink it in tests). Measured with `G:\Temp\measure-projection.mjs` against this tree, reading the harness's own settlement counts rather than the per-field byte sizes:
+The window is enabled by default and is user configuration: `retentionPayloadRuns` (32), `retentionPayloadBytes` (8 MiB) and `retentionClusters` (5000; `0` means unlimited). A cluster beyond the count window or the payload budget is folded into the summary, and the `DSH_PTC_RETENTION_*` environment levers may only tighten a configured value — they exist for tests and can never widen the bound. Measured with `G:\Temp\measure-projection.mjs` against this tree, reading the harness's own settlement counts rather than the per-field byte sizes:
 
 | Session | Checkpoint | Retained settlements | Summary records |
 | --- | --- | --- | --- |

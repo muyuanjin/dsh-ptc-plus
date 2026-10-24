@@ -26,7 +26,7 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, chainOfEntries, digestOf, extendSummary, settlementBytes,
+  byteLength, chainOfEntries, digestOf, extendSummary, retainedClusterCount, retentionLimits, settlementBytes,
   summaryEntry, summaryRecordOf,
 } from './projection-retention.js'
 
@@ -1725,8 +1725,11 @@ function pruneRetention(state, tables) {
     .filter(entry => entry.settlement !== undefined)
     .sort((left, right) => left.settlement.observedIndex - right.settlement.observedIndex)
   if (entries.length === 0) return
-  // The count window is order-only so a replayed fold prunes identically.
-  const keepFrom = Math.max(0, entries.length - MAX_RETAINED_RUNS)
+  const limits = retentionLimits()
+  // The count window is order-only so a replayed fold prunes identically. A
+  // configured cluster cap of 0 means the count window never folds anything and
+  // the payload budget is the only bound.
+  const keepFrom = Math.max(0, entries.length - retainedClusterCount(limits))
   // The runs a consumer reads synchronously — the latest publication and the cell
   // an edit would capture — stay inside the window even when newer settlements
   // pushed them past the count. Dropping them would turn "editable" into "pruned"
@@ -1756,8 +1759,8 @@ function pruneRetention(state, tables) {
   for (const [index, entry] of newestFirst.entries()) {
     const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
-    const overBudget = bytes > MAX_RETAINED_BYTES
-    if (overBudget || (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES)) {
+    const overBudget = bytes > limits.bytes
+    if (overBudget || (index > 0 && !pinned && retainedTotal + bytes > limits.bytes)) {
       mustPrune.add(entry.resultSeq)
       continue
     }

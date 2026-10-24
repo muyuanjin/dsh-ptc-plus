@@ -129,6 +129,29 @@ function resultEvent(sourceSeq, value) {
   return { type: 'tool/result', sourceEventSeqs: [sourceSeq], data: { meta: { [JOURNAL_KEY]: value } } }
 }
 
+test('a non-REPL tool observation keeps its call event because only REPL calls are retained', () => {
+  // `write` is not an executable REPL call, so it never enters executableCalls.
+  // Its ordinary observation therefore stores the call event itself; the digest
+  // shape belongs to REPL calls, which resolve through executableCalls.
+  const write = { seq: 1, type: 'tool/call', data: { name: 'write', callId: 'w1', arguments: '{"path":"a.txt"}' } }
+  const result = { seq: 2, type: 'tool/result',
+    data: { message: { source: { callId: 'w1' }, content: [{ type: 'text', text: 'written' }] } } }
+  let state = createSessionTimelineState()
+  for (const [index, event] of [{ seq: 0, type: 'turn/start', data: {} }, write, result].entries()) {
+    state = advanceSessionTimeline(state, event, index)
+  }
+  assert.equal(state.executableCalls.k1, undefined)
+  const observation = state.ordinaryResultSeqs.k1[1]
+  assert.deepEqual(Object.keys(observation).sort(), ['call', 'eventIndex', 'eventSeq'])
+  assert.equal(observation.call.data.callId, 'w1')
+  assert.equal(observation.call.data.name, 'write')
+  // Non-REPL arguments are not retained: only REPL tool calls carry `arguments`.
+  assert.equal(observation.call.data.arguments, undefined)
+  const restored = JSON.parse(JSON.stringify(state))
+  validateSessionTimelineState(restored)
+  assert.deepEqual(restored.ordinaryResultSeqs.k1[1], observation)
+})
+
 test('timeline checkpoints preserve pending identities, edit claims, prune clones and ambiguous boundaries', () => {
   const run = callEvent(1, 'run', 'const checkpointValue = 1')
   const result = { ...resultEvent(1, journal()), seq: 2,

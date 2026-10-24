@@ -1187,6 +1187,10 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
         clearRunSelection('duplicate-result')
         continue
       }
+      // Non-REPL tools never enter `executableCalls` (only executable REPL calls
+      // are retained there), so their observation keeps the call event itself.
+      // REPL calls keep the digest and resolve the event through executableCalls,
+      // which is why one table has two legal shapes.
       ordinaryResultSeqs.set(callSeq, timelineJson({
         ...(state.executableCalls.get(callSeq) === undefined ? { call } : { callDigest: eventDigest(call) }),
         eventSeq: isCanonicalSequence(event.seq) ? event.seq : callSeq, eventIndex }))

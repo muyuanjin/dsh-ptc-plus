@@ -6,15 +6,16 @@ import { npmCliCommand } from './npm-cli.mjs'
 
 /**
  * Group selection by gate:
- * - `--check` is the commit gate: the semantic-evidence backend tier only, no
- *   browser suites. It has to stay inside its time budget on an ordinary
- *   developer machine.
+ * - `--check` is the commit gate: Client units plus the semantic-evidence
+ *   backend tier, no browser suites. It has to stay inside its time budget on
+ *   an ordinary developer machine, and it must still cover changes whose only
+ *   coverage lives in the Client suite.
  * - `--ci` keeps the focused runtime contracts and the browser suites.
  * - the default (`npm run verify`) is the complete behavioral gate: whole
  *   backend inventory plus browser suites, for CI and release preparation.
  */
 export function deterministicGroups({ ci = false, check = false } = {}) {
-  if (check) return ['test:backend:fast']
+  if (check) return ['test:client', 'test:backend:fast']
   return ['test:client:visual', ci ? 'test:ci:runtime' : 'test:backend']
 }
 

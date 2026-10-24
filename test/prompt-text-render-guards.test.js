@@ -44,6 +44,26 @@ test('render refuses a projected override that drops its hole', () => {
   assert.equal(duplicated.overridden('plan.overageSentence'), false, 'exactly one hole is required')
 })
 
+test('the save rule for placeholders matches what the resolver substitutes', () => {
+  // `plan.navigationSentence` is a literal slot whose default shows
+  // `capabilities.search({query})`. Nothing substitutes that token, so rewording
+  // the sentence with or without it must both be savable; requiring the token
+  // would reject legitimate rewording of an API example.
+  const literalWith = document({ 'plan.navigationSentence': 'Call capabilities.search({query}) when unsure.' })
+  const literalWithout = document({ 'plan.navigationSentence': 'Call capabilities.search when unsure.' })
+  for (const candidate of [literalWith, literalWithout]) {
+    assert.doesNotThrow(() => validatePromptTextDocument(candidate))
+    assert.equal(resolvePromptText(candidate).overridden('plan.navigationSentence'), true)
+  }
+  // A projected slot is the opposite: its hole is the fact it reports.
+  for (const value of ['No hole here.', 'two {overageBytes} holes {overageBytes}']) {
+    assert.throws(() => validatePromptTextDocument(document({ 'plan.overageSentence': value })),
+      /must keep exactly one \{overageBytes\} placeholder/u)
+  }
+  assert.doesNotThrow(() => validatePromptTextDocument(
+    document({ 'plan.overageSentence': 'Contracts exceed the budget by {overageBytes}.' })))
+})
+
 test('a non-string promptText is reported instead of silently resolving to the default', () => {
   for (const value of [null, 42, {}, []]) {
     const resolved = resolvePromptText(value)

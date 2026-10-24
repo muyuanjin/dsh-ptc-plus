@@ -585,11 +585,16 @@ export function validatePromptTextDocument(value) {
     if (text.trim().length === 0 && !slot.omittable) {
       throw new TypeError(`ptc-plus: promptText slot ${id} must not be empty`)
     }
-    // A projected slot's placeholder is how the delivered sentence names the fact
-    // it reports; losing it would silently deliver a sentence about nothing.
-    for (const hole of holeTokens(slot.defaultText)) {
-      if (text.split(hole).length - 1 !== 1) {
-        throw new TypeError(`ptc-plus: promptText slot ${id} must keep exactly one ${hole} placeholder`)
+    // Only a projected slot's placeholder names a fact the composer substitutes.
+    // A literal default may also contain braces (`plan.navigationSentence` shows
+    // `capabilities.search({query})`), but that is prose: nothing substitutes it,
+    // so requiring the token here would forbid legitimate rewording. The render
+    // path applies the same rule to the same slot kinds.
+    if (slot.kind === 'projected') {
+      for (const hole of holeTokens(slot.defaultText)) {
+        if (text.split(hole).length - 1 !== 1) {
+          throw new TypeError(`ptc-plus: promptText slot ${id} must keep exactly one ${hole} placeholder`)
+        }
       }
     }
     overrides.set(id, text)

@@ -1576,9 +1576,11 @@ function validatePromptTextDocument(value) {
     if (text.trim().length === 0 && !slot.omittable) {
       throw new TypeError(`ptc-plus: promptText slot ${id2} must not be empty`);
     }
-    for (const hole of holeTokens(slot.defaultText)) {
-      if (text.split(hole).length - 1 !== 1) {
-        throw new TypeError(`ptc-plus: promptText slot ${id2} must keep exactly one ${hole} placeholder`);
+    if (slot.kind === "projected") {
+      for (const hole of holeTokens(slot.defaultText)) {
+        if (text.split(hole).length - 1 !== 1) {
+          throw new TypeError(`ptc-plus: promptText slot ${id2} must keep exactly one ${hole} placeholder`);
+        }
       }
     }
     overrides2.set(id2, text);

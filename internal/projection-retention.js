@@ -78,9 +78,7 @@ export function prunedSettlement(settlement) {
   return {
     ...rest,
     call: prunedCallEvent(call),
-    // `entry.event` certifies the same call; prune it identically or admission
-    // would see the settlement disagree with its own entry.
-    ...(entry === undefined ? {} : { entry: { ...entry, event: prunedCallEvent(entry.event) } }),
+    entry,
     pruned: true,
     ...(normalized === undefined ? {} : { normalized: prunedNormalized(normalized) }),
     ...(publication === undefined ? {} : {
@@ -119,10 +117,6 @@ export function settlementBytes(settlement) {
   let bytes = 0
   const args = settlement?.call?.data?.arguments
   if (typeof args === 'string') bytes += byteLength(args)
-  // The entry certifies the same call, so its copy of the arguments counts too;
-  // otherwise the window would retain roughly twice the payload it budgets.
-  const entryArgs = settlement?.entry?.event?.data?.arguments
-  if (typeof entryArgs === 'string') bytes += byteLength(entryArgs)
   const normalized = settlement?.normalized
   if (normalized !== undefined) bytes += byteLength(normalized)
   if (settlement?.publication !== undefined) bytes += byteLength(settlement.publication)

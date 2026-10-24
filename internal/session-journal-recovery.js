@@ -733,6 +733,12 @@ export function validateSessionTimelineState(value) {
   const callEntry = entry => fields(entry, ['event', 'eventIndex', 'scope', 'ambiguous', 'editTarget']) && callEvent(entry.event)
     && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
     && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
+  // A settlement references its call through `call` and keeps only the entry's
+  // position and claims. Storing `entry.event` as well would serialize the call
+  // event a second time — the duplication the retention work exists to remove.
+  const settlementEntry = entry => fields(entry, ['eventIndex', 'scope', 'ambiguous', 'editTarget'])
+    && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
+    && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
   const table = (name, keyValid, payloadValid) => {
     requireFact(isRecord(value[name]))
     for (const [key, pair] of Object.entries(value[name])) {
@@ -862,12 +868,11 @@ export function validateSessionTimelineState(value) {
         && observation.eventIndex >= executable.get(seq).eventIndex)))
   const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
     ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized', 'pruned'])
-    && callEvent(settlement.call) && callEntry(settlement.entry)
+    && callEvent(settlement.call) && settlementEntry(settlement.entry)
     && optional(settlement.normalized, normalizedResult)
     && typeof settlement.ordinary === 'boolean'
     && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
     && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
-    && deepEqualJson(settlement.call, settlement.entry.event)
     && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
     && optional(settlement.pruned, pruned => pruned === true)
     && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
@@ -1486,7 +1491,11 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
       if (isCanonicalSequence(resultSeq)) state.results.set(resultSeq, timelineJson(normalized))
       state.found = true
     }
-    const settlement = call === undefined ? undefined : { call, entry, identity: observation.identity,
+    const settlement = call === undefined ? undefined : { call, entry: {
+      eventIndex: entry?.eventIndex, scope: entry?.scope,
+      ...(entry?.ambiguous === true ? { ambiguous: true } : {}),
+      ...(entry?.editTarget === undefined ? {} : { editTarget: entry.editTarget }),
+    }, identity: observation.identity,
       observedIndex: eventIndex, ordinary: !prunedReplacement,
       ...(normalized === undefined ? {} : { normalized }) }
     if (settlement !== undefined && entry.scope === scope
@@ -1645,9 +1654,15 @@ function pruneRetention(state, tables) {
   state.eventFacts = state.eventFacts.map(fact => {
     const callPruned = fact.event?.type === 'tool/call' && prunedCallSeqs.has(fact.event.seq)
     const resultPruned = fact.normalized !== undefined && prunedResultSeqs.has(fact.normalized.eventSeq)
-    if (!callPruned && !resultPruned) return fact
+    // Once a checkpoint is compacted, every `tool/call` fact loses its argument
+    // text: the settlement already carries the canonical copy for the retained
+    // window, and admission for a compacted state proves the cut and the digests
+    // rather than replaying the text. Keeping the copy here would serialize the
+    // same payload a second time (the duplication this window exists to remove).
+    const callCompact = fact.event?.type === 'tool/call' && fact.event.data?.arguments !== undefined
+    if (!callPruned && !resultPruned && !callCompact) return fact
     let next = fact
-    if (callPruned) next = { ...next, event: prunedCallEvent(next.event) }
+    if (callPruned || callCompact) next = { ...next, event: prunedCallEvent(next.event) }
     if (resultPruned) next = { ...next, normalized: prunedNormalized(next.normalized) }
     const { digest: _previous, ...rest } = next
     return timelineJson({ ...rest, digest: factDigest(rest) })

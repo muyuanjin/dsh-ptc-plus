@@ -247,7 +247,7 @@ test('projection checkpoints reject malformed tables and inconsistent derived fa
 
 test('admission proves digest-bound continuity: it rejects a tampered fact digest and a tampered frontier', () => {
   const projection = createSessionLogProjection()
-  assert.equal(projection.stateVersion, 12)
+  assert.equal(projection.stateVersion, 13)
   let checkpoint = projection.init()
   checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
     data: runtimeStateMessage(state('retained')), surfaceOp: 'append' })

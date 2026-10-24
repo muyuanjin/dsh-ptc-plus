@@ -10850,7 +10850,6 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           onClick: () => setOpenSlots((previous) => ({ ...previous, [anchor.anchorId]: slot.slotId }))
         },
         h("span", { className: "ptcPlusPromptChipLabel" }, slot.slotId),
-        h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.chipMeta", { owner: slot.owner })),
         ...markers
       );
     };
@@ -10876,93 +10875,87 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       const status = anchor.owner === "mixed" ? t2("capabilities.prompt.ownerMixed") : anchor.owner === "A" ? t2("capabilities.prompt.ownerEditable") : anchor.owner === "B" ? t2("capabilities.prompt.ownerReadOnly") : t2("capabilities.prompt.ownerOther");
       const reasons = [...new Set(anchor.slots.map((slot) => slot.reason).filter(Boolean))];
       const kinds2 = [...new Set(anchor.slots.map((slot) => slot.kind))];
-      return h(
-        "div",
-        {
-          key: anchor.anchorId,
-          className: "ptcPlusPromptRow",
-          role: "row",
-          "data-anchor-id": anchor.anchorId,
-          "data-wired": anchor.wired === true ? "true" : "false",
-          "data-paused": paused ? "true" : "false"
-        },
-        h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "channel" }, anchor.channel),
+      const cells = [
+        h("td", { className: "ptcPlusPromptCell", "data-cell": "channel" }, anchor.channel),
         h(
-          "span",
-          { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", role: "cell", "data-cell": "anchor" },
+          "td",
+          { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", "data-cell": "anchor" },
           h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId),
           h("small", { className: "ptcPlusPromptChipNote", "data-owner-status": anchor.owner }, status)
         ),
-        h("span", {
-          className: "ptcPlusPromptCell",
-          role: "cell",
-          "data-cell": "presence",
-          title: anchor.presence
-        }, anchor.presence),
+        h("td", { className: "ptcPlusPromptCell", "data-cell": "presence", title: anchor.presence }, anchor.presence),
+        h("td", { className: "ptcPlusPromptCell ptcPlusPromptAnchorBytes", "data-cell": "bytes" }, bytes),
         h(
-          "span",
-          { className: "ptcPlusPromptCell ptcPlusPromptAnchorBytes", role: "cell", "data-cell": "bytes" },
-          bytes
-        ),
-        h(
-          "span",
-          { className: "ptcPlusPromptCell", role: "cell", "data-cell": "reason" },
+          "td",
+          { className: "ptcPlusPromptCell", "data-cell": "reason", title: reasons.join(" \xB7 ") },
           reasons.length === 0 ? "\u2014" : reasons.join(" \xB7 ")
         ),
-        h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "kind" }, kinds2.join(" \xB7 ")),
+        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.join(" \xB7 ")),
         h(
-          "div",
-          { className: "ptcPlusPromptChips", role: "cell", "data-cell": "slots" },
-          ...anchor.slots.map((slot) => chip(anchor, slot))
-        ),
-        editor
-      );
+          "td",
+          { className: "ptcPlusPromptCell", "data-cell": "slots" },
+          h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot)))
+        )
+      ];
+      return [
+        h("tr", {
+          key: anchor.anchorId,
+          className: "ptcPlusPromptRow",
+          "data-anchor-id": anchor.anchorId,
+          "data-wired": anchor.wired === true ? "true" : "false",
+          "data-paused": paused ? "true" : "false"
+        }, ...cells),
+        editor === null ? null : h(
+          "tr",
+          { key: `${anchor.anchorId}-editor`, className: "ptcPlusPromptEditorRow" },
+          h("td", { className: "ptcPlusPromptCell", colSpan: 7 }, editor)
+        )
+      ];
     });
-    const header = h(
-      "div",
-      { className: "ptcPlusPromptRow ptcPlusPromptHeader", role: "row" },
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnChannel")),
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnAnchor")),
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnPresence")),
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnBytesSplit")),
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnReason")),
-      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnKind"))
-    );
+    const headers = [
+      t2("capabilities.prompt.columnChannel"),
+      t2("capabilities.prompt.columnAnchor"),
+      t2("capabilities.prompt.columnPresence"),
+      t2("capabilities.prompt.columnBytesSplit"),
+      t2("capabilities.prompt.columnReason"),
+      t2("capabilities.prompt.columnKind"),
+      t2("capabilities.prompt.columnSlots")
+    ];
+    const header = h("thead", null, h(
+      "tr",
+      { className: "ptcPlusPromptHeader" },
+      ...headers.map((label, index2) => h("th", { key: label, scope: "col", role: "columnheader", "data-column": index2 }, label))
+    ));
     const hostRows = HOST_CONTEXT_SECTIONS.map((section) => h(
-      "div",
+      "tr",
       {
         key: section.id,
         className: "ptcPlusPromptRow ptcPlusPromptHostRow",
-        role: "row",
         "data-host-row": section.id
       },
-      h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "channel" }, "prompt"),
-      h("code", {
-        className: "ptcPlusPromptCell ptcPlusPromptAnchorId",
-        role: "cell",
-        "data-cell": "anchor",
-        title: section.id
-      }, section.id),
-      h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "presence" }, t2(section.presence)),
+      h("td", { className: "ptcPlusPromptCell", "data-cell": "channel" }, "prompt"),
       h(
-        "span",
-        { className: "ptcPlusPromptCell", role: "cell", "data-cell": "bytes" },
+        "td",
+        { className: "ptcPlusPromptCell ptcPlusPromptAnchorCell", "data-cell": "anchor" },
+        h("code", { className: "ptcPlusPromptAnchorId", title: section.id }, section.id)
+      ),
+      h("td", { className: "ptcPlusPromptCell", "data-cell": "presence" }, t2(section.presence)),
+      h(
+        "td",
+        { className: "ptcPlusPromptCell", "data-cell": "bytes" },
         t2("capabilities.prompt.hostUnavailable")
       ),
+      h("td", { className: "ptcPlusPromptCell", "data-cell": "reason" }, t2("capabilities.prompt.ownerHost")),
       h(
-        "span",
-        { className: "ptcPlusPromptCell", role: "cell", "data-cell": "reason" },
-        t2("capabilities.prompt.ownerHost")
-      ),
-      h(
-        "span",
-        { className: "ptcPlusPromptCell", role: "cell", "data-cell": "kind" },
+        "td",
+        { className: "ptcPlusPromptCell", "data-cell": "kind" },
         h(
           "span",
           { className: "ptcPlusPromptChip", "data-readonly": "true" },
           h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.hostSection"))
         )
-      )
+      ),
+      h("td", { className: "ptcPlusPromptCell", "data-cell": "slots" })
     ));
     const builtinBytes = (text) => new TextEncoder().encode(text).length;
     const changed = account.anchors.map((anchor) => {
@@ -11036,7 +11029,17 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         { className: "ptcPlusDetail" },
         t2("capabilities.prompt.unwiredSummary", { anchors: unwiredAnchors.length, slots: unmeasuredSlots })
       ),
-      h("div", { className: "ptcPlusPromptTable", role: "table" }, header, ...rows, ...hostRows)
+      h(
+        "table",
+        { className: "ptcPlusPromptTable" },
+        h(
+          "colgroup",
+          null,
+          ["channel", "anchor", "presence", "bytes", "reason", "kind", "slots"].map((key) => h("col", { key, className: `ptcPlusPromptCol-${key}` }))
+        ),
+        header,
+        h("tbody", null, ...rows.flat(1).filter(Boolean), ...hostRows)
+      )
     );
   }
   function CapabilityWorkbench({
@@ -40415,24 +40418,32 @@ var CLIENT_CSS = `
 .ptcPlusPromptCards{display:flex;flex-wrap:wrap;gap:10px}
 .ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
-.ptcPlusPromptTable{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
-.ptcPlusPromptRow{display:grid;grid-template-columns:64px minmax(130px,1fr) minmax(110px,0.9fr) minmax(150px,1.1fr) minmax(96px,0.7fr) minmax(78px,0.5fr);gap:4px 12px;align-items:start;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);min-width:0}
+.ptcPlusPromptTable{width:100%;border-collapse:collapse;table-layout:fixed;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
+.ptcPlusPromptCol-channel{width:62px}
+.ptcPlusPromptCol-anchor{width:18%}
+.ptcPlusPromptCol-presence{width:11%}
+.ptcPlusPromptCol-bytes{width:24%}
+.ptcPlusPromptCol-reason{width:12%}
+.ptcPlusPromptCol-kind{width:9%}
+.ptcPlusPromptRow{border-bottom:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusPromptRow:last-child{border-bottom:0}
-.ptcPlusPromptRow[data-host-row]{background:var(--dsw-alias-bg-layer-2)}
-.ptcPlusPromptHeader{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;color:var(--dsw-alias-label-tertiary)}
-.ptcPlusPromptCell{min-width:0;font-size:11px;line-height:18px;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptRow:hover>td{background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptRow[data-host-row]>td{background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptHeader>th{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;text-align:left;color:var(--dsw-alias-label-tertiary);white-space:nowrap}
+.ptcPlusPromptCell{padding:8px 10px;font-size:11px;line-height:18px;vertical-align:top;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary)}
 .ptcPlusPromptCell[data-cell=anchor]{color:var(--dsw-alias-label-primary)}
-.ptcPlusPromptStatus{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
-.ptcPlusPromptRow>.ptcPlusPromptChips,.ptcPlusPromptRow>.ptcPlusPromptEditor{grid-column:1/-1}
+.ptcPlusPromptCell[data-cell=bytes]{white-space:normal;text-overflow:clip}.ptcPlusPromptCell[data-cell=bytes] small{display:block;white-space:normal;overflow-wrap:anywhere;margin-top:2px}
+.ptcPlusPromptCell[data-cell=slots]{white-space:normal}.ptcPlusPromptCell[data-cell=reason]{white-space:normal}
+.ptcPlusPromptEditorRow>td{padding:0 10px 10px;background:transparent}.ptcPlusPromptEditorRow textarea{width:100%}
 .ptcPlusPromptTextarea{color:var(--dsw-alias-label-primary)}
-@media(max-width:720px){.ptcPlusPromptRow{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.ptcPlusPromptHeader{display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=bytes]{grid-column:span 1}}
+@media(max-width:720px){.ptcPlusPromptTable{table-layout:auto}.ptcPlusPromptHeader>th:nth-child(1),.ptcPlusPromptHeader>th:nth-child(3),.ptcPlusPromptHeader>th:nth-child(5),.ptcPlusPromptHeader>th:nth-child(6){display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=channel],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=reason],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=kind]{display:none}}
 .ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
 .ptcPlusPromptAnchorCell{display:flex;flex-direction:column;gap:2px;min-width:0}.ptcPlusPromptDiff{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--dsw-alias-state-business-primary,#4d6bfe);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPromptDiff h5{margin:0;font-size:12px;line-height:18px;font-weight:600;color:var(--dsw-alias-label-primary)}.ptcPlusPromptDiffRow{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;min-width:0}.ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
 .ptcPlusPromptAnchorMeta{flex:1 1 220px;min-width:0;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .ptcPlusPromptAnchorBytes{flex:none;font-size:11px;line-height:18px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
 .ptcPlusPromptChips{display:flex;flex-wrap:wrap;gap:6px;min-width:0;grid-column:1/-1}
-.ptcPlusPromptChip{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:2px 6px;appearance:none;max-width:100%;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:16px;text-align:start;cursor:pointer}
+.ptcPlusPromptChip{display:inline-flex;align-items:baseline;flex-wrap:wrap;gap:1px 4px;appearance:none;max-width:100%;padding:2px 6px;font-size:10px;line-height:16px;8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;line-height:16px;text-align:start;cursor:pointer}
 .ptcPlusPromptChip[aria-pressed=true]{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-state-business-primary,#4d6bfe)}
 .ptcPlusPromptChip[data-readonly=true]{cursor:default;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
 .ptcPlusPromptChipLabel{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);overflow-wrap:anywhere}
@@ -41455,6 +41466,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.columnBytesSplit": "\u5B57\u8282\uFF08\u6309\u69FD\u62C6\u5206\uFF09",
     "capabilities.prompt.columnReason": "\u539F\u56E0\u7801",
     "capabilities.prompt.columnKind": "\u69FD\u4F4D\u79CD\u7C7B",
+    "capabilities.prompt.columnSlots": "\u69FD\u4F4D",
     "capabilities.prompt.anchorBytesSplit": "\uFF08{parts}\uFF09",
     "capabilities.prompt.diffTitle": "\u4FDD\u5B58\u524D\u5DEE\u5F02\u9884\u89C8",
     "capabilities.prompt.diffDelta": "{delta} \u5B57\u8282",
@@ -42140,6 +42152,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.columnBytesSplit": "Bytes (per slot)",
     "capabilities.prompt.columnReason": "Reason code",
     "capabilities.prompt.columnKind": "Slot kind",
+    "capabilities.prompt.columnSlots": "Slots",
     "capabilities.prompt.anchorBytesSplit": "({parts})",
     "capabilities.prompt.diffTitle": "Pending changes before saving",
     "capabilities.prompt.diffDelta": "{delta} bytes",

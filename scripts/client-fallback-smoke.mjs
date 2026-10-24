@@ -1029,6 +1029,17 @@ if (values.list) {
         await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
         assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeNavigation, 'combination navigation must not save settings')
         await page.screenshot({ path: `artifacts/button-styles/capability-default-${width}-${theme}-${native ? 'native' : 'fallback'}-${locale}.png` })
+        // The prompt-text pane is a table; capture it so column alignment can be
+        // inspected visually, not only asserted structurally. Only the widest case
+        // is captured, which is the layout the contract describes.
+        if (width >= 1400 && theme === 'light' && locale === 'zh') {
+          await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
+          await page.locator('.ptcPlusPromptText').waitFor()
+          await page.locator('.ptcPlusPromptTable').scrollIntoViewIfNeeded()
+          await page.screenshot({ path: 'G:\\Temp\\pane-view.png' })
+          await page.locator('.ptcPlusPromptText').screenshot({ path: 'G:\\Temp\\pane-after.png' })
+          await workbench.getByRole('tab', { name: labels['capabilities.tab.manual'], exact: true }).click()
+        }
         const editor = page.locator('.ptcPlusCapabilityEditorDialog')
         const assertWindowFits = async (surface, what) => {
           const geometry = await surface.evaluate(element => {

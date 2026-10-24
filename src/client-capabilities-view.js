@@ -1065,7 +1065,6 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         onClick: () => setOpenSlots(previous => ({ ...previous, [anchor.anchorId]: slot.slotId })),
       },
         h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
-        h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.chipMeta', { owner: slot.owner })),
         ...markers)
     }
     const rows = account.anchors.map(anchor => {
@@ -1108,53 +1107,56 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       // table states what protects each row instead of hiding it in the chips.
       const reasons = [...new Set(anchor.slots.map(slot => slot.reason).filter(Boolean))]
       const kinds = [...new Set(anchor.slots.map(slot => slot.kind))]
-      return h('div', {
-        key: anchor.anchorId,
-        className: 'ptcPlusPromptRow',
-        role: 'row',
-        'data-anchor-id': anchor.anchorId,
-        'data-wired': anchor.wired === true ? 'true' : 'false',
-        'data-paused': paused ? 'true' : 'false',
-      },
-        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'channel' }, anchor.channel),
-        h('span', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', role: 'cell', 'data-cell': 'anchor' },
+      const cells = [
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'channel' }, anchor.channel),
+        h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', 'data-cell': 'anchor' },
           h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId),
           h('small', { className: 'ptcPlusPromptChipNote', 'data-owner-status': anchor.owner }, status)),
-        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'presence',
-          title: anchor.presence }, anchor.presence),
-        h('span', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', role: 'cell', 'data-cell': 'bytes' },
-          bytes),
-        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'reason' },
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence', title: anchor.presence }, anchor.presence),
+        h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', 'data-cell': 'bytes' }, bytes),
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason', title: reasons.join(' · ') },
           reasons.length === 0 ? '—' : reasons.join(' · ')),
-        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'kind' }, kinds.join(' · ')),
-        h('div', { className: 'ptcPlusPromptChips', role: 'cell', 'data-cell': 'slots' },
-          ...anchor.slots.map(slot => chip(anchor, slot))),
-        editor)
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind', title: kinds.join(' · ') }, kinds.join(' · ')),
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'slots' },
+          h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot)))),
+      ]
+      return [
+        h('tr', {
+          key: anchor.anchorId,
+          className: 'ptcPlusPromptRow',
+          'data-anchor-id': anchor.anchorId,
+          'data-wired': anchor.wired === true ? 'true' : 'false',
+          'data-paused': paused ? 'true' : 'false',
+        }, ...cells),
+        editor === null ? null : h('tr', { key: `${anchor.anchorId}-editor`, className: 'ptcPlusPromptEditorRow' },
+          h('td', { className: 'ptcPlusPromptCell', colSpan: 7 }, editor)),
+      ]
     })
-    const header = h('div', { className: 'ptcPlusPromptRow ptcPlusPromptHeader', role: 'row' },
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnChannel')),
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnAnchor')),
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnPresence')),
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnBytesSplit')),
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnReason')),
-      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnKind')))
+    const headers = [
+      t('capabilities.prompt.columnChannel'), t('capabilities.prompt.columnAnchor'),
+      t('capabilities.prompt.columnPresence'), t('capabilities.prompt.columnBytesSplit'),
+      t('capabilities.prompt.columnReason'), t('capabilities.prompt.columnKind'),
+      t('capabilities.prompt.columnSlots'),
+    ]
+    const header = h('thead', null, h('tr', { className: 'ptcPlusPromptHeader' },
+      ...headers.map((label, index) => h('th', { key: label, scope: 'col', role: 'columnheader', 'data-column': index }, label))))
     // Host-owned context: read-only rows so the pane also answers what the host puts in
     // the request. The plugin cannot edit these bytes and does not pretend otherwise.
-    const hostRows = HOST_CONTEXT_SECTIONS.map(section => h('div', {
-      key: section.id, className: 'ptcPlusPromptRow ptcPlusPromptHostRow', role: 'row',
+    const hostRows = HOST_CONTEXT_SECTIONS.map(section => h('tr', {
+      key: section.id, className: 'ptcPlusPromptRow ptcPlusPromptHostRow',
       'data-host-row': section.id,
     },
-      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'channel' }, 'prompt'),
-      h('code', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorId', role: 'cell', 'data-cell': 'anchor',
-        title: section.id }, section.id),
-      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'presence' }, t(section.presence)),
-      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'bytes' },
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'channel' }, 'prompt'),
+      h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorCell', 'data-cell': 'anchor' },
+        h('code', { className: 'ptcPlusPromptAnchorId', title: section.id }, section.id)),
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence' }, t(section.presence)),
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'bytes' },
         t('capabilities.prompt.hostUnavailable')),
-      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'reason' },
-        t('capabilities.prompt.ownerHost')),
-      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'kind' },
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason' }, t('capabilities.prompt.ownerHost')),
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind' },
         h('span', { className: 'ptcPlusPromptChip', 'data-readonly': 'true' },
-          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection'))))))
+          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection')))),
+      h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'slots' })))
     // Design §5/§11.7: saving shows what will change. The preview is derived from the
     // same document the editors write, so it cannot disagree with them, and it only
     // appears while at least one slot differs from its built-in text.
@@ -1215,7 +1217,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       diff,
       unwiredAnchors.length === 0 ? null : h('p', { className: 'ptcPlusDetail' },
         t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),
-      h('div', { className: 'ptcPlusPromptTable', role: 'table' }, header, ...rows, ...hostRows))
+      h('table', { className: 'ptcPlusPromptTable' },
+        h('colgroup', null,
+          ['channel', 'anchor', 'presence', 'bytes', 'reason', 'kind', 'slots'].map(key =>
+            h('col', { key, className: `ptcPlusPromptCol-${key}` }))),
+        header,
+        h('tbody', null, ...rows.flat(1).filter(Boolean), ...hostRows)))
   }
 
   function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,

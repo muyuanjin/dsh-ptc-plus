@@ -8262,13 +8262,17 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   for (const row of unwiredRows) {
     expect(row.querySelectorAll('textarea, input, button')).toHaveLength(0)
   }
-  const unwiredRow = view.getByText('tools:sdk#capability-appendix').closest('div')
+  const unwiredRow = view.getByText('tools:sdk#capability-appendix').closest('tr')
   expect(unwiredRow.querySelector('textarea')).toBeNull()
 
   // Structure: one compact block per anchor. Each editable anchor owns exactly one
   // textarea, so an extra field or a duplicated editor is a visible regression.
   for (const row of rows) {
-    const textareas = row.querySelectorAll('textarea')
+    // The editor lives in the row's own full-width sub-row, so a wired editable
+    // anchor still owns exactly one field and a read-only one owns none.
+    const editorRow = row.nextElementSibling?.classList?.contains('ptcPlusPromptEditorRow')
+      ? row.nextElementSibling : null
+    const textareas = editorRow === null ? [] : [...editorRow.querySelectorAll('textarea')]
     expect(textareas.length).toBeLessThanOrEqual(1)
     if (row.dataset.wired === 'true' && row.querySelector('[data-slot-id]') !== null) {
       const editable = [...row.querySelectorAll('[data-slot-id]')].filter(chip => chip.tagName === 'BUTTON')
@@ -8330,7 +8334,7 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   expect(table).not.toBeNull()
   const header = table.querySelector('.ptcPlusPromptHeader')
   expect([...header.querySelectorAll('[role="columnheader"]')].map(cell => cell.textContent))
-    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind'])
+    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes (per slot)', 'Reason code', 'Slot kind', 'Slots'])
   const rows = [...table.querySelectorAll('[data-anchor-id]')]
   expect(rows).toHaveLength(13)
   for (const row of rows) {
@@ -8347,7 +8351,7 @@ test('prompt text pane stays a table, shows the built-in sentence as its value a
   // shipped wording without retyping it. A placeholder here would mean the field is
   // empty and the sentence is only decoration.
   const runCode = view.container.querySelector('[data-anchor-id="run_code"]')
-  const textarea = runCode.querySelector('textarea')
+  const textarea = runCode.nextElementSibling.querySelector('textarea')
   const builtIn = PROMPT_ASSETS.find(asset => asset.id === textarea.getAttribute('aria-label')).defaultText
   expect(textarea.value).toBe(builtIn)
   expect(textarea.value.length).toBeGreaterThan(20)

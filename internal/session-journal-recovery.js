@@ -26,7 +26,8 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, prunedCallEvent, prunedNormalized, prunedSettlement, settlementBytes,
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, prunedCallEvent, prunedNormalized, prunedSettlement,
+  settlementBytes,
 } from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
@@ -1599,10 +1600,23 @@ function pruneRetention(state, tables) {
   // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
   // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
   // the payload budget is spent; the newest entry always stays.
+  //
+  // The budget counts every retained copy of the payload: the settlement's call
+  // event and the executable-call entry hold the same argument text until the last
+  // copy is removed, so charging only one of them would let the checkpoint exceed
+  // the cap by that factor (a 400 KB cell then produced a 19 MB checkpoint against
+  // an 8 MiB budget).
+  const retainedPayloadBytes = (entry, executable = tables.executable) => {
+    const callSeq = entry.settlement.call?.seq
+    const stored = callSeq === undefined ? undefined : executable.get(callSeq)
+    const executableArguments = stored?.event?.data?.arguments
+    return settlementBytes(entry.settlement)
+      + (typeof executableArguments === 'string' ? byteLength(executableArguments) : 0)
+  }
   let retainedTotal = 0
   const newestFirst = [...retainedEntries].reverse()
   for (const [index, entry] of newestFirst.entries()) {
-    const bytes = settlementBytes(entry.settlement)
+    const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
     if (index > 0 && !pinned && retainedTotal + bytes > MAX_RETAINED_BYTES) {
       mustPrune.add(entry.resultSeq)
@@ -1613,10 +1627,10 @@ function pruneRetention(state, tables) {
   if (mustPrune.size === 0) return
   const prunedCallSeqs = new Set()
   const prunedResultSeqs = new Set()
-  let bytes = retainedEntries.reduce((sum, entry) => sum + settlementBytes(entry.settlement), 0)
+  let bytes = retainedEntries.reduce((sum, entry) => sum + retainedPayloadBytes(entry), 0)
   for (const entry of entries) {
     if (!mustPrune.has(entry.resultSeq) || entry.settlement.pruned === true) continue
-    const freed = settlementBytes(entry.settlement)
+    const freed = retainedPayloadBytes(entry)
     const callSeq = entry.settlement.call?.seq
     tables.settled.set(entry.resultSeq, prunedSettlement(entry.settlement))
     const stored = callSeq === undefined ? undefined : tables.executable.get(callSeq)

@@ -199,6 +199,28 @@ test('pruned republication preserves execution chronology, editable source and u
   }
 })
 
+test('checkpoint admission binds the single retained canonical call arguments', () => {
+  const events = [{ seq: 0, type: 'turn/start', data: {} }, callEvent(1, 'older', 'let older = 1'),
+    { ...resultEvent(1, journal()), seq: 2 }, callEvent(3, 'newer', 'let newer = 2'),
+    { ...resultEvent(3, journal()), seq: 4 }]
+  let checkpoint = createSessionTimelineState()
+  for (const event of events) checkpoint = advanceSessionTimeline(checkpoint, event)
+  checkpoint = JSON.parse(JSON.stringify(checkpoint))
+  assert.equal(checkpoint.executableCalls.k1[1].event.data.arguments, JSON.stringify({ code: 'let older = 1' }))
+  assert.doesNotThrow(() => validateSessionTimelineState(checkpoint))
+  // A settled non-latest call keeps its one canonical argument string; admission
+  // must reject a rewritten payload even though no digest-bound result row or
+  // latest-run source mentions it.
+  const damaged = JSON.parse(JSON.stringify(checkpoint))
+  damaged.executableCalls.k1[1].event.data.arguments = JSON.stringify({ code: 'return 99' })
+  assert.throws(() => validateSessionTimelineState(damaged), /timeline checkpoint/)
+  const stripped = JSON.parse(JSON.stringify(checkpoint))
+  delete stripped.executableCalls.k1[1].argumentsDigest
+  damaged.executableCalls.k1[1].argumentsDigest = '0'.repeat(64)
+  assert.throws(() => validateSessionTimelineState(stripped), /timeline checkpoint/)
+  assert.throws(() => validateSessionTimelineState(damaged), /timeline checkpoint/)
+})
+
 test('timeline checkpoint admission validates typed payloads and cross-table identities', () => {
   const bindings = createUserBindingsSnapshot({ entries: [] }, 1)
   const value = journal({ userBindingsFingerprint: bindings.fingerprint, calls: [
@@ -223,6 +245,14 @@ test('timeline checkpoint admission validates typed payloads and cross-table ide
     assert.deepEqual(validateSessionTimelineState(JSON.parse(JSON.stringify(checkpoint))), checkpoint)
     checkpoints.push(checkpoint)
   }
+  // A pending call references the canonical executableCalls arguments, and a
+  // derived edit row keeps its normalized journal once in the row itself.
+  assert.equal(checkpoint.executableCalls.k5[1].event.data.arguments, JSON.stringify({ code: 'return value' }))
+  assert.equal(checkpoint.pendingByCallId.kpending[1].event.data.arguments, undefined)
+  assert.equal(checkpoint.pendingByCallId.kpending[1].argumentsDigest, undefined)
+  assert.equal(checkpoint.results.k3[1].journal.completion.kind, 'return')
+  assert.equal(checkpoint.results.k3[1].derived.journal, undefined)
+  assert.equal(checkpoint.results.k3[1].derived.code, 'value = 2')
   for (const mutate of [
     state => { state.executableCalls.k1 = [1, {}] },
     state => { state.executableCalls.k1[1].scope = 99 },
@@ -241,7 +271,7 @@ test('timeline checkpoint admission validates typed payloads and cross-table ide
     state => { state.results.k1[1].error = 'conflicting journal' },
     state => { state.results.k1[1].userBindings.fingerprint = '0'.repeat(64) },
     state => { state.results.k3[1].derived.code = 99 },
-    state => { state.results.k3[1].derived.journal = {} },
+    state => { state.results.k3[1].derived.journal = state.results.k3[1].journal },
     state => { state.results.k3[1].derived.targetCallSeq = 99 },
     state => { state.editTargets.k3[1].callSeq = 99 },
     state => { state.editTargets.k3[1].source = 99 },
@@ -258,13 +288,13 @@ test('timeline checkpoint admission validates typed payloads and cross-table ide
     state => { state.settledResultsByEventSeq.k2[1].call.data.callId = 'other' },
     state => { state.settledResultsByEventSeq.k2[1].publication.index = -1 },
     state => { state.settledResultsByEventSeq.k4[1].publication.index = 99 },
-    state => { state.settledResultsByEventSeq.k4[1].publication.derived.code = 99 },
-    state => { state.settledResultsByEventSeq.k4[1].publication.derived.targetCallSeq = 99 },
-    state => { state.settledResultsByEventSeq.k4[1].publication.journal.status = 'invalid' },
+    state => { state.settledResultsByEventSeq.k4[1].publication.derivedTargetCallSeq = 99 },
+    state => { state.settledResultsByEventSeq.k4[1].resultKey = 2 },
+    state => { state.results.k3[1].journal.status = 'invalid' },
     state => { state.settledResultsByEventSeq.k4[1].publication.rewrites = [] },
     state => { delete state.settledResultsByEventSeq.k4[1].publication },
-    state => { state.latestRun.args = {} },
-    state => { state.editableRun.callSeq = 99 },
+    state => { state.latestRun.source = 'tampered' },
+    state => { state.latestRun.callSeq = 99 },
     state => { state.lastSuccessfulRunIndex = -1 },
     state => { state.lastSuccessfulRunIndex = 2 },
     state => { delete state.lastSuccessfulRunIndex },
@@ -321,7 +351,7 @@ test('checkpoint chronology requires retained settlement positions for ordinary 
         for (const index of [0, 99]) {
           const damaged = JSON.parse(JSON.stringify(checkpoint))
           damaged.timeline.latestRun.index = index
-          damaged.timeline.editableRun.index = index
+          damaged.timeline.latestRun.resultKey = index
           assert.throws(() => projection.stateSchema.parse(damaged), /timeline checkpoint/)
         }
         if (checkpoint.timeline.lastSuccessfulRunIndex !== undefined) {
@@ -378,8 +408,8 @@ test('checkpoint selection rejects an older complete publication and omission of
       if (event.seq < 4) continue
       assert.equal(checkpoint.timeline.latestRun.callSeq, event.seq === 6 ? 5 : 3)
       for (const mutate of [
-        value => { value.timeline.latestRun = olderRun; value.timeline.editableRun = olderRun },
-        value => { delete value.timeline.latestRun; delete value.timeline.editableRun },
+        value => { value.timeline.latestRun = olderRun },
+        value => { delete value.timeline.latestRun },
       ]) {
         const damaged = JSON.parse(JSON.stringify(checkpoint))
         mutate(damaged)
@@ -432,17 +462,15 @@ test('retained selection frontier covers every clear and preserves non-clearing 
         assert.deepEqual(checkpoint.timeline.runSelectionFrontier,
           { index, scope: checkpoint.timeline.scope, reason: scenario.clears[index] })
         assert.equal(checkpoint.timeline.latestRun, undefined)
-        assert.equal(checkpoint.timeline.editableRun, undefined)
+        assert.equal(projectSessionLog(undefined, undefined, checkpoint).editableRun, undefined)
         assert.equal(checkpoint.timeline.lastSuccessfulRunIndex, 2)
         for (const stale of [olderRun, newerRun]) {
           const damaged = JSON.parse(JSON.stringify(checkpoint))
           damaged.timeline.latestRun = stale
-          damaged.timeline.editableRun = stale
           assert.throws(() => projection.stateSchema.parse(damaged), /timeline checkpoint/)
         }
         const nullRun = JSON.parse(JSON.stringify(checkpoint))
         nullRun.timeline.latestRun = null
-        nullRun.timeline.editableRun = null
         assert.throws(() => projection.stateSchema.parse(nullRun), /timeline checkpoint/)
       }
       if (index === nextCallSeq - 1) {
@@ -520,7 +548,7 @@ test('a selection invalidation frontier prevents prune reconstruction or clones 
       for (const event of history.slice(cut)) checkpoint = projection.apply(checkpoint, event)
       checkpoint = projection.stateSchema.parse(JSON.parse(JSON.stringify(checkpoint)))
       assert.equal(checkpoint.timeline.latestRun, undefined)
-      assert.equal(checkpoint.timeline.editableRun, undefined)
+      assert.equal(projectSessionLog(undefined, undefined, checkpoint).editableRun, undefined)
       assert.equal(checkpoint.timeline.editTargets.k10[1], null)
       assert.deepEqual(checkpoint.timeline.runSelectionFrontier, { index: 5, scope: 1, reason: 'invalid-source-relation' })
     }

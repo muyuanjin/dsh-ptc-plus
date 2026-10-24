@@ -68,6 +68,49 @@ function presentationEvent(event) {
   }))
 }
 
+/** Re-attach the canonical arguments an eventFact reference omits. */
+function hydrateTimelineFact(timeline, fact) {
+  const normalized = fact.normalized
+    ?? (fact.resultKey === undefined ? undefined : timeline.results?.[`k${fact.resultKey}`]?.[1])
+  const entry = timeline.executableCalls?.[`k${fact.event?.seq}`]?.[1]
+  const hasArguments = entry !== undefined && fact.event?.type === 'tool/call'
+    && fact.event.data?.arguments === undefined
+  if (!hasArguments && normalized === undefined) return fact
+  return { ...fact,
+    ...(normalized === undefined ? {} : { normalized }),
+    ...(hasArguments ? { event: { ...fact.event,
+      data: { ...fact.event.data, arguments: entry.event.data.arguments } } } : {}) }
+}
+
+/**
+ * Materialize the runnable run view from the canonical call and result rows.
+ * A derived run's args and journal are the selected derived evidence: the
+ * deferred edit's post-edit derived run, or the edit's derived run, never the
+ * pre-edit root journal a deferred execution superseded.
+ */
+function hydrateRun(timeline, run) {
+  if (run === undefined) return undefined
+  const row = run.resultKey === undefined ? undefined : timeline.results?.[`k${run.resultKey}`]?.[1]
+  const derived = run.derivedEvidence === 'postEdit' ? row?.postEdit?.derived
+    : run.derivedEvidence === 'derived' ? row?.derived : undefined
+  let args = run.args
+  if (args === undefined) {
+    if (derived !== undefined) args = Object.freeze({ description: derived.description })
+    else {
+      const entry = timeline.executableCalls?.[`k${run.callSeq}`]?.[1]
+      try {
+        const parsed = JSON.parse(entry?.event?.data?.arguments)
+        if (isRecord(parsed)) args = Object.freeze(parsed)
+      } catch {
+        // Invalid persisted arguments cannot support derived source facts.
+      }
+    }
+  }
+  const journal = run.journal ?? derived?.journal ?? row?.journal
+  return Object.freeze({ ...run, args,
+    ...(journal === undefined ? {} : { journal }) })
+}
+
 function applyLogEvent(state, event, index = event?.seq,
   timeline = advanceSessionTimeline(state.timeline, event, index)) {
   const sections = event?.type === 'user/message' ? systemPromptSnapshotSections(event.data) : undefined
@@ -118,7 +161,7 @@ function applyLogEvent(state, event, index = event?.seq,
 export function createSessionLogProjection() {
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    stateVersion: 9,
+    stateVersion: 10,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'
@@ -160,7 +203,7 @@ export function createSessionLogProjection() {
           throw new TypeError('inconsistent PTC session-log projection checkpoint missing timeline facts')
         }
         const timeline = timelineFact === undefined ? reconstructed.timeline
-          : replaySessionTimelineFact(reconstructed.timeline, timelineFact)
+          : replaySessionTimelineFact(reconstructed.timeline, hydrateTimelineFact(value.timeline, timelineFact))
         reconstructed = applyLogEvent(reconstructed, fact.event, fact.index, timeline)
       }
       if (timelineCount !== timelineFacts.size || !deepEqualJson(reconstructed, value)) {
@@ -237,8 +280,8 @@ export function projectSessionLog(agent, requestedEdit, projectedState) {
     && requestedEntry.event.data.name === 'edit_run_code'
     ? timeline.editTargets[`k${requestedEdit.callSeq}`]?.[1] ?? undefined
     : undefined
-  const latestRun = timeline.openTurn ? timeline.latestRun : undefined
-  const editableRun = timeline.openTurn ? timeline.editableRun : undefined
+  const latestRun = timeline.openTurn ? hydrateRun(timeline, timeline.latestRun) : undefined
+  const editableRun = latestRun
   const cordisTranscript = Object.freeze(timeline.cordisTranscript)
   let visibleRuntimeMessages = projectedState === undefined ? undefined : state.visibleRuntimeMessages
   if (projectedState === undefined) try {

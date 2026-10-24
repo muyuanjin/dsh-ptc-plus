@@ -293,12 +293,11 @@ test('public restore rejects self-certified run chronology and refolds the newer
   assert.equal(projectSessionLog({ session }, { callId: 'edit', callSeq: edit.seq },
     intact.checkpoint.ptcPlusSessionLog.val).requestedEditTarget.callSeq, 3)
   for (const mutate of [
-    value => { value.timeline.latestRun.index = 99; value.timeline.editableRun.index = 99 },
+    value => { value.timeline.latestRun.index = 99 },
     value => { value.timeline.lastSuccessfulRunIndex = 99 },
     value => {
       value.timeline.runSelectionFrontier.index = 99
       delete value.timeline.latestRun
-      delete value.timeline.editableRun
     },
   ]) {
     const damaged = JSON.parse(JSON.stringify(checkpoint))
@@ -315,9 +314,8 @@ test('public restore rejects self-certified run chronology and refolds the newer
   for (const mutate of [
     value => {
       value.timeline.latestRun = checkpoint.ptcPlusSessionLog.val.timeline.latestRun
-      value.timeline.editableRun = checkpoint.ptcPlusSessionLog.val.timeline.editableRun
     },
-    value => { delete value.timeline.latestRun; delete value.timeline.editableRun },
+    value => { delete value.timeline.latestRun },
   ]) {
     const damaged = JSON.parse(JSON.stringify(newerCheckpoint))
     mutate(damaged.ptcPlusSessionLog.val)
@@ -555,7 +553,6 @@ test('public checkpoint restore reconstructs settlement and journal caches from 
       delete timeline.settledResultsByEventSeq[`k${result.seq}`]
       delete timeline.ordinaryResultSeqs[`k${run.seq}`]
       delete timeline.latestRun
-      delete timeline.editableRun
       delete timeline.lastSuccessfulRunIndex
     },
     timeline => { timeline.results[`k${run.seq}`][1].journal.completion = {
@@ -568,9 +565,9 @@ test('public checkpoint restore reconstructs settlement and journal caches from 
     },
     timeline => { delete timeline.results[`k${run.seq}`] },
     timeline => { timeline.unavailableResultSeq = run.seq },
-    timeline => { delete resultFact(timeline).normalized },
-    timeline => { resultFact(timeline).normalized.eventIndex += 1 },
-    timeline => { resultFact(timeline).normalized.positionSeq = result.seq },
+    timeline => { const fact = resultFact(timeline); if (fact.normalized !== undefined) delete fact.normalized; else delete timeline.results[`k${fact.resultKey}`] },
+    timeline => { const fact = resultFact(timeline); if (fact.normalized !== undefined) fact.normalized.eventIndex += 1; else timeline.results[`k${fact.resultKey}`][1].eventIndex += 1 },
+    timeline => { const fact = resultFact(timeline); if (fact.normalized !== undefined) fact.normalized.positionSeq = result.seq; else timeline.results[`k${fact.resultKey}`][1].positionSeq = result.seq },
     timeline => { delete resultFact(timeline).hasJournal },
     timeline => { resultFact(timeline).hasJournal = false },
     timeline => { resultFact(timeline).boundaryFailure = true },

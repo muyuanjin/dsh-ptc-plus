@@ -5,6 +5,7 @@ import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { appendOnlySession, fixture, orderedSurfaceSession, ptcAgent, runNestedEditCell } from './plugin-fixture.js'
 import { POST_EDIT_KEY, RECOVERY_BOUNDARY_KEY } from '../internal/session-journal-schema.js'
 import { createEditTransportOwner } from '../internal/edit-transport-owner.js'
+import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { REPL_MEMORY_META_KEY } from '../internal/repl-memory-projection.js'
 import { validateSessionTimelineState, recoverJournal, recoveryBoundaryForHistory, visibleExecutableCallSeqs } from '../internal/session-journal-recovery.js'
@@ -306,7 +307,10 @@ test('actual derived dispatch records its parent and public retained result with
   wrongTarget.eventFacts.find(fact => fact.event.seq === post.startSeq).selectedTarget.source = 'return 999'
   assert.throws(() => validateSessionTimelineState(wrongTarget), /nested edit target fact/)
   const wrongDerived = structuredClone(checkpoint.timeline)
-  wrongDerived.eventFacts.find(fact => fact.normalized?.postEdit).normalized.postEdit.derived.description = 'changed description'
+  const derivedFact = wrongDerived.eventFacts.find(fact => fact.resultKey !== undefined
+    && wrongDerived.results[`k${fact.resultKey}`][1]?.postEdit !== undefined)
+  assert.ok(derivedFact, 'the deferred-edit evidence must remain discoverable through resultKey')
+  wrongDerived.results[`k${derivedFact.resultKey}`][1].postEdit.derived.description = 'changed description'
   assert.throws(() => validateSessionTimelineState(wrongDerived), /deferred edit fact/)
 
 })
@@ -816,6 +820,40 @@ test('edit scheduling releases claims after refusal, invalid root and cancellati
   assert.ok(reads >= 4)
 })
 
+
+test('a deferred edit execution keeps its args, derived journal and recovery tip', async t => {
+  const session = appendOnlySession('nested-edit-postedit-hydration')
+  session.append('turn/start', {})
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assemble({ sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal })
+  await state.runDurable(session.id, 'let tipProbeValue = 1; return tipProbeValue', {},
+    { session, callId: 'tip-probe-setup' })
+  // A deferred edit replaces the runnable source, so the run view must hydrate
+  // the revised cell's args and the post-edit derived journal, and a revised
+  // execution that throws must not count as a successful run.
+  const successBeforeEdit = projectedView(session).lastSuccessfulRunIndex
+  const root = await runNestedEditCell(state, { session, agent, signal, callId: 'tip-probe-edit',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "return tipProbeValue", ' +
+      'new_string: "throw new Error(\\"ENOENT: command not found\\")" }] })' })
+  assert.equal(root.receipt.accepted, true)
+  assert.equal(root.result.isError, false)
+  const post = root.result.meta[POST_EDIT_KEY]
+  const derivedJournal = post.meta.dshPtcPlus
+  assert.equal(derivedJournal.completion.kind, 'throw')
+  const view = projectedView(session)
+  assert.equal(view.latestRun.callSeq, post.executionStartSeq)
+  assert.equal(view.latestRun.source, post.meta.dshPtcPlusDerivedRun.code)
+  assert.deepEqual(view.latestRun.args, { description: post.meta.dshPtcPlusDerivedRun.description })
+  assert.deepEqual(view.latestRun.journal, derivedJournal)
+  assert.ok(view.latestRun.journal.diagnostics.some(diagnostic => diagnostic.code === 'PTC-X001'))
+  assert.equal(view.lastSuccessfulRunIndex, successBeforeEdit)
+  const tip = latestRecoveryTip(view, { enabled: true, cooldownMessages: 0, escalationFailures: 2 })
+  assert.match(tip.name, /platform-command-failure\/1$/)
+})
 
 test('a derived edit execution error retains the original root result and allows the next cell', async t => {
   const state = fixture()

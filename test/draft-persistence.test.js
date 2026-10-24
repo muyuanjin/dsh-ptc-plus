@@ -221,10 +221,9 @@ test('persisted settlement chronology rejects damaged shortcuts and preserves or
       refolded.timeline.settledResultsByEventSeq[`k${older.result.seq}`][1])
     const damaged = JSON.parse(JSON.stringify(checkpoint))
     damaged.ptcPlusSessionLog.val.timeline.latestRun.index = 99
-    damaged.ptcPlusSessionLog.val.timeline.editableRun.index = 99
     assert.throws(() => registry.restore(damaged, stored.events.slice(floor), floor, session.header, 0), /timeline checkpoint/)
     assert.equal(damaged.ptcPlusSessionLog.seq, older.result.seq)
-    for (const version of [1, 2, 3, 4, 5, 6, 7]) {
+    for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
       const obsolete = JSON.parse(JSON.stringify(damaged))
       obsolete.ptcPlusSessionLog.ver = version
       delete obsolete.ptcPlusSessionLog.val.timeline.runSelectionFrontier

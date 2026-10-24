@@ -1,5 +1,6 @@
 import {
-  advanceSessionTimeline, createSessionTimelineState, factDigest, replaySessionTimelineFact, validateSessionTimelineState,
+  advanceSessionTimeline, compactBelowCut, createSessionTimelineState, factDigest, replaySessionTimelineFact,
+  retentionCutOf, validateSessionTimelineState,
 } from './session-journal-recovery.js'
 import { isCanonicalSequence } from './session-journal.js'
 import { advanceSessionSurface, readSessionLog, sessionEvents } from './session-events.js'
@@ -219,7 +220,11 @@ export function createSessionLogProjection() {
           : replaySessionTimelineFact(reconstructed.timeline, timelineFact)
         reconstructed = applyLogEvent(reconstructed, fact.event, fact.index, timeline)
       }
-      if (replayComplete && !deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value))) {
+      // A pruned checkpoint carries a retention cut; the replayed fold prunes on its
+      // own accounting, so align both sides to the admitted cut before comparing.
+      const cut = retentionCutOf(value.timeline)
+      const replaySide = cut === undefined ? reconstructed : compactBelowCut(reconstructed, cut)
+      if (replayComplete && !deepEqualJson(withoutFactDigests(replaySide), withoutFactDigests(value))) {
         throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
       }
       return deepFreeze(value)

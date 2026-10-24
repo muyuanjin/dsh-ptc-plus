@@ -311,6 +311,7 @@
       "owner": "Journal schema, recovery, migration and verified-frontier contraction",
       "implementation": [
         "internal/legacy-binding-catalog.js",
+        "internal/projection-retention.js",
         "internal/record-utils.js",
         "internal/recovery-tips.js",
         "internal/session-journal-recovery.js",
@@ -396,15 +397,16 @@
       ],
       "oracle": "closed journal schema and independently constructed damaged-history fixtures",
       "evidence": [
-        "test/session-journal.test.js",
-        "test/session-recovery-boundary-faults.test.js",
-        "test/user-bindings-recovery.test.js",
-        "test/runtime-messages.test.js",
-        "test/recovery-tips.test.js",
+        "test/expensive-acceptance.test.js",
         "test/plugin-durability-recovery-boundaries.test.js",
         "test/plugin-durability-recovery.test.js",
         "test/plugin-nested-edit.test.js",
-        "test/expensive-acceptance.test.js"
+        "test/projection-retention.test.js",
+        "test/recovery-tips.test.js",
+        "test/runtime-messages.test.js",
+        "test/session-journal.test.js",
+        "test/session-recovery-boundary-faults.test.js",
+        "test/user-bindings-recovery.test.js"
       ],
       "dependsOn": [
         "language-frontend",

@@ -11,8 +11,12 @@ import { createHash } from 'node:crypto'
  * positions remain, and consumers that need the text must report that the entry
  * was pruned instead of guessing.
  */
-export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? 32)
-export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? 8 * 1024 * 1024)
+// Default is unbounded: enabling the window changes what a checkpoint can prove
+// (pruned runs are identity-only), and the projection-level admission comparison
+// for a pruned checkpoint is not yet reproducible. Tests set
+// DSH_PTC_RETENTION_RUNS to exercise the mechanism until that is resolved.
+export const MAX_RETAINED_RUNS = Number(process.env.DSH_PTC_RETENTION_RUNS ?? Number.POSITIVE_INFINITY)
+export const MAX_RETAINED_BYTES = Number(process.env.DSH_PTC_RETENTION_BYTES ?? Number.POSITIVE_INFINITY)
 
 /** Shout when the retention window cannot hold the payload a consumer needs. */
 export const PRUNED_EDIT = '该单元格超出保留窗口，已不可编辑'
@@ -51,6 +55,10 @@ export function prunedCallEvent(event) {
 /** A pruned normalized result keeps its position and an identity digest only. */
 export function prunedNormalized(normalized) {
   if (normalized === undefined) return undefined
+  // Re-pruning an already pruned entry must not re-digest: the payload it hashed is
+  // gone, so the recorded digest is the only stable identity.
+  if (normalized.payloadDigest !== undefined && normalized.journal === undefined
+    && normalized.derived === undefined && normalized.error === undefined) return normalized
   return {
     eventSeq: normalized.eventSeq,
     eventIndex: normalized.eventIndex,
@@ -61,17 +69,20 @@ export function prunedNormalized(normalized) {
 
 /** A pruned settlement keeps chronology and identity, not the result payload. */
 export function prunedSettlement(settlement) {
-  const { call, normalized, publication, ...rest } = settlement
+  const { call, normalized, publication, entry, ...rest } = settlement
   return {
     ...rest,
     call: prunedCallEvent(call),
+    // `entry.event` certifies the same call; prune it identically or admission
+    // would see the settlement disagree with its own entry.
+    ...(entry === undefined ? {} : { entry: { ...entry, event: prunedCallEvent(entry.event) } }),
     pruned: true,
     ...(normalized === undefined ? {} : { normalized: prunedNormalized(normalized) }),
     ...(publication === undefined ? {} : {
-      publication: {
-        index: publication.index,
-        payloadDigest: digestOf(publication),
-      },
+      publication: publication.payloadDigest !== undefined && publication.journal === undefined
+        && publication.derived === undefined
+        ? publication
+        : { index: publication.index, payloadDigest: digestOf(publication) },
     }),
   }
 }

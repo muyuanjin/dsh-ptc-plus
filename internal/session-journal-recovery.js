@@ -562,9 +562,80 @@ export function factDigest(value) {
 }
 
 function withoutFactDigests(state) {
-  const facts = state.eventFacts
-  if (!facts.some(fact => fact.digest !== undefined)) return state
-  return { ...state, eventFacts: facts.map(({ digest, ...rest }) => rest) }
+  // Admission compares what the projection describes, not bookkeeping whose exact
+  // value depends on when pruning happened: per-fact digests and the retained-byte
+  // counter are accounting, not session state.
+  const { retainedBytes: _retainedBytes, ...rest } = state
+  const facts = rest.eventFacts
+  if (!facts.some(fact => fact.digest !== undefined)) return rest
+  return { ...rest, eventFacts: facts.map(({ digest, ...fact }) => fact) }
+}
+
+/**
+ * Compact a checkpoint down to the retention cut an admitted checkpoint carries.
+ *
+ * Admission replays the stored facts, and a replayed fold prunes on its own byte
+ * accounting, so a pruned checkpoint cannot be compared to a freshly replayed one
+ * field by field. Applying the admitted checkpoint's own cut to the replayed side
+ * makes both sides describe the same retained window: entries at or below the cut
+ * are replaced by their digest stubs, whose digests were computed from the same
+ * original payload and therefore agree.
+ */
+export function compactBelowCut(checkpoint, cut) {
+  if (!Number.isSafeInteger(cut)) return checkpoint
+  const settlements = Object.entries(checkpoint.settledResultsByEventSeq ?? {})
+  const prunedResultSeqs = new Set()
+  const prunedCallSeqs = new Set()
+  const settled = {}
+  for (const [key, pair] of settlements) {
+    const [seq, settlement] = pair
+    if (settlement?.observedIndex !== undefined && settlement.observedIndex <= cut) {
+      settled[key] = [seq, prunedSettlement(settlement)]
+      prunedResultSeqs.add(key)
+      if (settlement.call?.seq !== undefined) prunedCallSeqs.add(settlement.call.seq)
+    } else {
+      settled[key] = pair
+    }
+  }
+  const executableCalls = { ...(checkpoint.executableCalls ?? {}) }
+  for (const seq of prunedCallSeqs) {
+    const pair = executableCalls[`k${seq}`]
+    if (pair === undefined) continue
+    executableCalls[`k${seq}`] = [pair[0], { ...pair[1], event: prunedCallEvent(pair[1].event) }]
+  }
+  const results = { ...(checkpoint.results ?? {}) }
+  for (const key of prunedResultSeqs) {
+    if (results[key] !== undefined) results[key] = [results[key][0], prunedNormalized(results[key][1])]
+  }
+  const ordinary = { ...(checkpoint.ordinaryResultSeqs ?? {}) }
+  for (const seq of prunedCallSeqs) {
+    const pair = ordinary[`k${seq}`]
+    if (pair?.[1]?.callDigest === undefined) continue
+    ordinary[`k${seq}`] = [pair[0], { ...pair[1], callDigest: eventDigest(prunedCallEvent(executableCalls[`k${seq}`][1].event)) }]
+  }
+  const eventFacts = (checkpoint.eventFacts ?? []).map(fact => {
+    const callPruned = fact.event?.type === 'tool/call' && prunedCallSeqs.has(fact.event.seq)
+    const resultPruned = fact.normalized !== undefined && prunedResultSeqs.has(`k${fact.normalized.eventSeq}`)
+    if (!callPruned && !resultPruned) return fact
+    let next = fact
+    if (callPruned) next = { ...next, event: prunedCallEvent(next.event) }
+    if (resultPruned) next = { ...next, normalized: prunedNormalized(next.normalized) }
+    const { digest: _previous, ...rest } = next
+    return { ...rest, digest: factDigest(rest) }
+  })
+  return { ...checkpoint, settledResultsByEventSeq: settled, executableCalls, results, ordinaryResultSeqs: ordinary, eventFacts }
+}
+
+/** Highest observed index the admitted checkpoint still retains; older entries are stubs. */
+export function retentionCutOf(checkpoint) {
+  let cut = undefined
+  for (const pair of Object.values(checkpoint.settledResultsByEventSeq ?? {})) {
+    const settlement = pair?.[1]
+    if (settlement?.pruned === true && settlement.observedIndex !== undefined) {
+      cut = cut === undefined ? settlement.observedIndex : Math.max(cut, settlement.observedIndex)
+    }
+  }
+  return cut
 }
 
 function eventDigest(event) {
@@ -839,7 +910,13 @@ export function validateSessionTimelineState(value) {
     }
     reconstructed = replaySessionTimelineFact(reconstructed, observation)
   }
-  if (replayComplete) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
+  if (replayComplete) {
+    // Align the replayed fold to the admitted retention cut before comparing:
+    // a pruned checkpoint and a fresh replay prune on different byte histories.
+    const cut = retentionCutOf(value)
+    const replaySide = cut === undefined ? reconstructed : compactBelowCut(reconstructed, cut)
+    requireFact(deepEqualJson(withoutFactDigests(replaySide), withoutFactDigests(value)))
+  }
   // Semantic checks run first so their diagnostics stay specific; the digest is
   // the last line of defence and rejects a payload edit without replaying it.
   for (const observation of value.eventFacts) {
@@ -1433,7 +1510,8 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact) {
   const plainObservation = JSON.parse(JSON.stringify(observation))
   plainObservation.digest = factDigest(plainObservation)
   state.eventFacts[state.eventFacts.length - 1] = timelineJson(plainObservation)
-  pruneRetention(state, { settled: settledResultsByEventSeq, executable: state.executableCalls, results: state.results })
+  pruneRetention(state, { settled: settledResultsByEventSeq, executable: state.executableCalls, results: state.results,
+    ordinary: ordinaryResultSeqs })
   return Object.fromEntries(Object.entries({ ...state,
     executableCalls: state.executableCalls.table, results: state.results.table, editTargets: state.editTargets.table,
     pendingByCallId: pendingByCallId.table, seenCallIds: seenCallIds.table,
@@ -1457,25 +1535,48 @@ function pruneRetention(state, tables) {
     .filter(entry => entry.settlement !== undefined)
     .sort((left, right) => left.settlement.observedIndex - right.settlement.observedIndex)
   if (entries.length === 0) return
-  const total = entries.reduce((sum, entry) => sum + (entry.settlement.pruned === true ? 0 : settlementBytes(entry.settlement)), 0)
-  if (total <= MAX_RETAINED_BYTES && entries.length <= MAX_RETAINED_RUNS) return
+  // The window is defined by ORDER ONLY (keep the newest MAX_RETAINED_RUNS runs)
+  // plus a per-entry cap, never by the running byte total. A byte-total rule would
+  // depend on how large the payloads were when earlier events were folded, so a
+  // replayed fold over already-pruned facts would prune differently and admission
+  // could not compare the two. Order-only pruning is reproducible.
+  const retainedEntries = entries.filter(entry => entry.settlement.pruned !== true)
+  const keepFrom = Math.max(0, entries.length - MAX_RETAINED_RUNS)
+  const mustPrune = new Set([
+    ...entries.slice(0, keepFrom).map(entry => entry.resultSeq),
+    ...retainedEntries
+      .filter((entry, index) => index < retainedEntries.length - 1 && settlementBytes(entry.settlement) > MAX_RETAINED_BYTES)
+      .map(entry => entry.resultSeq),
+  ])
+  if (mustPrune.size === 0) return
   const prunedCallSeqs = new Set()
   const prunedResultSeqs = new Set()
-  let bytes = total
-  let count = entries.length
+  let bytes = retainedEntries.reduce((sum, entry) => sum + settlementBytes(entry.settlement), 0)
   for (const entry of entries) {
-    if (bytes <= MAX_RETAINED_BYTES && count <= MAX_RETAINED_RUNS) break
-    if (entry.settlement.pruned === true || entry.resultSeq === undefined) continue
+    if (!mustPrune.has(entry.resultSeq) || entry.settlement.pruned === true) continue
     const freed = settlementBytes(entry.settlement)
     const callSeq = entry.settlement.call?.seq
     tables.settled.set(entry.resultSeq, prunedSettlement(entry.settlement))
     const stored = callSeq === undefined ? undefined : tables.executable.get(callSeq)
-    if (stored !== undefined) tables.executable.set(callSeq, { ...stored, event: prunedCallEvent(stored.event) })
-    if (tables.results.has(entry.resultSeq)) tables.results.set(entry.resultSeq, prunedNormalized(tables.results.get(entry.resultSeq)))
+    if (stored !== undefined) {
+      const prunedEvent = prunedCallEvent(stored.event)
+      tables.executable.set(callSeq, { ...stored, event: prunedEvent })
+      // An ordinary observation certifies the stored event by digest; retarget it
+      // at the pruned bytes so admission still proves the same relation.
+      const observation = tables.ordinary?.get(callSeq)
+      if (observation !== null && typeof observation === 'object' && observation.callDigest !== undefined) {
+        tables.ordinary.set(callSeq, { ...observation, callDigest: eventDigest(prunedEvent) })
+      }
+    }
+    // `results` is keyed by the RESULT sequence on the ordinary path and by the CALL
+    // sequence on the republication path, so prune both keys when either exists.
+    for (const key of [entry.resultSeq, callSeq]) {
+      if (key === undefined || !tables.results.has(key)) continue
+      tables.results.set(key, prunedNormalized(tables.results.get(key)))
+    }
     if (callSeq !== undefined) prunedCallSeqs.add(callSeq)
     prunedResultSeqs.add(entry.resultSeq)
     bytes -= freed
-    count -= 1
   }
   if (prunedCallSeqs.size === 0 && prunedResultSeqs.size === 0) return
   state.retainedBytes = Math.max(0, bytes)

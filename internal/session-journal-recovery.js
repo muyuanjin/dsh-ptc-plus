@@ -1929,6 +1929,27 @@ function pruneRetention(state, tables) {
     if (fact.normalized === undefined || !digestedResultSeqs.has(Number(fact.normalized.eventSeq))) return fact
     return { ...fact, normalized: digestJournalArguments(fact.normalized) }
   })
+  // A dispatch fact names the cell an edit would capture, and that target carries
+  // the cell's source. Once the payload is digested the fold can no longer derive
+  // that source, so the fact must record the same "no target" the fold would
+  // produce now; leaving the old text behind would both duplicate the payload and
+  // fail the round-trip check that compares the fact with its re-derivation.
+  const digestedCallSeqs = new Set(entries
+    .filter(entry => digested.has(entry.resultSeq))
+    .map(entry => Number(entry.settlement.call?.seq)))
+  if (digestedCallSeqs.size !== 0) {
+    let rewritten = false
+    state.eventFacts = state.eventFacts.map(fact => {
+      const target = fact.selectedTarget
+      if (!isRecord(target) || !digestedCallSeqs.has(Number(target.callSeq))) return fact
+      const { digest: _digest, ...rest } = fact
+      const next = { ...rest, selectedTarget: null }
+      next.digest = factDigest(next)
+      rewritten = true
+      return timelineJson(next)
+    })
+    if (rewritten) state.eventFacts = state.eventFacts.map(fact => timelineJson(fact))
+  }
 }
 
 function findResultSeq(table, settlement) {

@@ -10689,6 +10689,21 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     update(tabs[next]);
     event.currentTarget.parentElement.querySelectorAll("[role=tab]")[next].focus({ preventScroll: true });
   }
+  const PROMPT_REASON_KEYS = Object.freeze({
+    "fact-derived": "factDerived",
+    "aggregate-frozen": "aggregateFrozen",
+    "protocol-exact-text": "protocolExactText",
+    "protocol-structural": "protocolStructural",
+    "shadows-host": "shadowsHost",
+    "other-owner": "otherOwner"
+  });
+  function promptReasonLabel(t2, reason) {
+    const key = PROMPT_REASON_KEYS[reason];
+    return key === void 0 ? reason : t2(`capabilities.prompt.reason.${key}`);
+  }
+  function promptKindLabel(t2, kind) {
+    return kind === void 0 ? "" : t2(`capabilities.prompt.kind.${kind}`);
+  }
   function PromptTextSettings({ value, disabled, onChange, t: t2, id: id2 }) {
     let document2;
     let readError;
@@ -10835,7 +10850,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           h(
             "span",
             { className: "ptcPlusPromptChipNote" },
-            t2("capabilities.prompt.readonlyReason", { reason: slot.reason, kind: slot.kind })
+            t2("capabilities.prompt.readonlyReason", { reason: promptReasonLabel(t2, slot.reason), kind: promptKindLabel(t2, slot.kind) })
           ),
           ...markers
         );
@@ -10890,9 +10905,9 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h(
           "td",
           { className: "ptcPlusPromptCell", "data-cell": "reason", title: reasons.join(" \xB7 ") },
-          reasons.length === 0 ? "\u2014" : reasons.join(" \xB7 ")
+          reasons.length === 0 ? "\u2014" : reasons.map((reason) => promptReasonLabel(t2, reason)).join(" \xB7 ")
         ),
-        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.join(" \xB7 "))
+        h("td", { className: "ptcPlusPromptCell", "data-cell": "kind", title: kinds2.join(" \xB7 ") }, kinds2.map((kind) => promptKindLabel(t2, kind)).join(" \xB7 "))
       ];
       return [
         h("tr", {
@@ -41492,6 +41507,18 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.hostPresenceEvery": "\u6BCF\u4E2A\u8BF7\u6C42",
     "capabilities.prompt.hostPresenceCapabilities": "\u80FD\u529B\u7BA1\u7406\u542F\u7528",
     "capabilities.prompt.readonlySummary": "{count} \u4E2A\u53EA\u8BFB\u69FD",
+    // Reason codes and slot kinds are registry identifiers; the pane shows a
+    // localized label and keeps the raw code in the element title, so a Chinese UI
+    // never reads like a dump of registry constants.
+    "capabilities.prompt.reason.factDerived": "\u4E8B\u5B9E\u6D3E\u751F",
+    "capabilities.prompt.reason.aggregateFrozen": "\u805A\u5408\u51BB\u7ED3",
+    "capabilities.prompt.reason.protocolExactText": "\u534F\u8BAE\xB7\u7CBE\u786E\u6587\u672C",
+    "capabilities.prompt.reason.protocolStructural": "\u534F\u8BAE\xB7\u7ED3\u6784",
+    "capabilities.prompt.reason.shadowsHost": "\u906E\u853D\u5BBF\u4E3B",
+    "capabilities.prompt.reason.otherOwner": "\u4ED6\u4EBA\u6240\u6709",
+    "capabilities.prompt.kind.literal": "\u5B57\u9762\u91CF",
+    "capabilities.prompt.kind.aggregate": "\u805A\u5408",
+    "capabilities.prompt.kind.projected": "\u6295\u5F71",
     "capabilities.tab.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.tab.budgets": "\u63D0\u793A\u8BBE\u7F6E",
     "capabilities.tab.plans": "\u914D\u7F6E\u65B9\u6848",
@@ -42178,6 +42205,15 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.hostPresenceEvery": "every request",
     "capabilities.prompt.hostPresenceCapabilities": "capability management enabled",
     "capabilities.prompt.readonlySummary": "{count} read-only slot(s)",
+    "capabilities.prompt.reason.factDerived": "fact-derived",
+    "capabilities.prompt.reason.aggregateFrozen": "aggregate-frozen",
+    "capabilities.prompt.reason.protocolExactText": "protocol-exact-text",
+    "capabilities.prompt.reason.protocolStructural": "protocol-structural",
+    "capabilities.prompt.reason.shadowsHost": "shadows-host",
+    "capabilities.prompt.reason.otherOwner": "other-owner",
+    "capabilities.prompt.kind.literal": "literal",
+    "capabilities.prompt.kind.aggregate": "aggregate",
+    "capabilities.prompt.kind.projected": "projected",
     "capabilities.tab.statistics": "Usage statistics",
     "capabilities.tab.budgets": "Prompt settings",
     "capabilities.tab.plans": "Configurations",

@@ -919,6 +919,27 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
    * a document the panel cannot read is reported here instead of blanking the
    * whole workbench.
    */
+  // Registry codes are protocol identifiers. The pane shows a localized label and
+  // keeps the raw code in the element title, so a Chinese UI never reads like a
+  // dump of `fact-derived` / `protocol-exact-text` constants.
+  const PROMPT_REASON_KEYS = Object.freeze({
+    'fact-derived': 'factDerived',
+    'aggregate-frozen': 'aggregateFrozen',
+    'protocol-exact-text': 'protocolExactText',
+    'protocol-structural': 'protocolStructural',
+    'shadows-host': 'shadowsHost',
+    'other-owner': 'otherOwner',
+  })
+
+  function promptReasonLabel(t, reason) {
+    const key = PROMPT_REASON_KEYS[reason]
+    return key === undefined ? reason : t(`capabilities.prompt.reason.${key}`)
+  }
+
+  function promptKindLabel(t, kind) {
+    return kind === undefined ? '' : t(`capabilities.prompt.kind.${kind}`)
+  }
+
   function PromptTextSettings({ value, disabled, onChange, t, id }) {
     let document
     let readError
@@ -1057,7 +1078,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         return h('span', { key: slot.slotId, ...shared, 'data-readonly': 'true' },
           h('span', { className: 'ptcPlusPromptChipLabel' }, slot.slotId),
           h('span', { className: 'ptcPlusPromptChipNote' },
-            t('capabilities.prompt.readonlyReason', { reason: slot.reason, kind: slot.kind })),
+            t('capabilities.prompt.readonlyReason', { reason: promptReasonLabel(t, slot.reason), kind: promptKindLabel(t, slot.kind) })),
           ...markers)
       }
       const selected = openSlots[anchor.anchorId] === slot.slotId
@@ -1120,8 +1141,8 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'presence', title: anchor.presence }, anchor.presence),
         h('td', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', 'data-cell': 'bytes' }, bytes),
         h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'reason', title: reasons.join(' · ') },
-          reasons.length === 0 ? '—' : reasons.join(' · ')),
-        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind', title: kinds.join(' · ') }, kinds.join(' · ')),
+          reasons.length === 0 ? '—' : reasons.map(reason => promptReasonLabel(t, reason)).join(' · ')),
+        h('td', { className: 'ptcPlusPromptCell', 'data-cell': 'kind', title: kinds.join(' · ') }, kinds.map(kind => promptKindLabel(t, kind)).join(' · ')),
       ]
       // Chips live in their own full-width sub-row: a narrow slot column stacked one
       // chip per line and turned every five-slot anchor into a 200 px block.

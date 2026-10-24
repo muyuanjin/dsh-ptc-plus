@@ -354,6 +354,9 @@ export function projectSessionLog(agent, requestedEdit, projectedState, options 
     repairSource: editableRun?.source,
     cordisTranscript,
     retentionSummary: timeline.retentionSummary ?? undefined,
+    // Consumers must be able to tell "the newest cell was dropped for budget" from
+    // "there never was a cell"; both would otherwise look like an undefined run.
+    hotCellDropped: timeline.hotCellDropped === true,
     ...(requestedEdit === undefined ? {} : { requestedEditTarget }),
   })
 }

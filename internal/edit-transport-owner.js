@@ -19,7 +19,10 @@ import {
   editRunCodeSchema,
 } from './rejected-cell-editor.js'
 import { projectSessionLog } from './session-log-view.js'
-import { PRUNED_EDIT, PRUNED_EDIT_EN } from './projection-retention.js'
+import { refoldEditableSettlement } from './session-journal-recovery.js'
+import {
+  PRUNED_EDIT, PRUNED_EDIT_EN, PRUNED_SUMMARY_MISMATCH, PRUNED_SUMMARY_MISMATCH_EN,
+} from './projection-retention.js'
 import { PROMPT_SLOT_IDS, promptAssetText } from './prompt-text.js'
 import { sessionEvents } from './session-events.js'
 import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
@@ -83,7 +86,14 @@ function nestedEditStart(sessionLog, exec) {
   // there. Only when the log itself cannot supply it does the edit report that the
   // retention window cut it.
   if (target === undefined && view.retentionSummary !== undefined) {
-    target = projectSessionLog(slice, undefined, undefined, { retainAll: true }).editableRun
+    const refolded = refoldEditableSettlement(events.slice(0, index + 1), view.retentionSummary)
+    target = refolded.run
+    // The summary is the checkpoint's only record of a dropped cluster; the log is
+    // the authority. When the two disagree the edit must not proceed on either.
+    if (refolded.mismatch) {
+      return { startSeq: event.seq, rootCallSeq, target: undefined, retentionSummary: view.retentionSummary,
+        summaryMismatch: true }
+    }
   }
   // The summary travels with the target so an unavailable edit can say why it is
   // unavailable: the cell fell outside the retention window instead of never
@@ -209,6 +219,10 @@ export function createEditTransportOwner(ctx, {
       throw new Error('ptc-plus: edit_run_code requires a unique persisted PTC sub-call start')
     }
     const target = start.target
+    if (start.summaryMismatch === true) {
+      return { accepted: false, scheduled: false,
+        reason: `${PRUNED_SUMMARY_MISMATCH} / ${PRUNED_SUMMARY_MISMATCH_EN}` }
+    }
     if (target?.source === undefined || target.callSeq === undefined) {
       return { accepted: false, scheduled: false,
         reason: start.retentionSummary === undefined

@@ -26,7 +26,8 @@ import {
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
 import {
-  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, extendSummary, settlementBytes, summaryEntry,
+  MAX_RETAINED_BYTES, MAX_RETAINED_RUNS, byteLength, chainOfEntries, extendSummary, settlementBytes, summaryEntry,
+  summaryRecordOf,
 } from './projection-retention.js'
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
@@ -602,7 +603,7 @@ export function retentionSummaryOf(state) {
 export function validateRetentionSummary(timeline, summary, logFacts) {
   if (!isRecord(summary)) throw new TypeError('invalid PTC session-log projection retention summary')
   const keys = Object.keys(summary)
-  if (keys.some(key => !['fromSeq', 'toSeq', 'count', 'chainDigest'].includes(key))) {
+  if (keys.some(key => !['fromSeq', 'toSeq', 'count', 'chainDigest', 'entries'].includes(key))) {
     throw new TypeError('invalid PTC session-log projection retention summary')
   }
   if (!isCanonicalSequence(summary.fromSeq) || !isCanonicalSequence(summary.toSeq)
@@ -624,15 +625,30 @@ export function validateRetentionSummary(timeline, summary, logFacts) {
       throw new TypeError('PTC session-log projection lost the call of a retained settlement')
     }
   }
-  // A summary that only describes itself proves nothing, but the state cannot prove
-  // the chain either: a compacted checkpoint dropped the observations that carried
-  // the dropped payloads, and `logFacts` keep presentation facts only, so folding
-  // them yields no settlements. Admission therefore claims the boundary and the
-  // range, and reports the chain as unverified rather than pretending to check it.
-  // Callers that hold the raw session log call `verifyRetentionSummaryAgainstEvents`
-  // below, which folds it and rejects a mismatch.
-  if (!Number.isSafeInteger(summary.fromSeq) || summary.fromSeq < 1
-    || summary.count > summary.toSeq - summary.fromSeq + 1) {
+  // Admission receives no session log, so it cannot fold the dropped range. What it
+  // can prove is that the summary is internally consistent: one record per dropped
+  // cluster, ordered by result sequence, with the range and the chain derived from
+  // those records. Trusting a summary without a record per cluster is what made an
+  // earlier version forgeable. The stronger claim — that a record describes the same
+  // cluster the log still holds — is checked when a dropped cluster is refolded
+  // (`verifyRefoldedSettlement`), because that is the only point where the log and
+  // the record meet.
+  const records = summary.entries
+  if (!Array.isArray(records) || records.length !== summary.count) {
+    throw new TypeError('inconsistent PTC session-log projection retention summary')
+  }
+  let previous = -1
+  for (const record of records) {
+    if (!isRecord(record)
+      || !isCanonicalSequence(record.resultSeq) || !isCanonicalSequence(record.callSeq)
+      || typeof record.argumentsDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(record.argumentsDigest)
+      || record.resultSeq <= previous) {
+      throw new TypeError('inconsistent PTC session-log projection retention summary')
+    }
+    previous = record.resultSeq
+  }
+  if (records[0].resultSeq !== summary.fromSeq || records[records.length - 1].resultSeq !== summary.toSeq
+    || chainOfEntries(records) !== summary.chainDigest) {
     throw new TypeError('inconsistent PTC session-log projection retention summary')
   }
   return summary
@@ -657,6 +673,40 @@ export function verifyRetentionSummaryAgainstEvents(summary, events) {
     throw new TypeError('inconsistent PTC session-log projection retention summary')
   }
   return summary
+}
+
+/**
+ * Refold the editable cell from the log and check it against the summary.
+ *
+ * The checkpoint cannot prove that its summary describes the clusters the log
+ * still holds — admission has no log. This is the one place where both sides meet:
+ * the log is folded with pruning disabled, the settlement behind the editable run
+ * is turned into a summary record, and the record stored in the summary must equal
+ * it. A mismatch means the summary and the log disagree, which is reported to the
+ * caller instead of yielding an edit target that was never recorded.
+ */
+export function refoldEditableSettlement(events, summary) {
+  if (!Array.isArray(events)) return { run: undefined, mismatch: false }
+  let state
+  withFullRetention(() => {
+    state = createSessionTimelineState()
+    events.forEach((event, index) => {
+      if (!isRecord(event)) return
+      state = advanceSessionTimeline(state, event, isCanonicalSequence(event.seq) ? event.seq : index)
+    })
+  })
+  const run = state?.editableRun
+  if (run === undefined) return { run: undefined, mismatch: false }
+  const settled = Object.entries(state?.settledResultsByEventSeq ?? {})
+    .map(([, pair]) => pair)
+    .find(([, settlement]) => settlement?.call?.seq === run.callSeq)
+  if (settled === undefined) return { run, mismatch: false }
+  const [resultSeq, settlement] = settled
+  const recorded = summaryRecordOf(summary, Number(resultSeq))
+  if (recorded === undefined) return { run, mismatch: false }
+  const refolded = summaryEntry(settlement, Number(resultSeq))
+  const mismatch = recorded.callSeq !== refolded.callSeq || recorded.argumentsDigest !== refolded.argumentsDigest
+  return { run, mismatch }
 }
 
 /** Recompute the summary a fold of the dropped range would have produced. */
@@ -829,15 +879,8 @@ export function validateSessionTimelineState(value, logFacts) {
     return true
   }
   const normalizedResult = result => {
-    // A pruned entry keeps only its position and an identity digest: the payload
-    // was dropped by the retention window, so admission can prove continuity but
-    // not the text. Everything else keeps the full shape.
-    if (result.payloadDigest !== undefined) {
-      return fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'payloadDigest'])
-        && isCanonicalSequence(result.eventSeq) && isCanonicalSequence(result.eventIndex)
-        && optional(result.positionSeq, isCanonicalSequence)
-        && typeof result.payloadDigest === 'string' && /^[a-f0-9]{64}$/u.test(result.payloadDigest)
-    }
+    // Every stored result keeps its full shape: a dropped cluster takes its result
+    // entry with it, so a digest-only result would be a shape nothing produces.
     if (!fields(result, ['eventSeq', 'eventIndex', 'positionSeq', 'error', 'journal', 'derived', 'userBindings',
       'postEdit', 'postEditError'])
       || !isCanonicalSequence(result.eventSeq) || !isCanonicalSequence(result.eventIndex)

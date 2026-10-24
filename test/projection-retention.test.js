@@ -180,3 +180,65 @@ test('a compacted state must carry its summary and a plain state must not', () =
   assert.throws(() => validateSessionTimelineState({ ...plain, retentionSummary: state.retentionSummary }),
     /inconsistent PTC session-log projection retention summary/u)
 })
+
+test('the summary keeps one record per dropped cluster and proves its own chain', async () => {
+  const events = []
+  for (let index = 0; index < 8; index += 1) {
+    const id = `record-${index}`
+    events.push(call(`return 'record-${index}'`, id), result(id))
+  }
+  const state = fold(events)
+  const summary = state.retentionSummary
+  assert.ok(Array.isArray(summary.entries), 'each dropped cluster keeps a compact record')
+  assert.equal(summary.entries.length, summary.count, 'one record per counted cluster')
+  for (const record of summary.entries) {
+    assert.equal(typeof record.argumentsDigest, 'string')
+    assert.match(record.argumentsDigest, /^[a-f0-9]{64}$/u)
+  }
+  // Admission has no log, so it proves the chain over the stored records: a record
+  // that was edited must no longer reproduce the recorded chain.
+  validateSessionTimelineState(state)
+  const tampered = {
+    ...summary,
+    entries: summary.entries.map((record, index) => (index === 0
+      ? { ...record, argumentsDigest: 'b'.repeat(64) } : record)),
+  }
+  assert.throws(() => validateSessionTimelineState({ ...state, retentionSummary: tampered }),
+    /inconsistent PTC session-log projection retention summary/u)
+  // Dropping a record without re-counting is inconsistent too.
+  assert.throws(() => validateSessionTimelineState({
+    ...state, retentionSummary: { ...summary, entries: summary.entries.slice(1) },
+  }), /inconsistent PTC session-log projection retention summary/u)
+})
+
+test('a refolded cluster must match the record the summary kept for it', async () => {
+  const { refoldEditableSettlement } = await import('../internal/session-journal-recovery.js')
+  const events = []
+  for (let index = 0; index < 8; index += 1) {
+    const id = `refold-${index}`
+    events.push(call(`return 'refold-${index}'`, id), result(id))
+  }
+  const state = fold(events)
+  const summary = state.retentionSummary
+  const history = lastHistory
+  const refolded = refoldEditableSettlement(history, summary)
+  assert.equal(refolded.mismatch, false, 'a log that still holds the cluster agrees with its record')
+  // Forge the record that covers the cell the refold resolves: the lookup is by
+  // result sequence, so an entry whose call sequence disagrees must be caught.
+  const editableCallSeq = state.editableRun?.callSeq
+  const settledPair = Object.entries(state.settledResultsByEventSeq)
+    .map(([, pair]) => pair)
+    .find(([, settlement]) => settlement.call?.seq === editableCallSeq)
+  assert.ok(settledPair !== undefined, 'the editable run has a settlement')
+  const [editableResultSeq, editableSettlement] = settledPair
+  const forged = {
+    ...summary,
+    entries: [...summary.entries, {
+      resultSeq: Number(editableResultSeq),
+      callSeq: editableSettlement.call.seq + 1,
+      argumentsDigest: 'c'.repeat(64),
+    }],
+  }
+  const caught = refoldEditableSettlement(history, forged)
+  assert.equal(caught.mismatch, true, 'a record that disagrees with the log is reported')
+})

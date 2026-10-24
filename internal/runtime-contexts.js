@@ -1,4 +1,5 @@
 import { latestRecoveryTip, runtimeHistoryForView } from './recovery-tips.js'
+import { HOT_CELL_DROPPED, HOT_CELL_DROPPED_EN } from './projection-retention.js'
 import { foldSurface, deriveEventMessage, snapshotSessionEvent } from '@deepseek-ai/dsh-session'
 import { currentSessionMessageProjections } from '@deepseek-ai/dsh-session-format-catalog/message-projections'
 import { readSessionLog } from './session-events.js'
@@ -75,6 +76,12 @@ export async function handBackRuntimeSessions(ctx, owners) {
 function continuationFeedback(view) {
   const run = view.latestRun
   const rewrites = run?.rewrites
+  if (run === undefined && view.hotCellDropped === true) {
+    // The newest cell lost its payload to the retention budget. Silence here reads as
+    // "nothing to advise", which is indistinguishable from a healthy session; tell the
+    // model that the evidence was removed rather than absent.
+    return `${HOT_CELL_DROPPED} / ${HOT_CELL_DROPPED_EN} Inspect the tool result of the dropped cell before continuing; do not replay it automatically.`
+  }
   if (rewrites === undefined || rewrites.length === 0 || run.journal !== undefined) return undefined
   const descriptions = rewrites.map(rewrite => rewrite.description).join('; ')
   const details = descriptions.length <= 2048 ? descriptions

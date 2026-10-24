@@ -785,7 +785,19 @@ function retentionSummaryFromEvents(events, toSeq) {
   return extendSummary(undefined, dropped)
 }
 
+/**
+ * The identity of a call is what survives the payload window: sequence, type,
+ * callId and name. The argument text is deliberately excluded, because retention
+ * replaces it with `argumentsDigest` and an identity that hashed the text would make
+ * every observation describe a different call before and after pruning. The text is
+ * still bound by its own digest in the call entry, so excluding it hides nothing.
+ */
 function eventDigest(event) {
+  if (isRecord(event) && isRecord(event.data) && typeof event.data.callId === 'string') {
+    const identity = { seq: event.seq, type: event.type,
+      data: { callId: event.data.callId, name: event.data.name ?? null } }
+    return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
+  }
   return createHash('sha256').update(JSON.stringify(event, (_key, value) => (
     isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
   ))).digest('hex')
@@ -864,10 +876,16 @@ export function validateSessionTimelineState(value, logFacts) {
     && isCanonicalSequence(entry.eventIndex) && isCanonicalSequence(entry.scope) && entry.scope <= value.scope
     && optional(entry.ambiguous, field => field === true) && optional(entry.editTarget, target)
   const table = (name, keyValid, payloadValid) => {
-    requireFact(isRecord(value[name]))
+    if (!isRecord(value[name])) {
+      throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} is missing`)
+    }
     for (const [key, pair] of Object.entries(value[name])) {
-      requireFact(Array.isArray(pair) && pair.length === 2 && keyValid(pair[0]) && key === `k${pair[0]}`)
-      requireFact(payloadValid(pair[1], pair[0]))
+      if (!Array.isArray(pair) || pair.length !== 2 || !keyValid(pair[0]) || key !== `k${pair[0]}`) {
+        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} entry ${key}`)
+      }
+      if (!payloadValid(pair[1], pair[0])) {
+        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} payload ${key}`)
+      }
     }
     return new Map(Object.values(value[name]))
   }

@@ -27,7 +27,7 @@ function fold(events) {
   return state
 }
 
-test('a cell larger than the byte budget is dropped, so the checkpoint stays bounded', () => {
+test('a cell larger than the byte budget keeps its cluster and drops its payload', () => {
   const payload = 'x'.repeat(131072)
   const callSeq = next()
   const resultSeq = next()
@@ -44,13 +44,17 @@ test('a cell larger than the byte budget is dropped, so the checkpoint stays bou
   ]
   const state = fold(events)
 
-  // The cell alone is four times the budget, so nothing of it survives in the
-  // checkpoint: the bound wins over keeping the hot cell.
-  assert.equal(Object.keys(state.settledResultsByEventSeq).length, 0, 'the oversized cell leaves no settlement')
-  assert.equal(Object.keys(state.executableCalls).length, 0, 'its executable entry is dropped too')
-  assert.equal(state.latestRun, undefined, 'the cached run no longer points at a dropped cluster')
+  // The cell alone is larger than the budget, so its argument text never reaches the
+  // checkpoint. The cluster itself stays: recovery reads its identity, observation and
+  // normalized result, and only the source text is gone.
+  const settlements = Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
+  assert.equal(settlements.length, 1, 'the cluster survives with a digested payload')
+  assert.equal(typeof settlements[0].call.data.argumentsDigest, 'string')
+  assert.equal(settlements[0].call.data.arguments, undefined, 'the argument text is not stored')
+  assert.equal(Object.keys(state.executableCalls).length, 1, 'its executable entry survives')
+  assert.equal(state.latestRun, undefined, 'the cached run no longer carries the dropped text')
   assert.equal(state.editableRun, undefined)
-  assert.equal(state.retentionSummary?.count, 1, 'the summary records the dropped cell')
+  assert.equal(state.retentionSummary ?? null, null, 'the payload window folds no cluster')
 
   // With the payload gone the serialized checkpoint is tiny even though the cell
   // carried 128 KB of code, twice the configured budget.

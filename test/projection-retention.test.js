@@ -98,10 +98,18 @@ test('the retention window digests old payloads and keeps every cluster', () => 
   for (const settlement of digested) {
     assert.match(settlement.call.data.argumentsDigest, /^[a-f0-9]{64}$/u)
     assert.ok(settlement.call.data.argumentsBytes > 2048, 'the digest records the byte length')
-    assert.equal(settlement.normalized, undefined, 'a digested cluster drops its payload copy')
-    assert.equal(settlement.publication, undefined)
+    // The cluster keeps what recovery and the run derivations read; only the
+    // argument wire is replaced by a digest. A cluster that dropped these would
+    // force a log refold for cells the window covers.
+    assert.ok(settlement.normalized !== undefined, 'a digested cluster keeps its normalized result')
+    assert.ok(settlement.publication !== undefined, 'a digested cluster keeps its publication')
   }
-  assert.equal(typeof resultList(state)[0]?.journal?.status, 'string', 'the result keeps what recovery reads')
+  // Every stored result keeps the shape recovery reads: the journal, or the error
+  // that replaced it when the journal could not be normalized.
+  for (const stored of resultList(state)) {
+    assert.ok(stored.journal !== undefined || typeof stored.error === 'string',
+      'a result keeps its journal or the recorded error')
+  }
   assert.ok(state.retainedBytes < 4096 * 10, `digested clusters stay small: ${state.retainedBytes}`)
   validateSessionTimelineState(state)
 })

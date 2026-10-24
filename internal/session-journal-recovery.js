@@ -884,7 +884,9 @@ export function validateSessionTimelineState(value, logFacts) {
         throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} entry ${key}`)
       }
       if (!payloadValid(pair[1], pair[0])) {
-        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} payload ${key}`)
+        const problem = name === 'settledResultsByEventSeq' ? settlementProblem(pair[1]) : undefined
+        const shape = isRecord(pair[1]) ? ` keys=${Object.keys(pair[1]).join(',')}` : ` value=${JSON.stringify(pair[1])?.slice(0, 80)}`
+        throw new TypeError(`invalid PTC session-log projection timeline checkpoint: table ${name} payload ${key}${shape}${problem === undefined ? '' : ` problem=${problem}`}`)
       }
     }
     return new Map(Object.values(value[name]))
@@ -1003,33 +1005,53 @@ export function validateSessionTimelineState(value, logFacts) {
     && (observation.callDigest !== undefined || !REPL_TOOL_NAMES.has(observation.call.data.name)
       || (deepEqualJson(executable.get(seq)?.event, observation.call)
         && observation.eventIndex >= executable.get(seq).eventIndex)))
-  const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => fields(settlement,
-    ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])
-    && callEvent(settlement.call) && settlementEntry(settlement.entry)
-    && optional(settlement.normalized, normalizedResult)
-    && typeof settlement.ordinary === 'boolean'
-    && isCanonicalSequence(settlement.observedIndex) && value.lastEventIndex !== null
-    && settlement.observedIndex >= settlement.entry.eventIndex && settlement.observedIndex <= value.lastEventIndex
-    && typeof settlement.identity === 'string' && /^[a-f0-9]{64}$/u.test(settlement.identity)
-    && (!REPL_TOOL_NAMES.has(settlement.call.data.name)
-      || deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call))
-    && optional(settlement.publication, publication => fields(publication,
-        ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])
-      && deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)
-      && deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)
-      && deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)
-      && deepEqualJson(publication.postEdit ?? null, settlement.normalized?.postEdit ?? null)
-      && deepEqualJson(publication.postEditRewrites ?? null, settlement.normalized?.postEdit?.rewrites ?? null)
-      && !settlement.entry.ambiguous && isCanonicalSequence(publication.index)
-      && publication.index === (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)
-      && ((settlement.call.data.name === 'run_code' && publication.derived === undefined)
-        || (settlement.call.data.name === 'edit_run_code'
-        && publication.derived?.targetCallSeq === settlement.entry.editTarget?.callSeq
-        && publication.derived !== undefined))
-      && (publication.journal === undefined
-        ? publication.derived === undefined && publication.userBindings === undefined
-        : journalFacts(publication))
-      && deepEqualJson(validatedRewrites({ [REWRITES_KEY]: publication.rewrites }) ?? null, publication.rewrites ?? null)))
+  /**
+   * Name the clause a settlement fails, so a rejected checkpoint says which relation
+   * broke instead of only which table. The clauses are the same ones the inline
+   * predicate used to run; this only reports them.
+   */
+  const settlementProblem = settlement => {
+    if (!fields(settlement, ['call', 'entry', 'identity', 'publication', 'observedIndex', 'ordinary', 'normalized'])) return 'fields'
+    if (!callEvent(settlement.call)) return 'callEvent'
+    if (!settlementEntry(settlement.entry)) return 'entry'
+    if (!optional(settlement.normalized, normalizedResult)) return 'normalized'
+    if (typeof settlement.ordinary !== 'boolean') return 'ordinary'
+    if (!isCanonicalSequence(settlement.observedIndex) || value.lastEventIndex === null) return 'observedIndex'
+    if (settlement.observedIndex < settlement.entry.eventIndex || settlement.observedIndex > value.lastEventIndex) return 'observedIndex range'
+    if (typeof settlement.identity !== 'string' || !/^[a-f0-9]{64}$/u.test(settlement.identity)) return 'identity'
+    if (REPL_TOOL_NAMES.has(settlement.call.data.name)
+      && !deepEqualJson(executable.get(settlement.call.seq)?.event, settlement.call)) {
+      const stored = executable.get(settlement.call.seq)?.event
+      return `executable call (stored=${JSON.stringify(stored)?.slice(0, 220)} settlement=${JSON.stringify(settlement.call)?.slice(0, 220)})`
+    }
+    const publicationProblem = publication => {
+      if (!fields(publication, ['index', 'journal', 'derived', 'userBindings', 'rewrites', 'postEdit', 'postEditRewrites'])) return 'publication fields'
+      if (!deepEqualJson(publication.journal ?? null, settlement.normalized?.journal ?? null)) return 'publication journal'
+      if (!deepEqualJson(publication.derived ?? null, settlement.normalized?.derived ?? null)) return 'publication derived'
+      if (!deepEqualJson(publication.userBindings ?? null, settlement.normalized?.userBindings ?? null)) return 'publication userBindings'
+      if (!deepEqualJson(publication.postEdit ?? null, settlement.normalized?.postEdit ?? null)) return 'publication postEdit'
+      if (!deepEqualJson(publication.postEditRewrites ?? null, settlement.normalized?.postEdit?.rewrites ?? null)) return 'publication postEditRewrites'
+      if (settlement.entry.ambiguous) return 'publication ambiguity'
+      if (!isCanonicalSequence(publication.index)) return 'publication index'
+      if (publication.index !== (settlement.ordinary ? settlement.observedIndex : settlement.entry.eventIndex)) return 'publication position'
+      if (settlement.call.data.name === 'run_code' && publication.derived !== undefined) return 'publication derived target'
+      if (settlement.call.data.name === 'edit_run_code'
+        && (publication.derived === undefined
+          || publication.derived.targetCallSeq !== settlement.entry.editTarget?.callSeq)) return 'publication edit target'
+      if (publication.journal === undefined
+        ? publication.derived !== undefined || publication.userBindings !== undefined
+        : !journalFacts(publication)) return 'publication journal facts'
+      if (!deepEqualJson(validatedRewrites({ [REWRITES_KEY]: publication.rewrites }) ?? null, publication.rewrites ?? null)) return 'publication rewrites'
+      return undefined
+    }
+    if (!optional(settlement.publication, publication => publicationProblem(publication) === undefined)) return 'publication'
+    if (isRecord(settlement.publication)) {
+      const problem = publicationProblem(settlement.publication)
+      if (problem !== undefined) return problem
+    }
+    return undefined
+  }
+  const settlements = table('settledResultsByEventSeq', isCanonicalSequence, settlement => settlementProblem(settlement) === undefined)
   // Normalized event facts retain distinctions needed by the transition but
   // omit result content. Admission uses that same transition, not a second
   // partial interpretation of the materialized caches.
@@ -1819,7 +1841,10 @@ function pruneRetention(state, tables) {
   for (const [index, entry] of newestFirst.entries()) {
     const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
-    const outsidePayloadWindow = index >= limits.runs
+    // The run a consumer reads synchronously keeps its text even past the count
+    // window: the window bounds how much history stays readable, never the cell the
+    // user is looking at. Only the byte budget can digest a pinned cell.
+    const outsidePayloadWindow = index >= limits.runs && !pinned
     const overBudget = bytes > limits.bytes
     if (overBudget || outsidePayloadWindow || (index > 0 && !pinned && retainedTotal + bytes > limits.bytes)) {
       mustPrune.add(entry.resultSeq)
@@ -1841,6 +1866,16 @@ function pruneRetention(state, tables) {
     if (callSeq !== undefined && tables.executable.has(callSeq)) {
       const stored = tables.executable.get(callSeq)
       tables.executable.set(callSeq, { ...stored, event: { ...stored.event, data: digestArgumentData(stored.event.data) } })
+      // A republication clones the call event into its own settlement, so every
+      // settlement that names this call must digest the same copy: admission
+      // compares each settlement's call with the retained executable entry.
+      for (const otherPair of Object.values(tables.settled.table)) {
+        const [otherKey, other] = otherPair
+        if (!isRecord(other) || other === entry.settlement) continue
+        if (Number(other.call?.seq) !== Number(callSeq)) continue
+        if (typeof other.call?.data?.arguments !== 'string') continue
+        tables.settled.set(otherKey, { ...other, call: { ...other.call, data: digestArgumentData(other.call.data) } })
+      }
     }
     // The result keeps every field recovery reads — status, operations, user
     // binding evidence, confirms, completion and call metadata — and loses only

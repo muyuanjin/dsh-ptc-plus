@@ -724,6 +724,12 @@ export function createSessionTimelineState() {
     // One chained summary of the clusters the window dropped. Per-settlement stubs
     // would still scale with the number of cells the session ran.
     retentionSummary: null,
+    // Set once any cluster is dropped, so admission can tell "nothing was ever
+    // dropped" from "a summary was deleted". A compacted state must carry its summary.
+    compacted: false,
+    // Set when the newest cell alone exceeded the byte budget and had to go. The
+    // consumers that would have read it must say so instead of looking empty.
+    hotCellDropped: false,
     scope: 0,
   }
 }
@@ -766,10 +772,12 @@ export function validateSessionTimelineState(value, logFacts) {
     'cordisTranscript', 'editTargets', 'pendingByCallId', 'seenCallIds', 'claimedEditTargets', 'editClaims',
     'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
-    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes', 'retentionSummary']) && typeof value.openTurn === 'boolean'
+    'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes', 'retentionSummary', 'compacted',
+    'hotCellDropped']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
     && typeof value.retainedBytes === 'number' && value.retainedBytes >= 0
     && (value.retentionSummary === undefined || value.retentionSummary === null || isRecord(value.retentionSummary))
+    && typeof value.compacted === 'boolean' && typeof value.hotCellDropped === 'boolean'
     && Array.isArray(value.calls) && value.calls.every(seq => isCanonicalSequence(seq))
     && Array.isArray(value.boundaries))
   requireFact(value.lastEventIndex === null || isCanonicalSequence(value.lastEventIndex))
@@ -964,6 +972,14 @@ export function validateSessionTimelineState(value, logFacts) {
     reconstructed = replaySessionTimelineFact(reconstructed, observation)
   }
   const summary = retentionSummaryOf(value)
+  // A compacted state that lost its summary must be rejected: dropping the summary
+  // would erase the only trace of the clusters the window removed.
+  if (value.compacted === true && summary === undefined) {
+    throw new TypeError('inconsistent PTC session-log projection retention summary')
+  }
+  if (value.compacted !== true && summary !== undefined) {
+    throw new TypeError('inconsistent PTC session-log projection retention summary')
+  }
   if (summary !== undefined) {
     // A compacted checkpoint dropped whole clusters, so replay can never reproduce
     // it; the summary is proved instead — against the log when the caller has it.
@@ -1690,7 +1706,11 @@ function pruneRetention(state, tables) {
   if (state.latestRun !== undefined && droppedCallSeqs.has(state.latestRun.callSeq)) {
     state.latestRun = undefined
     state.editableRun = undefined
+    // The newest cell lost its payload because it alone exceeded the budget. Consumers
+    // that would have read it must report that instead of looking empty.
+    state.hotCellDropped = true
   }
+  state.compacted = true
   dropped.sort((left, right) => left.resultSeq - right.resultSeq)
   state.retentionSummary = extendSummary(state.retentionSummary, dropped)
   // The facts of a dropped cluster keep their identity and digests but lose the

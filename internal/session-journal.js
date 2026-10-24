@@ -96,7 +96,8 @@ function normalizeCalls(value) {
   if (!Array.isArray(value)) throw new Error('invalid dsh-ptc-plus journal calls')
   const calls = value.map((call, index) => {
     if (!isRecord(call) || typeof call.global !== 'string' || typeof call.member !== 'string'
-      || !Object.hasOwn(call, 'args') || (call.ok !== true && call.ok !== false)
+      || Object.hasOwn(call, 'args') === Object.hasOwn(call, 'argsDigest')
+      || (call.ok !== true && call.ok !== false)
       || !isCanonicalSequence(call.settle)) {
       throw new Error(`invalid dsh-ptc-plus journal call at index ${index}`)
     }
@@ -107,10 +108,17 @@ function normalizeCalls(value) {
     if (call.ok === false && typeof call.error !== 'string') {
       throw new Error(`journal call at index ${index} is missing its error`)
     }
+    const digestedArgs = Object.hasOwn(call, 'argsDigest')
+    if (digestedArgs && (typeof call.argsDigest !== 'string' || !/^[a-f0-9]{64}$/u.test(call.argsDigest)
+      || !isCanonicalSequence(call.argsBytes))) {
+      throw new Error(`invalid digested dsh-ptc-plus journal call args at index ${index}`)
+    }
     return {
       global: call.global,
       member: call.member,
-      args: normalizeValueWire(call.args),
+      ...(digestedArgs
+        ? { argsDigest: call.argsDigest, argsBytes: call.argsBytes }
+        : { args: normalizeValueWire(call.args) }),
       ok: call.ok,
       settle: call.settle,
       ...(call.ok ? { value: normalizeValueWire(call.value) } : { error: call.error }),

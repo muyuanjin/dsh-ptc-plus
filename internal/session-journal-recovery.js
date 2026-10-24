@@ -1718,6 +1718,32 @@ export function withFullRetention(run) {
  * Consumers that need a dropped cell must refold it from the session log; when the
  * log cannot supply it they report `retention-pruned` instead of guessing.
  */
+/**
+ * A call event whose argument text is gone keeps its identity and the digest of
+ * exactly the bytes it used to carry, so a refold can prove the text it recovers
+ * is the text the checkpoint once held.
+ */
+function digestArgumentData(data) {
+  if (!isRecord(data) || typeof data.arguments !== 'string') return data
+  const { arguments: text, ...rest } = data
+  return { ...rest, argumentsDigest: digestOf(text), argumentsBytes: byteLength(text) }
+}
+
+/**
+ * A journal outside the payload window keeps everything recovery reads — status,
+ * operations, user binding evidence, confirms, completion and per-call metadata —
+ * and replaces each call's argument wire with its digest. Byte-for-byte equality
+ * of argument text is what the window gives up; identity is not.
+ */
+function digestJournalArguments(journal) {
+  if (!isRecord(journal) || !Array.isArray(journal.calls)) return journal
+  return { ...journal, calls: journal.calls.map(call => {
+    if (!isRecord(call) || !Object.hasOwn(call, 'args')) return call
+    const { args, ...rest } = call
+    return { ...rest, argsDigest: digestOf(args), argsBytes: byteLength(args) }
+  }) }
+}
+
 function pruneRetention(state, tables) {
   if (fullRetentionDepth > 0) return
   const entries = Object.entries(tables.settled.table)
@@ -1729,18 +1755,21 @@ function pruneRetention(state, tables) {
   // The count window is order-only so a replayed fold prunes identically. A
   // configured cluster cap of 0 means the count window never folds anything and
   // the payload budget is the only bound.
-  const keepFrom = Math.max(0, entries.length - retainedClusterCount(limits))
+  const keepClusters = limits.clusters === 0 ? entries.length : Math.min(entries.length, limits.clusters)
+  const keepFrom = Math.max(0, entries.length - keepClusters)
   // The runs a consumer reads synchronously — the latest publication and the cell
   // an edit would capture — stay inside the window even when newer settlements
   // pushed them past the count. Dropping them would turn "editable" into "pruned"
   // for the cell the user is actually looking at.
   const pinnedCallSeqs = new Set([state.latestRun?.callSeq, state.editableRun?.callSeq]
     .filter(callSeq => isCanonicalSequence(callSeq)))
-  const mustPrune = new Set([
-    ...entries.slice(0, keepFrom)
-      .filter(entry => pinnedCallSeqs.has(entry.settlement.call?.seq) === false)
-      .map(entry => entry.resultSeq),
-  ])
+  // Only a cluster beyond the configured cluster cap is folded into the interval
+  // summary. Every other cluster stays, with its payload text replaced by digests,
+  // so recovery evidence never depends on refolding the session log.
+  const folded = new Set(entries.slice(0, keepFrom)
+    .filter(entry => pinnedCallSeqs.has(entry.settlement.call?.seq) === false)
+    .map(entry => entry.resultSeq))
+  const mustPrune = new Set(folded)
   // A cumulative byte cap, not only a per-entry one: the window has to be a constant
   // regardless of how large the retained cells are, otherwise 32 cells of 200 KB
   // still put 6.4 MB in every checkpoint. Walk newest-first and stop retaining once
@@ -1759,8 +1788,9 @@ function pruneRetention(state, tables) {
   for (const [index, entry] of newestFirst.entries()) {
     const bytes = retainedPayloadBytes(entry)
     const pinned = pinnedCallSeqs.has(entry.settlement.call?.seq)
+    const outsidePayloadWindow = index >= limits.runs
     const overBudget = bytes > limits.bytes
-    if (overBudget || (index > 0 && !pinned && retainedTotal + bytes > limits.bytes)) {
+    if (overBudget || outsidePayloadWindow || (index > 0 && !pinned && retainedTotal + bytes > limits.bytes)) {
       mustPrune.add(entry.resultSeq)
       continue
     }
@@ -1770,8 +1800,37 @@ function pruneRetention(state, tables) {
   const droppedCallSeqs = new Set()
   const droppedResultSeqs = new Set()
   const dropped = []
+  const digested = new Set([...mustPrune].filter(resultSeq => !folded.has(resultSeq)))
+  const digestedResultSeqs = new Set()
+  const digestedHotCell = state.latestRun !== undefined && entries.some(entry => (
+    digested.has(entry.resultSeq) && entry.settlement.call?.seq === state.latestRun?.callSeq))
+  for (const entry of entries) {
+    if (!digested.has(entry.resultSeq)) continue
+    const callSeq = entry.settlement.call?.seq
+    if (callSeq !== undefined && tables.executable.has(callSeq)) {
+      const stored = tables.executable.get(callSeq)
+      tables.executable.set(callSeq, { ...stored, event: { ...stored.event, data: digestArgumentData(stored.event.data) } })
+    }
+    // The result keeps every field recovery reads — status, operations, user
+    // binding evidence, confirms, completion and call metadata — and loses only
+    // the argument wire of each call.
+    for (const key of [entry.resultSeq, callSeq]) {
+      if (key === undefined || !tables.results.has(key)) continue
+      const result = tables.results.get(key)
+      if (!isRecord(result) || result.journal === undefined) continue
+      tables.results.set(key, { ...result, journal: digestJournalArguments(result.journal) })
+    }
+    const { normalized, publication, ...rest } = entry.settlement
+    tables.settled.set(entry.resultSeq, {
+      ...rest,
+      ...(callSeq === undefined ? {} : { call: { ...rest.call, data: digestArgumentData(rest.call.data) } }),
+    })
+    digestedResultSeqs.add(Number(entry.resultSeq))
+    state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
+  }
   for (const entry of entries) {
     if (!mustPrune.has(entry.resultSeq)) continue
+    if (!folded.has(entry.resultSeq)) continue
     const callSeq = entry.settlement.call?.seq
     dropped.push(summaryEntry(entry.settlement, Number(entry.resultSeq)))
     tables.settled.delete(entry.resultSeq)
@@ -1789,32 +1848,39 @@ function pruneRetention(state, tables) {
     droppedResultSeqs.add(entry.resultSeq)
     state.retainedBytes = Math.max(0, state.retainedBytes - settlementBytes(entry.settlement))
   }
-  if (dropped.length === 0) return
-  // The ordered call list may only name stored entries, so a dropped cluster takes
-  // its call seq with it.
+  // A digested cluster kept its identity, so the ordered call list keeps its seq;
+  // a folded cluster is gone and takes its seq with it.
   state.calls = state.calls.filter(callSeq => !droppedCallSeqs.has(callSeq))
-  // The hot run can be dropped when it alone exceeds the byte budget. The cached
-  // run must then stop pointing at a cluster that no longer exists; the edit path
-  // refolds it from the session log when a consumer actually needs it.
-  if (state.latestRun !== undefined && droppedCallSeqs.has(state.latestRun.callSeq)) {
+  // The hot run can be lost either way: a folded cluster no longer exists, and a
+  // digested one no longer holds the source a run is built from. Consumers that
+  // need it refold from the session log, and report the notice until they do.
+  if (state.latestRun !== undefined
+    && (droppedCallSeqs.has(state.latestRun.callSeq) || digestedHotCell)) {
     state.latestRun = undefined
     state.editableRun = undefined
-    // The newest cell lost its payload because it alone exceeded the budget. Consumers
-    // that would have read it must report that instead of looking empty.
     state.hotCellDropped = true
   }
-  state.compacted = true
-  dropped.sort((left, right) => left.resultSeq - right.resultSeq)
-  state.retentionSummary = extendSummary(state.retentionSummary, dropped)
-  // The facts of a dropped cluster keep their identity and digests but lose the
+  if (dropped.length === 0 && digested.size === 0) return
+  if (dropped.length !== 0) {
+    state.compacted = true
+    dropped.sort((left, right) => left.resultSeq - right.resultSeq)
+    state.retentionSummary = extendSummary(state.retentionSummary, dropped)
+  }
+  // The facts of a folded cluster keep their identity and digests but lose the
   // payload text, for the same reason the cluster itself is gone.
-  // A fact per event is itself linear in the session length, so a dropped cluster
+  // A fact per event is itself linear in the session length, so a folded cluster
   // takes its tool/call and tool/result facts with it. Admission for a compacted
   // checkpoint proves the summary instead of replaying those facts.
   state.eventFacts = state.eventFacts.filter(fact => {
     if (fact.event?.type === 'tool/call' && droppedCallSeqs.has(fact.event.seq)) return false
     if (fact.normalized !== undefined && droppedResultSeqs.has(Number(fact.normalized.eventSeq))) return false
     return true
+  })
+  // A digested cluster keeps its facts, but they carry the digest-only journal too:
+  // the fact list is a second copy of the same result content.
+  state.eventFacts = state.eventFacts.map(fact => {
+    if (fact.normalized === undefined || !digestedResultSeqs.has(Number(fact.normalized.eventSeq))) return fact
+    return { ...fact, normalized: digestJournalArguments(fact.normalized) }
   })
 }
 

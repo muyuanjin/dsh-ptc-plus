@@ -9117,6 +9117,10 @@ function capabilityCommandText(t2, text) {
   const receipt = readCapabilityCommandReceipt(text);
   return receipt ? t2(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? "" }) : text;
 }
+var HOST_CONTEXT_SECTIONS = Object.freeze([
+  Object.freeze({ id: "host:system-prompt", presence: "capabilities.prompt.hostPresenceEvery" }),
+  Object.freeze({ id: "host:tools:sdk", presence: "capabilities.prompt.hostPresenceCapabilities" })
+]);
 function capabilityChoiceLabel(t2, value) {
   return t2(value === "inherit" ? "capabilities.quick.noOverride" : ["enabled", "pending", "unknown"].includes(value) ? `capabilities.quick.${value}` : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.${value}` : "capabilities.quick.unknown");
 }
@@ -9255,13 +9259,7 @@ function capabilityPlanReason(t2, entry) {
 function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, Modal = createFallbackModal(React32) }) {
   const h = React32.createElement;
   const field = (key) => CONFIG_FIELDS.find((item) => item.key === key);
-  const responsibilityGroups = [
-    { tab: "manual", keys: ["rules"] },
-    { tab: "budgets", keys: ["description", "recovery", "preview"] },
-    { tab: "statistics", keys: ["statistics"] },
-    { tab: "prompt", keys: ["promptText"] }
-  ];
-  const responsibilities = responsibilityGroups.flatMap((group) => group.keys);
+  const responsibilities = ["rules", "description", "recovery", "preview", "statistics", "promptText"];
   const choicesFor = (configuration, plan) => {
     const historical = plan && ["ptc-capability-plan/v1", "ptc-capability-plan/v3"].includes(plan.schema) && configuration && configuration.capabilityPolicy === void 0;
     let statistics;
@@ -9332,32 +9330,23 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h("h4", null, t2("capabilities.combination.saved")),
         h("span", { className: "ptcPlusCapabilitySaveState", role: "status" }, feedback)
       ),
-      h("div", { className: "ptcPlusCombinationChoices" }, ...responsibilityGroups.map((group) => h(
-        "div",
-        {
-          key: group.tab,
-          className: "ptcPlusCombinationGroup",
-          role: "group",
-          "aria-label": t2(`capabilities.tab.${group.tab}`)
-        },
-        h("strong", { className: "ptcPlusCombinationGroupTitle" }, t2(`capabilities.tab.${group.tab}`)),
-        h("div", { className: "ptcPlusCombinationGroupChoices" }, ...group.keys.map((key) => {
-          const state = choiceState(retained, applied, key);
-          return h(
-            "button",
-            {
-              key,
-              type: "button",
-              className: "ptcPlusCombinationChoice",
-              "data-state": state,
-              "aria-controls": key === "promptText" ? `${id2}-pane-prompt` : key === "rules" || key === "statistics" ? `${id2}-pane-${group.tab}` : `${id2}-context-pane-${key}`,
-              onClick: () => onNavigate(key)
-            },
-            h("span", null, t2(`capabilities.combination.${key}`)),
-            h("small", null, t2(`capabilities.combination.state.${state}`))
-          );
-        }))
-      ))),
+      h("div", { className: "ptcPlusCombinationChoices" }, ...responsibilities.map((key) => {
+        const state = choiceState(retained, applied, key);
+        return h(
+          "button",
+          {
+            key,
+            type: "button",
+            className: "ptcPlusCombinationChoice",
+            "data-state": state,
+            "data-choice": key,
+            "aria-controls": key === "promptText" ? `${id2}-pane-prompt` : key === "rules" || key === "statistics" ? `${id2}-pane-${key === "rules" ? "manual" : "statistics"}` : `${id2}-context-pane-${key}`,
+            onClick: () => onNavigate(key)
+          },
+          h("span", null, t2(`capabilities.combination.${key}`)),
+          h("small", null, t2(`capabilities.combination.state.${state}`))
+        );
+      })),
       h("p", { className: "ptcPlusDetail", role: "status" }, effect),
       h(
         "details",
@@ -10776,7 +10765,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       const override = Object.hasOwn(document2.overrides, slot.slotId) ? document2.overrides[slot.slotId] : void 0;
       const asset = PROMPT_ASSETS.find((candidate) => candidate.id === slot.slotId);
       if (asset === void 0 || slot.owner !== "A" || asset.defaultText === null) return null;
-      const current = override ?? "";
+      const current = override ?? asset.defaultText;
       return h(
         "div",
         {
@@ -10786,10 +10775,10 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         },
         h("textarea", {
           id: `${id2}-prompt-${slot.slotId}`,
-          rows: 2,
+          rows: 3,
           disabled: blocked,
           spellCheck: false,
-          placeholder: asset.defaultText,
+          className: "ptcPlusPromptTextarea",
           "aria-label": slot.slotId,
           value: current,
           onChange: (event) => update(slot.slotId, event.target.value === "" ? void 0 : event.target.value)
@@ -10877,30 +10866,96 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         { className: "ptcPlusPromptAnchorBytes", "data-anchor-bytes": String(anchor.bytes) },
         paused ? t2("capabilities.prompt.pausedBytes", { bytes: anchor.bytes }) : t2("capabilities.prompt.cardBytes", { bytes: anchor.bytes })
       );
+      const status = anchor.owner === "mixed" ? t2("capabilities.prompt.ownerMixed") : anchor.owner === "A" ? t2("capabilities.prompt.ownerEditable") : anchor.owner === "B" ? t2("capabilities.prompt.ownerReadOnly") : t2("capabilities.prompt.ownerOther");
       return h(
         "div",
         {
           key: anchor.anchorId,
-          className: "ptcPlusPromptAnchor",
+          className: "ptcPlusPromptRow",
+          role: "row",
           "data-anchor-id": anchor.anchorId,
           "data-wired": anchor.wired === true ? "true" : "false",
           "data-paused": paused ? "true" : "false"
         },
+        h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "channel" }, anchor.channel),
+        h("code", {
+          className: "ptcPlusPromptCell ptcPlusPromptAnchorId",
+          role: "cell",
+          "data-cell": "anchor",
+          title: anchor.anchorId
+        }, anchor.anchorId),
+        h("span", {
+          className: "ptcPlusPromptCell",
+          role: "cell",
+          "data-cell": "presence",
+          title: anchor.presence
+        }, anchor.presence),
         h(
-          "div",
-          { className: "ptcPlusPromptAnchorHead" },
-          h("code", { className: "ptcPlusPromptAnchorId", title: anchor.anchorId }, anchor.anchorId),
-          h("span", { className: "ptcPlusPromptAnchorMeta" }, t2("capabilities.prompt.anchorMeta", {
-            channel: anchor.channel,
-            presence: anchor.presence,
-            owner: anchor.owner === "mixed" ? t2("capabilities.prompt.ownerMixed") : anchor.owner
-          })),
+          "span",
+          { className: "ptcPlusPromptCell ptcPlusPromptAnchorBytes", role: "cell", "data-cell": "bytes" },
           bytes
         ),
-        h("div", { className: "ptcPlusPromptChips" }, ...anchor.slots.map((slot) => chip(anchor, slot))),
+        h(
+          "span",
+          { className: "ptcPlusPromptCell ptcPlusPromptStatus", role: "cell", "data-cell": "status" },
+          h(
+            "span",
+            { className: "ptcPlusPromptChip", "data-owner-status": anchor.owner },
+            h("span", { className: "ptcPlusPromptChipLabel" }, status)
+          ),
+          anchor.slots.filter((slot) => slot.owner !== "A").length === 0 ? null : h("small", { className: "ptcPlusDetail" }, t2("capabilities.prompt.readonlySummary", {
+            count: anchor.slots.filter((slot) => slot.owner !== "A").length
+          }))
+        ),
+        h(
+          "div",
+          { className: "ptcPlusPromptChips", role: "cell", "data-cell": "slots" },
+          ...anchor.slots.map((slot) => chip(anchor, slot))
+        ),
         editor
       );
     });
+    const header = h(
+      "div",
+      { className: "ptcPlusPromptRow ptcPlusPromptHeader", role: "row" },
+      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnChannel")),
+      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnAnchor")),
+      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnPresence")),
+      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnBytes")),
+      h("span", { role: "columnheader" }, t2("capabilities.prompt.columnStatus"))
+    );
+    const hostRows = HOST_CONTEXT_SECTIONS.map((section) => h(
+      "div",
+      {
+        key: section.id,
+        className: "ptcPlusPromptRow ptcPlusPromptHostRow",
+        role: "row",
+        "data-host-row": section.id
+      },
+      h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "channel" }, "prompt"),
+      h("code", {
+        className: "ptcPlusPromptCell ptcPlusPromptAnchorId",
+        role: "cell",
+        "data-cell": "anchor",
+        title: section.id
+      }, section.id),
+      h("span", { className: "ptcPlusPromptCell", role: "cell", "data-cell": "presence" }, t2(section.presence)),
+      h(
+        "span",
+        { className: "ptcPlusPromptCell", role: "cell", "data-cell": "bytes" },
+        t2("capabilities.prompt.hostUnavailable")
+      ),
+      h(
+        "span",
+        { className: "ptcPlusPromptCell ptcPlusPromptStatus", role: "cell", "data-cell": "status" },
+        h(
+          "span",
+          { className: "ptcPlusPromptChip", "data-readonly": "true" },
+          h("span", { className: "ptcPlusPromptChipLabel" }, t2("capabilities.prompt.ownerHost")),
+          h("span", { className: "ptcPlusPromptChipNote" }, t2("capabilities.prompt.hostSection"))
+        )
+      )
+    ));
     return h(
       "section",
       {
@@ -10929,7 +10984,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         { className: "ptcPlusDetail" },
         t2("capabilities.prompt.unwiredSummary", { anchors: unwiredAnchors.length, slots: unmeasuredSlots })
       ),
-      ...rows
+      h("div", { className: "ptcPlusPromptTable", role: "table" }, header, ...rows, ...hostRows)
     );
   }
   function CapabilityWorkbench({
@@ -40308,6 +40363,17 @@ var CLIENT_CSS = `
 .ptcPlusPromptCards{display:flex;flex-wrap:wrap;gap:10px}
 .ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.ptcPlusPromptTable{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
+.ptcPlusPromptRow{display:grid;grid-template-columns:72px minmax(150px,1.1fr) minmax(120px,1fr) 96px minmax(120px,0.9fr);gap:4px 12px;align-items:start;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);min-width:0}
+.ptcPlusPromptRow:last-child{border-bottom:0}
+.ptcPlusPromptRow[data-host-row]{background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptHeader{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptCell{min-width:0;font-size:11px;line-height:18px;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptCell[data-cell=anchor]{color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptStatus{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.ptcPlusPromptRow>.ptcPlusPromptChips,.ptcPlusPromptRow>.ptcPlusPromptEditor{grid-column:1/-1}
+.ptcPlusPromptTextarea{color:var(--dsw-alias-label-primary)}
+@media(max-width:720px){.ptcPlusPromptRow{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.ptcPlusPromptHeader{display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=bytes]{grid-column:span 1}}
 .ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
 .ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
@@ -41334,6 +41400,17 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.chipMeta": "\u69FD\u4F4D {owner}",
     "capabilities.prompt.paused": "\u63D0\u793A\u6587\u672C\u5DF2\u6682\u505C\uFF1A\u914D\u7F6E\u91CC\u7684\u63D0\u793A\u6587\u672C\u5F00\u5173\u5173\u95ED\uFF0C\u6539\u5199\u7684\u53E5\u5B50\u4E0D\u4F1A\u8FDB\u5165\u8BF7\u6C42\u3001\u5DE5\u5177\u8BF4\u660E\u3001\u80FD\u529B\u65B9\u6848\u4E0E\u63D0\u793A\uFF1B\u5DF2\u4FDD\u5B58\u7684\u6539\u5199\u4FDD\u7559\uFF0C\u91CD\u65B0\u5F00\u542F\u540E\u751F\u6548\u3002",
     "capabilities.prompt.pausedBytes": "{bytes} B\uFF08\u5DF2\u6682\u505C\uFF0C\u672A\u5E94\u7528\uFF09",
+    "capabilities.prompt.columnChannel": "\u901A\u9053",
+    "capabilities.prompt.columnAnchor": "\u951A\u70B9",
+    "capabilities.prompt.columnPresence": "\u5B58\u5728\u6761\u4EF6",
+    "capabilities.prompt.columnBytes": "\u5B57\u8282",
+    "capabilities.prompt.columnStatus": "\u72B6\u6001",
+    "capabilities.prompt.ownerHost": "DSH \u5BBF\u4E3B",
+    "capabilities.prompt.hostSection": "\u5BBF\u4E3B\u6BB5\u843D\uFF0C\u53EA\u8BFB\uFF1A\u63D2\u4EF6\u80FD\u770B\u5230\u6BB5\u540D\u4E0E\u6765\u6E90\uFF0C\u4E0D\u80FD\u5728\u8FD9\u91CC\u6539\u5199",
+    "capabilities.prompt.hostUnavailable": "\u5BBF\u4E3B\u7CFB\u7EDF\u63D0\u793A\uFF08\u63D2\u4EF6\u4E0D\u53EF\u679A\u4E3E\uFF09",
+    "capabilities.prompt.hostPresenceEvery": "\u6BCF\u4E2A\u8BF7\u6C42",
+    "capabilities.prompt.hostPresenceCapabilities": "\u80FD\u529B\u7BA1\u7406\u542F\u7528",
+    "capabilities.prompt.readonlySummary": "{count} \u4E2A\u53EA\u8BFB\u69FD",
     "capabilities.tab.statistics": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.tab.budgets": "\u63D0\u793A\u8BBE\u7F6E",
     "capabilities.tab.plans": "\u914D\u7F6E\u65B9\u6848",
@@ -41998,6 +42075,17 @@ var CHROME_COPY = Object.freeze({
     "capabilities.prompt.chipMeta": "slot {owner}",
     "capabilities.prompt.paused": "Prompt text is paused: the prompt text switch in configuration is off, so edited sentences do not reach requests, tool descriptions, the capability plan or tips. Saved edits are kept and apply again when you turn it back on.",
     "capabilities.prompt.pausedBytes": "{bytes} B (paused, not applied)",
+    "capabilities.prompt.columnChannel": "Channel",
+    "capabilities.prompt.columnAnchor": "Anchor",
+    "capabilities.prompt.columnPresence": "Presence",
+    "capabilities.prompt.columnBytes": "Bytes",
+    "capabilities.prompt.columnStatus": "Status",
+    "capabilities.prompt.ownerHost": "DSH host",
+    "capabilities.prompt.hostSection": "Host-owned section, read-only: the plugin can name it and read its bytes, but cannot rewrite it here",
+    "capabilities.prompt.hostUnavailable": "Host system prompt (not enumerable by the plugin)",
+    "capabilities.prompt.hostPresenceEvery": "every request",
+    "capabilities.prompt.hostPresenceCapabilities": "capability management enabled",
+    "capabilities.prompt.readonlySummary": "{count} read-only slot(s)",
     "capabilities.tab.statistics": "Usage statistics",
     "capabilities.tab.budgets": "Prompt settings",
     "capabilities.tab.plans": "Configurations",

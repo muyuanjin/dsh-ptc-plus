@@ -15,6 +15,15 @@ export function capabilityCommandText(t, text) {
   return receipt ? t(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? '' }) : text
 }
 
+// Host-owned context the model sees in PTC mode. The plugin never receives the host's
+// own instruction text and cannot edit these bytes; it can only name the section it
+// appends into or replaces. Listing them keeps the pane answering "what does the model
+// actually see" instead of silently showing plugin-owned anchors only.
+const HOST_CONTEXT_SECTIONS = Object.freeze([
+  Object.freeze({ id: 'host:system-prompt', presence: 'capabilities.prompt.hostPresenceEvery' }),
+  Object.freeze({ id: 'host:tools:sdk', presence: 'capabilities.prompt.hostPresenceCapabilities' }),
+])
+
 function capabilityChoiceLabel(t, value) {
   return t(value === 'inherit' ? 'capabilities.quick.noOverride'
     : ['enabled', 'pending', 'unknown'].includes(value) ? `capabilities.quick.${value}`
@@ -135,13 +144,10 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
   // Each group owns one settings tab; the prompt text switch lives in the same
   // capabilities section, so 新会话设置 must list it or a saved choice would be
   // invisible there.
-  const responsibilityGroups = [
-    { tab: 'manual', keys: ['rules'] },
-    { tab: 'budgets', keys: ['description', 'recovery', 'preview'] },
-    { tab: 'statistics', keys: ['statistics'] },
-    { tab: 'prompt', keys: ['promptText'] },
-  ]
-  const responsibilities = responsibilityGroups.flatMap(group => group.keys)
+  // 新会话设置 is one row of equally sized choices. Groups only existed to give each
+  // tab a caption; that produced a second row as soon as 提示文本 was added, so the
+  // choices stay flat and the navigation target is decided by `onNavigate` instead.
+  const responsibilities = ['rules', 'description', 'recovery', 'preview', 'statistics', 'promptText']
   const choicesFor = (configuration, plan) => {
     const historical = plan && ['ptc-capability-plan/v1', 'ptc-capability-plan/v3'].includes(plan.schema)
       && configuration && configuration.capabilityPolicy === undefined
@@ -187,18 +193,16 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     return h('section', { className: 'ptcPlusCombination', 'aria-label': t('capabilities.combination.saved') },
       h('div', { className: 'ptcPlusTaskHead' }, h('h4', null, t('capabilities.combination.saved')),
         h('span', { className: 'ptcPlusCapabilitySaveState', role: 'status' }, feedback)),
-      h('div', { className: 'ptcPlusCombinationChoices' }, ...responsibilityGroups.map(group =>
-        h('div', { key: group.tab, className: 'ptcPlusCombinationGroup', role: 'group',
-          'aria-label': t(`capabilities.tab.${group.tab}`) },
-        h('strong', { className: 'ptcPlusCombinationGroupTitle' }, t(`capabilities.tab.${group.tab}`)),
-        h('div', { className: 'ptcPlusCombinationGroupChoices' }, ...group.keys.map(key => {
-          const state = choiceState(retained, applied, key)
-          return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
-            'aria-controls': key === 'promptText' ? `${id}-pane-prompt`
-              : key === 'rules' || key === 'statistics' ? `${id}-pane-${group.tab}` : `${id}-context-pane-${key}`,
-            onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
-            h('small', null, t(`capabilities.combination.state.${state}`)))
-        }))))),
+      h('div', { className: 'ptcPlusCombinationChoices' }, ...responsibilities.map(key => {
+        const state = choiceState(retained, applied, key)
+        return h('button', { key, type: 'button', className: 'ptcPlusCombinationChoice', 'data-state': state,
+          'data-choice': key,
+          'aria-controls': key === 'promptText' ? `${id}-pane-prompt`
+            : key === 'rules' || key === 'statistics' ? `${id}-pane-${key === 'rules' ? 'manual' : 'statistics'}`
+              : `${id}-context-pane-${key}`,
+          onClick: () => onNavigate(key) }, h('span', null, t(`capabilities.combination.${key}`)),
+          h('small', null, t(`capabilities.combination.state.${state}`)))
+      })),
       h('p', { className: 'ptcPlusDetail', role: 'status' }, effect),
       h('details', { className: 'ptcPlusCapabilitySessionTools' }, h('summary', { tabIndex: 0 }, t('capabilities.existingSessions')),
         renderRefresh?.(),
@@ -1003,12 +1007,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       const override = Object.hasOwn(document.overrides, slot.slotId) ? document.overrides[slot.slotId] : undefined
       const asset = PROMPT_ASSETS.find(candidate => candidate.id === slot.slotId)
       if (asset === undefined || slot.owner !== 'A' || asset.defaultText === null) return null
-      const current = override ?? ''
+      const current = override ?? asset.defaultText
+      // The built-in sentence is the field's value, not a placeholder: the user must be
+      // able to tweak the shipped wording without retyping it. Only a read-only slot is
+      // muted, and it never renders a textarea at all.
       return h('div', { key: `${slot.slotId}-control`, className: 'ptcPlusPromptEditor',
         'data-editor-slot': slot.slotId },
         h('textarea', {
-          id: `${id}-prompt-${slot.slotId}`, rows: 2, disabled: blocked, spellCheck: false,
-          placeholder: asset.defaultText, 'aria-label': slot.slotId, value: current,
+          id: `${id}-prompt-${slot.slotId}`, rows: 3, disabled: blocked, spellCheck: false,
+          className: 'ptcPlusPromptTextarea', 'aria-label': slot.slotId, value: current,
           onChange: event => update(slot.slotId, event.target.value === '' ? undefined : event.target.value),
         }),
         h('div', { className: 'ptcPlusPromptEditorFoot' },
@@ -1080,24 +1087,60 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             : t('capabilities.prompt.cardBytes', { bytes: anchor.bytes }))
       // The row carries its identity and wiring so a test can assert "one row per
       // anchor", "no control on an unwired row" and "one textarea per wired anchor"
-      // without trusting the renderer.
+      // without trusting the renderer. Cells follow the header columns, so the table
+      // stays aligned instead of turning into a pile of chips.
+      const status = anchor.owner === 'mixed'
+        ? t('capabilities.prompt.ownerMixed')
+        : anchor.owner === 'A' ? t('capabilities.prompt.ownerEditable')
+          : anchor.owner === 'B' ? t('capabilities.prompt.ownerReadOnly') : t('capabilities.prompt.ownerOther')
       return h('div', {
         key: anchor.anchorId,
-        className: 'ptcPlusPromptAnchor',
+        className: 'ptcPlusPromptRow',
+        role: 'row',
         'data-anchor-id': anchor.anchorId,
         'data-wired': anchor.wired === true ? 'true' : 'false',
         'data-paused': paused ? 'true' : 'false',
       },
-        h('div', { className: 'ptcPlusPromptAnchorHead' },
-          h('code', { className: 'ptcPlusPromptAnchorId', title: anchor.anchorId }, anchor.anchorId),
-          h('span', { className: 'ptcPlusPromptAnchorMeta' }, t('capabilities.prompt.anchorMeta', {
-            channel: anchor.channel, presence: anchor.presence,
-            owner: anchor.owner === 'mixed' ? t('capabilities.prompt.ownerMixed') : anchor.owner,
-          })),
+        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'channel' }, anchor.channel),
+        h('code', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorId', role: 'cell', 'data-cell': 'anchor',
+          title: anchor.anchorId }, anchor.anchorId),
+        h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'presence',
+          title: anchor.presence }, anchor.presence),
+        h('span', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorBytes', role: 'cell', 'data-cell': 'bytes' },
           bytes),
-        h('div', { className: 'ptcPlusPromptChips' }, ...anchor.slots.map(slot => chip(anchor, slot))),
+        h('span', { className: 'ptcPlusPromptCell ptcPlusPromptStatus', role: 'cell', 'data-cell': 'status' },
+          h('span', { className: 'ptcPlusPromptChip', 'data-owner-status': anchor.owner },
+            h('span', { className: 'ptcPlusPromptChipLabel' }, status)),
+          anchor.slots.filter(slot => slot.owner !== 'A').length === 0 ? null
+            : h('small', { className: 'ptcPlusDetail' }, t('capabilities.prompt.readonlySummary', {
+              count: anchor.slots.filter(slot => slot.owner !== 'A').length,
+            }))),
+        h('div', { className: 'ptcPlusPromptChips', role: 'cell', 'data-cell': 'slots' },
+          ...anchor.slots.map(slot => chip(anchor, slot))),
         editor)
     })
+    const header = h('div', { className: 'ptcPlusPromptRow ptcPlusPromptHeader', role: 'row' },
+      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnChannel')),
+      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnAnchor')),
+      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnPresence')),
+      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnBytes')),
+      h('span', { role: 'columnheader' }, t('capabilities.prompt.columnStatus')))
+    // Host-owned context: read-only rows so the pane also answers what the host puts in
+    // the request. The plugin cannot edit these bytes and does not pretend otherwise.
+    const hostRows = HOST_CONTEXT_SECTIONS.map(section => h('div', {
+      key: section.id, className: 'ptcPlusPromptRow ptcPlusPromptHostRow', role: 'row',
+      'data-host-row': section.id,
+    },
+      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'channel' }, 'prompt'),
+      h('code', { className: 'ptcPlusPromptCell ptcPlusPromptAnchorId', role: 'cell', 'data-cell': 'anchor',
+        title: section.id }, section.id),
+      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'presence' }, t(section.presence)),
+      h('span', { className: 'ptcPlusPromptCell', role: 'cell', 'data-cell': 'bytes' },
+        t('capabilities.prompt.hostUnavailable')),
+      h('span', { className: 'ptcPlusPromptCell ptcPlusPromptStatus', role: 'cell', 'data-cell': 'status' },
+        h('span', { className: 'ptcPlusPromptChip', 'data-readonly': 'true' },
+          h('span', { className: 'ptcPlusPromptChipLabel' }, t('capabilities.prompt.ownerHost')),
+          h('span', { className: 'ptcPlusPromptChipNote' }, t('capabilities.prompt.hostSection'))))))
     return h('section', {
       className: 'ptcPlusPromptText', 'data-prompt-paused': paused ? 'true' : 'false',
     },
@@ -1115,7 +1158,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       totals,
       unwiredAnchors.length === 0 ? null : h('p', { className: 'ptcPlusDetail' },
         t('capabilities.prompt.unwiredSummary', { anchors: unwiredAnchors.length, slots: unmeasuredSlots })),
-      ...rows)
+      h('div', { className: 'ptcPlusPromptTable', role: 'table' }, header, ...rows, ...hostRows))
   }
 
   function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,

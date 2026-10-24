@@ -36,6 +36,17 @@ const CLIENT_CSS = `
 .ptcPlusPromptCards{display:flex;flex-wrap:wrap;gap:10px}
 .ptcPlusPromptCards>.ptcPlusCapabilityField{flex:1 1 150px;min-width:130px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchor{display:flex;flex-direction:column;gap:8px;min-width:0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}
+.ptcPlusPromptTable{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}
+.ptcPlusPromptRow{display:grid;grid-template-columns:72px minmax(150px,1.1fr) minmax(120px,1fr) 96px minmax(120px,0.9fr);gap:4px 12px;align-items:start;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2);min-width:0}
+.ptcPlusPromptRow:last-child{border-bottom:0}
+.ptcPlusPromptRow[data-host-row]{background:var(--dsw-alias-bg-layer-2)}
+.ptcPlusPromptHeader{padding:6px 10px;background:var(--dsw-alias-bg-layer-2);font-size:11px;line-height:16px;font-weight:500;color:var(--dsw-alias-label-tertiary)}
+.ptcPlusPromptCell{min-width:0;font-size:11px;line-height:18px;overflow-wrap:anywhere;color:var(--dsw-alias-label-secondary)}
+.ptcPlusPromptCell[data-cell=anchor]{color:var(--dsw-alias-label-primary)}
+.ptcPlusPromptStatus{display:flex;flex-direction:column;gap:2px;align-items:flex-start}
+.ptcPlusPromptRow>.ptcPlusPromptChips,.ptcPlusPromptRow>.ptcPlusPromptEditor{grid-column:1/-1}
+.ptcPlusPromptTextarea{color:var(--dsw-alias-label-primary)}
+@media(max-width:720px){.ptcPlusPromptRow{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.ptcPlusPromptHeader{display:none}.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=presence],.ptcPlusPromptRow>.ptcPlusPromptCell[data-cell=bytes]{grid-column:span 1}}
 .ptcPlusPromptAnchor[data-wired=false]{background:var(--dsw-alias-bg-layer-2)}
 .ptcPlusPromptAnchorHead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0}
 .ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}

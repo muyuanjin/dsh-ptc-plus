@@ -1,4 +1,5 @@
 import { CAPABILITY_POLICY_DEFAULT } from '../internal/capability-policy.js'
+import { PROMPT_ASSETS } from '../internal/prompt-text.js'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { afterEach, beforeAll, expect, test, vi } from 'vitest'
@@ -993,7 +994,7 @@ test('the plugin row seat renders both views when the page declares it first', a
   expect([...form.querySelectorAll('.ptcPlusGroupTitle')].map(title => title.textContent))
     .toEqual([ 'REPL syntax', 'State and recovery', 'Tool extensions', 'Tool call tolerance', 'Interface display', 'Resource limits', 'Capabilities and context'])
   expect(form.querySelector('.ptcPlusFooter [role=status]').textContent).toBe('Settings are saved; capability plans adopt changes in new sessions or after an explicit refresh.')
-  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'modelPreviewEnabled', 'promptText'].includes(key))) {
+  for (const key of CONFIG_GROUPS.flatMap(group => group.fields).filter(key => !['capabilityBaseline', 'capabilityOverrides', 'capabilityPolicy', 'capabilityStatistics', 'capabilityProfiles', 'capabilityManagementEnabled', 'capabilityRecoveryEnabled', 'capabilityPromptTextEnabled', 'modelPreviewEnabled', 'promptText'].includes(key))) {
     expect(form.querySelector(`[aria-label="${SETTINGS_COPY.en[`${key}.label`]}"]`)).not.toBeNull()
   }
   const writesBeforeBatch = settings.set.mock.calls.length
@@ -7642,8 +7643,12 @@ test.each(['zh', 'en'])('combination summary navigates independent choices and r
     expect([...view.container.querySelectorAll('.ptcPlusCombinationChoices button > span')].map(item => item.textContent))
       .toEqual(keys.map(key => copy[`capabilities.combination.${key}`]))
     if (locale === 'zh') expect(keys.map(key => [...copy[`capabilities.combination.${key}`]].length)).toEqual([4, 4, 4, 4, 4, 4])
-    expect([...view.container.querySelectorAll('.ptcPlusCombinationGroup')].map(group => group.querySelectorAll('button').length))
-      .toEqual([1, 3, 1, 1])
+    // 新会话设置 is one row: the six choices live in a single container, so 提示文本
+    // cannot wrap onto a row of its own the way a separate group did.
+    const choices = [...view.container.querySelectorAll('.ptcPlusCombinationChoices > button')]
+    expect(choices.map(button => button.dataset.choice)).toEqual(keys)
+    expect(view.container.querySelectorAll('.ptcPlusCombinationChoices').length).toBe(1)
+    expect(view.container.querySelectorAll('.ptcPlusCombinationGroup').length).toBe(0)
     fireEvent.click(tile('description'))
     const initialPrompt = view.getByRole('tab', { name: copy['capabilities.context.description'], selected: true })
     expect(document.getElementById(initialPrompt.getAttribute('aria-controls')).id).toBe(tile('description').getAttribute('aria-controls'))
@@ -8191,7 +8196,7 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   // Dropping a card would leave its label missing, and an owner whose slots are all
   // unconnected must say so instead of printing a misleading measured 0 B.
   expect(view.getAllByText(copy['capabilities.prompt.cardUnwired'].replace('{count}', '2')).length).toBeGreaterThan(0)
-  expect(view.getByText(copy['capabilities.prompt.ownerReadOnly']).parentElement.textContent).not.toContain('0 B ·')
+  expect(view.container.querySelector('[data-owner="B"]').textContent).not.toContain('0 B ·')
   // The totals line separates the two slot labels: 未测槽 counts slots on channels
   // this build has not wired (2 today: the capability appendix prose and its
   // declarations), 动态槽 counts slots on wired anchors whose composer produces the
@@ -8209,8 +8214,13 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   // as a hardcoded claim; the totals line stops at what accounting measured.
   expect(totals).not.toContain('delivery unproven')
   // Every slot renders a resolved label: a template with an absent value would leave
-  // `{bytes}` on screen and read like a measurement that came out empty.
-  expect(view.container.textContent).not.toMatch(/\{[a-zA-Z]+\}/u)
+  // `{bytes}` on screen and read like a measurement that came out empty. Editor values
+  // are excluded on purpose: the built-in sentences themselves carry documented holes
+  // (`{platformFacts}`, `{overageBytes}`) that the runtime fills in.
+  const chromeText = [...view.container.querySelectorAll('*')]
+    .filter(node => node.tagName !== 'TEXTAREA' && node.querySelector('textarea') === null)
+    .map(node => node.textContent).join(' ')
+  expect(chromeText).not.toMatch(/\{[a-zA-Z]+\}/u)
   // The 他人所有 card accounts for its dynamic slots, which carry no measured bytes.
   const otherOwner = view.container.querySelector('[data-owner="C"]')
   expect(otherOwner?.textContent).toContain(copy['capabilities.prompt.cardDynamic'].replace('{count}', '2'))
@@ -8305,4 +8315,53 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   await act(async () => { rerender() })
   expect(view.getByText(/guidance\.removed: unknown-slot/u)).toBeTruthy()
   expect(snapshot.value.promptText).toContain('guidance.removed')
+})
+
+test('prompt text pane stays a table, shows the built-in sentence as its value and lists host-owned sections', async () => {
+  const copy = SETTINGS_COPY.en
+  const promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} })
+  const { view } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText } })
+  await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
+
+  // A table-like structure: one header row plus one aligned row per anchor, each with
+  // the five documented columns. A pile of chips cannot satisfy this.
+  const table = view.container.querySelector('.ptcPlusPromptTable')
+  expect(table).not.toBeNull()
+  const header = table.querySelector('.ptcPlusPromptHeader')
+  expect([...header.querySelectorAll('[role="columnheader"]')].map(cell => cell.textContent))
+    .toEqual(['Channel', 'Anchor', 'Presence', 'Bytes', 'Status'])
+  const rows = [...table.querySelectorAll('[data-anchor-id]')]
+  expect(rows).toHaveLength(13)
+  for (const row of rows) {
+    const cells = [...row.querySelectorAll(':scope > [data-cell]')]
+    expect(cells.map(cell => cell.dataset.cell)).toEqual(['channel', 'anchor', 'presence', 'bytes', 'status', 'slots'])
+  }
+
+  // Editable text: the built-in sentence is the field's value, so a user can tweak the
+  // shipped wording without retyping it. A placeholder here would mean the field is
+  // empty and the sentence is only decoration.
+  const runCode = view.container.querySelector('[data-anchor-id="run_code"]')
+  const textarea = runCode.querySelector('textarea')
+  const builtIn = PROMPT_ASSETS.find(asset => asset.id === textarea.getAttribute('aria-label')).defaultText
+  expect(textarea.value).toBe(builtIn)
+  expect(textarea.value.length).toBeGreaterThan(20)
+  expect(textarea.placeholder ?? '').toBe('')
+  expect(textarea.disabled).toBe(false)
+
+  // Read-only slots keep showing their reason code and never become fields.
+  const readOnly = view.container.querySelectorAll('[data-readonly="true"]')
+  expect(readOnly.length).toBeGreaterThan(0)
+  for (const chip of readOnly) expect(chip.querySelector('textarea')).toBeNull()
+
+  // Host-owned context: the pane must answer what the host itself puts in the request,
+  // as read-only rows with an explicit owner, instead of silently showing only the
+  // plugin's own anchors.
+  const hostRows = [...view.container.querySelectorAll('[data-host-row]')]
+  expect(hostRows.length).toBe(2)
+  for (const row of hostRows) {
+    expect(row.textContent).toContain(copy['capabilities.prompt.ownerHost'])
+    expect(row.querySelector('textarea')).toBeNull()
+  }
+  expect(view.container.textContent).toContain('host:tools:sdk')
+  expect(view.container.textContent).toContain(copy['capabilities.prompt.hostUnavailable'])
 })

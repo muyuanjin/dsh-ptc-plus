@@ -49,7 +49,7 @@ function fold(events) {
 
 const settlements = state => Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
 
-test('the retention window drops old payloads and keeps the projection bounded', () => {
+test('the retention window drops whole clusters and keeps one summary', () => {
   const events = []
   const payload = 'x'.repeat(2048)
   for (let index = 0; index < 10; index += 1) {
@@ -57,27 +57,37 @@ test('the retention window drops old payloads and keeps the projection bounded',
     events.push(call(`return '${payload}'`, id), result(id))
   }
   const state = fold(events)
-  const all = settlements(state)
-  assert.equal(all.length, 10, 'every call settles')
 
-  const retained = all.filter(settlement => settlement.pruned !== true)
-  const pruned = all.filter(settlement => settlement.pruned === true)
+  // Only the window survives; a dropped cluster leaves no stub behind, because one
+  // stub per settled cell would still scale with how many cells the session ran.
+  const retained = settlements(state)
   assert.ok(retained.length >= 1 && retained.length <= 3, `the window keeps at most three runs: ${retained.length}`)
-  assert.ok(pruned.length >= 7, `older settlements are pruned: ${pruned.length}`)
-  assert.ok(state.retainedBytes <= 4096 * 2, `retained bytes stay bounded: ${state.retainedBytes}`)
-
-  for (const settlement of pruned) {
-    assert.equal(settlement.call.data.arguments, undefined, 'pruned call keeps no argument text')
-    assert.match(settlement.call.data.argumentsDigest, /^[a-f0-9]{64}$/u)
-    assert.ok(settlement.call.data.argumentsBytes > 0)
-    assert.equal(settlement.normalized.journal, undefined, 'pruned result keeps no journal text')
-    assert.match(settlement.normalized.payloadDigest, /^[a-f0-9]{64}$/u)
-  }
   for (const settlement of retained) {
+    assert.equal(settlement.pruned, undefined, 'a retained settlement is a complete cluster')
     assert.equal(typeof settlement.call.data.arguments, 'string', 'window entries keep their text')
   }
+  const droppedCount = 10 - retained.length
+  assert.ok(droppedCount >= 7, `older settlements are dropped: ${droppedCount}`)
 
-  // The pruned checkpoint is still admissible under the digest-bound claim.
+  // The dropped clusters are gone from every table they used to occupy.
+  const retainedCallSeqs = new Set(retained.map(settlement => settlement.call.seq))
+  assert.equal(Object.keys(state.executableCalls).length, retainedCallSeqs.size,
+    'executable calls keep only the retained window')
+  assert.equal(Object.keys(state.results).length, retained.length,
+    'normalized results keep only the retained window')
+
+  // One chained summary stands in for everything dropped.
+  const summary = state.retentionSummary
+  assert.ok(summary !== null && summary !== undefined, 'the checkpoint carries a retention summary')
+  assert.equal(summary.count, droppedCount, 'the summary counts exactly the dropped settlements')
+  assert.match(summary.chainDigest, /^[a-f0-9]{64}$/u)
+  for (const key of Object.keys(state.settledResultsByEventSeq)) {
+    const seq = Number(key.slice(1))
+    assert.ok(seq > summary.toSeq, 'no settlement survives below the retention boundary')
+  }
+  assert.ok(state.retainedBytes <= 4096 * 2, `retained bytes stay bounded: ${state.retainedBytes}`)
+
+  // The compacted checkpoint is still admissible under the summary claim.
   validateSessionTimelineState(state)
 })
 

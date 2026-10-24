@@ -1,6 +1,6 @@
 import {
-  advanceSessionTimeline, compactBelowCut, createSessionTimelineState, factDigest, replaySessionTimelineFact,
-  retentionCutOf, validateRetentionCut, validateSessionTimelineState,
+  advanceSessionTimeline, createSessionTimelineState, factDigest, replaySessionTimelineFact, withFullRetention,
+  retentionSummaryOf, validateRetentionSummary, validateSessionTimelineState,
 } from './session-journal-recovery.js'
 import { isCanonicalSequence } from './session-journal.js'
 import { advanceSessionSurface, readSessionLog, sessionEvents } from './session-events.js'
@@ -199,11 +199,16 @@ export function createSessionLogProjection() {
       // retained payload stays inside a fixed budget, and every retained fact
       // carries a digest over its own bytes, so beyond that budget a payload edit
       // is still rejected without folding the whole session a second time.
+      const summaryPresent = retentionSummaryOf(value.timeline) !== undefined
+      // A compacted checkpoint dropped whole clusters, so replaying the log can no
+      // longer reach the stored state. Admission proves the summary instead (below)
+      // and skips the replay entirely: it is both impossible to satisfy and the
+      // most expensive thing this file does.
       const timelineFacts = new Map(value.timeline.eventFacts.map(fact => [fact.eventIndex, fact]))
       let replayBytes = 0
       let replayComplete = true
       let reconstructed = emptyLogState()
-      for (const fact of value.logFacts) {
+      for (const fact of summaryPresent ? [] : value.logFacts) {
         const timelineFact = timelineFacts.get(fact.index)
         if (timelineFact === undefined) {
           if (advanceSessionTimeline(reconstructed.timeline, fact.event, fact.index) !== reconstructed.timeline) {
@@ -224,13 +229,17 @@ export function createSessionLogProjection() {
       // the payload it dropped is gone from its own side. Admission proves the cut
       // instead (below it stubs, at or above it text), which is the weaker, stated
       // claim for compacted states. Non-compacted states keep the full comparison.
-      const cut = retentionCutOf(value.timeline)
-      if (cut === undefined) {
+      const summary = retentionSummaryOf(value.timeline)
+      if (summary === undefined) {
         if (replayComplete && !deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value))) {
           throw new TypeError('inconsistent PTC session-log projection checkpoint facts')
         }
       } else {
-        validateRetentionCut(value.timeline, cut)
+        // A compacted checkpoint dropped its old clusters, so replay can never
+        // reproduce it. Admission proves the summary instead: the retained window
+        // is contiguous with the boundary, nothing below it survives, and the
+        // chain digest is a stable identity for what was dropped.
+        validateRetentionSummary(value.timeline, summary)
       }
       return deepFreeze(value)
     } }),
@@ -273,7 +282,7 @@ export function createSessionLogOwner(ctx) {
 }
 
 /** Project session events into immutable facts consumed by prompt presentation. */
-export function projectSessionLog(agent, requestedEdit, projectedState) {
+export function projectSessionLog(agent, requestedEdit, projectedState, options = {}) {
   const events = projectedState === undefined ? sessionEvents(agent?.session) : undefined
   if (projectedState === undefined && !Array.isArray(events)) {
     return Object.freeze({
@@ -292,7 +301,13 @@ export function projectSessionLog(agent, requestedEdit, projectedState) {
   }
   let state = projectedState ?? emptyLogState()
   if (projectedState === undefined) {
-    for (let index = 0; index < events.length; index += 1) state = applyLogEvent(state, events[index], index)
+    const fold = () => {
+      for (let index = 0; index < events.length; index += 1) state = applyLogEvent(state, events[index], index)
+    }
+    // A consumer that needs a dropped cluster refolds the same slice with pruning
+    // disabled; the checkpointed state never carries the flag.
+    if (options.retainAll === true) withFullRetention(fold)
+    else fold()
   }
   const { timeline, contextStep, systemPromptSnapshots, ptcMessages, runtimeMessagesBySeq } = state
   const requestedEntry = requestedEdit === undefined
@@ -332,6 +347,7 @@ export function projectSessionLog(agent, requestedEdit, projectedState) {
     editableRun,
     repairSource: editableRun?.source,
     cordisTranscript,
+    retentionSummary: timeline.retentionSummary ?? undefined,
     ...(requestedEdit === undefined ? {} : { requestedEditTarget }),
   })
 }

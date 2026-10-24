@@ -112,6 +112,40 @@ export function retainNewest(entries) {
   return new Set(retained.map(entry => entry.seq))
 }
 
+/**
+ * Identity of one settlement for the retention summary.
+ *
+ * A dropped settlement keeps nothing but these four facts, folded into one
+ * running chain digest: its position, its call, and the digests of the argument
+ * text and normalized result it used to carry.
+ */
+export function summaryEntry(settlement, resultSeq) {
+  return {
+    resultSeq,
+    callSeq: settlement?.call?.seq,
+    argumentsDigest: settlement?.call?.data?.argumentsDigest ?? digestOf(settlement?.call?.data?.arguments ?? null),
+    normalizedDigest: settlement?.normalized?.payloadDigest ?? digestOf(settlement?.normalized ?? null),
+  }
+}
+
+const EMPTY_CHAIN = digestOf(null)
+
+/** Extend a chained retention summary with the settlements it just dropped. */
+export function extendSummary(previous, entries) {
+  if (entries.length === 0) return previous
+  let chain = previous?.chainDigest ?? EMPTY_CHAIN
+  let count = previous?.count ?? 0
+  let fromSeq = previous?.fromSeq
+  let toSeq = previous?.toSeq
+  for (const entry of entries) {
+    chain = digestOf({ chain, entry })
+    count += 1
+    fromSeq = fromSeq === undefined ? entry.resultSeq : Math.min(fromSeq, entry.resultSeq)
+    toSeq = toSeq === undefined ? entry.resultSeq : Math.max(toSeq, entry.resultSeq)
+  }
+  return { fromSeq, toSeq, count, chainDigest: chain }
+}
+
 /** Payload bytes a settlement still retains, used to decide pruning. */
 export function settlementBytes(settlement) {
   let bytes = 0

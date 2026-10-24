@@ -74,12 +74,20 @@ function nestedEditStart(sessionLog, exec) {
     || event.data.rootCallId !== exec.rootCallId
     || event.data.parentCallId !== exec.rootCallId
     || !deepEqualJson(event.data.arguments, exec.arguments)) return undefined
-  const view = projectSessionLog({ session: { events: events.slice(0, index + 1) } })
-  const target = view.editableRun
-  // The cut travels with the target so an unavailable edit can say why it is
+  const slice = { session: { events: events.slice(0, index + 1) } }
+  const view = projectSessionLog(slice)
+  let target = view.editableRun
+  // A dropped cluster is not gone for good: the log still holds the events, so the
+  // edit path refolds that slice with pruning disabled and reads the cell from
+  // there. Only when the log itself cannot supply it does the edit report that the
+  // retention window cut it.
+  if (target === undefined && view.retentionSummary !== undefined) {
+    target = projectSessionLog(slice, undefined, undefined, { retainAll: true }).editableRun
+  }
+  // The summary travels with the target so an unavailable edit can say why it is
   // unavailable: the cell fell outside the retention window instead of never
   // existing.
-  return { startSeq: event.seq, rootCallSeq, target, retentionCut: view.retentionCut }
+  return { startSeq: event.seq, rootCallSeq, target, retentionSummary: view.retentionSummary }
 }
 
 function unavailableDerivedResult(inner) {
@@ -202,7 +210,7 @@ export function createEditTransportOwner(ctx, {
     const target = start.target
     if (target?.source === undefined || target.callSeq === undefined) {
       return { accepted: false, scheduled: false,
-        reason: start.retentionCut === undefined
+        reason: start.retentionSummary === undefined
           ? 'no run_code cell is currently eligible for safe editing'
           : PRUNED_EDIT }
     }

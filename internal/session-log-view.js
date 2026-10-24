@@ -240,7 +240,12 @@ export function createSessionLogProjection() {
         // contiguous with the boundary, nothing below it survives, and the chain is
         // recomputed from the logged dropped range so the summary cannot certify
         // itself.
-        validateRetentionSummary(value.timeline, summary, value.logFacts)
+        // A compacted checkpoint cannot prove its chain from its own state: the fold
+        // that dropped the clusters also dropped the observations, and `logFacts`
+        // hold presentation facts only. Admission claims the boundary and range here;
+        // callers that hold the raw log verify the chain with
+        // `verifyRetentionSummaryAgainstEvents`.
+        validateRetentionSummary(value.timeline, summary)
       }
       return deepFreeze(value)
     } }),

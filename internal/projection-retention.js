@@ -51,9 +51,12 @@ export function byteLength(value) {
 /**
  * Identity of one settlement for the retention summary.
  *
- * A dropped settlement keeps nothing but these four facts, folded into one
- * running chain digest: its position, its call, and the digests of the argument
- * text and normalized result it used to carry.
+ * A dropped settlement keeps three facts: its result position, its call position
+ * and the digest of the argument text the log still holds. Those three are exactly
+ * what a fold of the session log can reproduce, so the chain over them can be
+ * recomputed from the log; the normalized digest is recorded for diagnostics but
+ * stays out of the chain, because a settlement that was compacted earlier recorded
+ * only its payload digest rather than the normalized object itself.
  */
 export function summaryEntry(settlement, resultSeq) {
   return {
@@ -62,6 +65,11 @@ export function summaryEntry(settlement, resultSeq) {
     argumentsDigest: settlement?.call?.data?.argumentsDigest ?? digestOf(settlement?.call?.data?.arguments ?? null),
     normalizedDigest: settlement?.normalized?.payloadDigest ?? digestOf(settlement?.normalized ?? null),
   }
+}
+
+/** The part of an entry the chain commits to: reproducible from the log alone. */
+function chainEntry(entry) {
+  return { callSeq: entry.callSeq, resultSeq: entry.resultSeq, argumentsDigest: entry.argumentsDigest }
 }
 
 const EMPTY_CHAIN = digestOf(null)
@@ -74,7 +82,7 @@ export function extendSummary(previous, entries) {
   let fromSeq = previous?.fromSeq
   let toSeq = previous?.toSeq
   for (const entry of entries) {
-    chain = digestOf({ chain, entry })
+    chain = digestOf({ chain, entry: chainEntry(entry) })
     count += 1
     fromSeq = fromSeq === undefined ? entry.resultSeq : Math.min(fromSeq, entry.resultSeq)
     toSeq = toSeq === undefined ? entry.resultSeq : Math.max(toSeq, entry.resultSeq)

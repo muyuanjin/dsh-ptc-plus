@@ -8,7 +8,7 @@ process.env.DSH_PTC_RETENTION_BYTES = '65536'
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
 const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
-  validateSessionTimelineState, withFullRetention } =
+  verifyRetentionSummaryAgainstEvents, validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 
@@ -141,17 +141,23 @@ test('the summary is proved against the log instead of certifying itself', () =>
   const summary = state.retentionSummary
   assert.ok(summary !== undefined, 'the fold dropped at least one cluster')
 
-  // With the log in hand the chain must match what folding the dropped range gives.
-  validateRetentionSummary(state, summary, logFacts)
+  // Without the raw log admission can prove the boundary and the range only; the
+  // state itself no longer carries the observations the dropped clusters owned.
+  validateRetentionSummary(state, summary)
 
-  // A summary that only describes itself is rejected: each tampered field disagrees
-  // with the recomputed chain.
-  assert.throws(() => validateRetentionSummary(state, { ...summary, chainDigest: 'a'.repeat(64) }, logFacts),
+  // With the raw log in hand the chain must match what folding the dropped range
+  // gives, and every tampered field must be rejected as a mismatch.
+  verifyRetentionSummaryAgainstEvents(summary, lastHistory)
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, chainDigest: 'a'.repeat(64) }, lastHistory),
     /inconsistent PTC session-log projection retention summary/u)
-  assert.throws(() => validateRetentionSummary(state, { ...summary, count: summary.count + 1 }, logFacts),
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, count: summary.count + 1 }, lastHistory),
     /inconsistent PTC session-log projection retention summary/u)
-  assert.throws(() => validateRetentionSummary(state, { ...summary, fromSeq: 1 }, logFacts),
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, fromSeq: 1 }, lastHistory),
     /inconsistent PTC session-log projection retention summary/u)
-  assert.throws(() => validateRetentionSummary(state, { ...summary, toSeq: summary.toSeq + 2 }, logFacts),
+  // A caller that cannot supply the log must say so rather than accept silently.
+  assert.throws(() => verifyRetentionSummaryAgainstEvents(summary, undefined),
+    /unverifiable PTC session-log projection retention summary/u)
+  // The boundary itself is still enforced from the state.
+  assert.throws(() => validateRetentionSummary(state, { ...summary, toSeq: summary.toSeq + 2 }),
     /PTC session-log projection/u)
 })

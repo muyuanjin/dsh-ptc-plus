@@ -624,37 +624,59 @@ export function validateRetentionSummary(timeline, summary, logFacts) {
       throw new TypeError('PTC session-log projection lost the call of a retained settlement')
     }
   }
-  // A summary that only describes itself proves nothing: a caller that holds the
-  // session log folds the dropped range again and requires the recorded chain to be
-  // exactly what that fold produces. Without the log the boundary checks above are
-  // the whole claim, which is why projection admission passes the facts.
-  if (Array.isArray(logFacts)) {
-    const expected = retentionSummaryFromLog(logFacts, summary.toSeq)
-    if (expected === undefined
-      || expected.count !== summary.count || expected.fromSeq !== summary.fromSeq
-      || expected.toSeq !== summary.toSeq || expected.chainDigest !== summary.chainDigest) {
-      throw new TypeError('inconsistent PTC session-log projection retention summary')
-    }
+  // A summary that only describes itself proves nothing, but the state cannot prove
+  // the chain either: a compacted checkpoint dropped the observations that carried
+  // the dropped payloads, and `logFacts` keep presentation facts only, so folding
+  // them yields no settlements. Admission therefore claims the boundary and the
+  // range, and reports the chain as unverified rather than pretending to check it.
+  // Callers that hold the raw session log call `verifyRetentionSummaryAgainstEvents`
+  // below, which folds it and rejects a mismatch.
+  if (!Number.isSafeInteger(summary.fromSeq) || summary.fromSeq < 1
+    || summary.count > summary.toSeq - summary.fromSeq + 1) {
+    throw new TypeError('inconsistent PTC session-log projection retention summary')
+  }
+  return summary
+}
+
+/**
+ * Prove the recorded chain against the raw session log.
+ *
+ * Folds the events up to the boundary with retention disabled, derives the summary
+ * the fold would have produced for the dropped range, and requires it to equal the
+ * recorded one. A caller without the log must say so: this function throws
+ * `unverifiable PTC session-log projection retention summary` instead of accepting.
+ */
+export function verifyRetentionSummaryAgainstEvents(summary, events) {
+  if (!Array.isArray(events)) {
+    throw new TypeError('unverifiable PTC session-log projection retention summary')
+  }
+  const expected = retentionSummaryFromEvents(events, summary.toSeq)
+  if (expected === undefined
+    || expected.count !== summary.count || expected.fromSeq !== summary.fromSeq
+    || expected.toSeq !== summary.toSeq || expected.chainDigest !== summary.chainDigest) {
+    throw new TypeError('inconsistent PTC session-log projection retention summary')
   }
   return summary
 }
 
 /** Recompute the summary a fold of the dropped range would have produced. */
-function retentionSummaryFromLog(logFacts, toSeq) {
+function retentionSummaryFromEvents(events, toSeq) {
   let state
   withFullRetention(() => {
     state = createSessionTimelineState()
-    for (const fact of logFacts) {
-      const event = fact?.event
-      if (event === undefined) continue
-      if (isCanonicalSequence(event.seq) && event.seq > toSeq) break
-      state = advanceSessionTimeline(state, event, fact.index)
-    }
+    events.forEach((event, index) => {
+      if (!isRecord(event)) return
+      if (isCanonicalSequence(event.seq) && event.seq > toSeq) return
+      state = advanceSessionTimeline(state, event, isCanonicalSequence(event.seq) ? event.seq : index)
+    })
   })
   const dropped = Object.entries(state?.settledResultsByEventSeq ?? {})
     .map(([, pair]) => pair)
     .filter(([resultSeq]) => Number(resultSeq) <= toSeq)
-    .sort((left, right) => left[1].observedIndex - right[1].observedIndex)
+    // The prune orders dropped entries by RESULT sequence before folding them into the
+    // chain, so summing here must use the same order; observedIndex can disagree when
+    // a nested call settles out of order.
+    .sort((left, right) => Number(left[0]) - Number(right[0]))
     .map(([resultSeq, settlement]) => summaryEntry(settlement, Number(resultSeq)))
   if (dropped.length === 0) return undefined
   return extendSummary(undefined, dropped)

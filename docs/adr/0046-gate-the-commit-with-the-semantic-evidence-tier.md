@@ -14,7 +14,7 @@ The commit gate runs the static prerequisites plus the **semantic-evidence backe
 - Browser suites are no longer part of the commit gate. They remain the complete visual contract and run in `verify`, in CI, and on demand.
 - The backend runner rejects `--file` together with `--fast`, so a caller cannot mistake a focused selection for the tier.
 
-Measured on the same Windows workstation: `verify:check` completes in about 231 s once the Client units are included (Client ~128 s, fast tier ~96 s, static prerequisites ~7 s); the complete gate remains ~900 s for the backend inventory plus ~186 s of browser suites. Linux/WSL runs the complete backend inventory in 376 s at `DSH_PTC_TEST_CONCURRENCY=2`, so the tier split is a Windows-scale decision, not a suite that is inherently slow.
+Measured on the same Windows workstation (24 logical CPUs): `verify:check` completes in about 164 s wall clock once the Client units are included, because the Client and backend groups run in parallel (serial estimate ~231 s: Client ~128 s, fast tier ~96 s, static prerequisites ~7 s); the complete gate remains ~900 s for the backend inventory plus ~186 s of browser suites. Linux/WSL runs the complete backend inventory in 376 s at `DSH_PTC_TEST_CONCURRENCY=2`, so the tier split is a Windows-scale decision, not a suite that is inherently slow.
 
 Two portability defects surfaced while making the gate reliable and are part of this decision's evidence: the two `plugin-settings` fixtures used `cwd: '/workspace'`, which produced a `file:///workspace/repl` worker filename that Windows rejects; they now use a platform-neutral cwd. The failing assertion also prints the runtime's own diagnostic instead of a bare boolean.
 

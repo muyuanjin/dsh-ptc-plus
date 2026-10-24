@@ -5,7 +5,7 @@ process.env.DSH_PTC_RETENTION_BYTES = '4096'
 
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
-const { advanceSessionTimeline, createSessionTimelineState, validateSessionTimelineState } =
+const { advanceSessionTimeline, createSessionTimelineState, validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 
@@ -100,4 +100,25 @@ test('the newest run always stays inside the window so tips and edits keep worki
   const state = fold(events)
   assert.ok(state.latestRun?.source !== undefined, 'latestRun keeps its source')
   assert.equal(state.editableRun?.source, state.latestRun?.source)
+})
+
+test('a dropped cluster can be refolded from the same events', () => {
+  const events = []
+  for (let index = 0; index < 6; index += 1) {
+    const id = `refold-${index}`
+    events.push(call(`return 'refold-${index}'`, id), result(id))
+  }
+  const pruned = fold(events)
+  const droppedCount = pruned.retentionSummary?.count ?? 0
+  assert.ok(droppedCount >= 1, 'the window drops at least one cluster')
+  assert.equal(Object.keys(pruned.settledResultsByEventSeq).length, 6 - droppedCount,
+    'only the window survives in the checkpoint')
+
+  // The same slice folded with retention disabled keeps what the checkpoint dropped,
+  // which is exactly what the edit path does when it needs an old cell.
+  let full
+  withFullRetention(() => { full = fold(events) })
+  assert.equal(full.retentionSummary, null, 'a full-retention fold never prunes')
+  assert.equal(Object.keys(full.settledResultsByEventSeq).length, 6,
+    'the refolded slice contains the dropped clusters')
 })

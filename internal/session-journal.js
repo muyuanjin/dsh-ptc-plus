@@ -276,7 +276,21 @@ function normalizeUserBindingsFingerprint(value) {
   return value
 }
 
+// Fields a later journal version introduced. A record is interpreted by its own
+// version, so a field that version could not have carried is not evidence: drop it
+// rather than rejecting the whole journal. A field that carries its own historical
+// contract, such as executionCwd, stays strict; only the value-carrying fields added by the recording work are trimmed, so
+// a record written by a newer build and relabelled by a migration fixture still folds
+// with its historical meaning.
+const NEWER_JOURNAL_FIELDS = Object.freeze(['values', 'unrecordedBindings'])
+function withoutNewerJournalFields(value) {
+  const trimmed = { ...value }
+  for (const field of NEWER_JOURNAL_FIELDS) delete trimmed[field]
+  return trimmed
+}
+
 function migrateJournal(value, resolveLegacyConfirm) {
+  value = value.version === JOURNAL_VERSION ? value : withoutNewerJournalFields(value)
   if (value.version === JOURNAL_VERSION) return value
   if (value.version === MODULE_TRANSFORM_JOURNAL_VERSION) {
     assertOwnFields(value, MODULE_TRANSFORM_JOURNAL_FIELDS, 'dsh-ptc-plus journal')

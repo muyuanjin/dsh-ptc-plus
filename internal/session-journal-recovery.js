@@ -89,8 +89,44 @@ export function isConfirmableNoop(timeline, callSeq, resultEventIndex) {
   return call !== undefined && call.eventIndex < resultEventIndex && !timeline.results.has(callSeq)
 }
 
+/** Node indices reachable from a head by following parents. */
+function reachableFrom(nodes, head) {
+  const reachable = new Set()
+  for (let cursor = head; cursor !== undefined && !reachable.has(cursor);) {
+    reachable.add(cursor)
+    cursor = nodes[cursor]?.parent
+  }
+  return reachable
+}
+
+/**
+ * Binding names a node recorded.
+ *
+ * The recorded values are the only evidence that names a durable binding today;
+ * `unrecordedBindings` names the ones the codec could not transfer, and a
+ * `kind: "binding"` save names one explicitly. A checkpoint save never counts.
+ */
+function recordedBindingNames(node) {
+  const journal = node?.journal
+  if (journal === undefined) return []
+  return [...new Set([
+    ...(journal.values ?? []).map(value => value.name),
+    ...(journal.unrecordedBindings ?? []),
+    ...bindingNamesOfOperations(journal.operations),
+  ].filter(name => typeof name === 'string'))]
+}
+
 function applyOperations(state, operations, nodeIndex) {
+  const previousHead = state.head
   const transition = reduceStateOperations(state, operations, nodeIndex)
+  if (transition.restored) {
+    const reachableBefore = reachableFrom(state.nodes, previousHead)
+    const reachableAfter = reachableFrom(state.nodes, transition.head)
+    for (const index of reachableBefore) {
+      if (reachableAfter.has(index)) continue
+      for (const name of recordedBindingNames(state.nodes[index])) state.deletedBindings.add(name)
+    }
+  }
   state.head = transition.head
   state.checkpoints = transition.checkpoints
   if (transition.restored) {
@@ -214,6 +250,7 @@ function foldRecords(records, invalidCallSeqs, options = {}) {
     checkpoints: new Map(),
     volatileSuffix: [],
     provenBindings: new Set(),
+    deletedBindings: new Set(),
     trusted: true,
     surfaceContracted: options.surfaceContracted === true,
   }
@@ -2361,6 +2398,13 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     available: found && !state.surfaceContracted && unavailableBoundary === undefined,
   }
   history.provenBindings = [...state.provenBindings]
+  // Recovery-only, like the proved names: the enumerable history shape is a
+  // contract other readers compare against, so the deletion set stays off it.
+  Object.defineProperty(history, 'deletedBindings', {
+    value: [...state.deletedBindings],
+    enumerable: false,
+    configurable: true,
+  })
   return history
 }
 

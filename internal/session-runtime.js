@@ -129,6 +129,27 @@ function unverifiedCompletionDiagnostic(count) {
   })
 }
 
+/**
+ * Notice for bindings a recorded rewind ended.
+ *
+ * They are not missing: the record says they are gone, because the cell that
+ * restored an earlier durable state abandoned them. Reporting them apart from a
+ * genuine loss keeps the two costs distinguishable.
+ */
+function rewindEndedDiagnostic(bindings) {
+  const names = bindings.length === 0 ? '' : ` (${bindings.join(', ')})`
+  return diagnostic({
+    code: 'PTC-R005',
+    severity: 'warning',
+    phase: 'recover',
+    message: `Dropped ${bindings.length} binding(s)${names} because a recorded rewind ended them.`,
+    stateEffect: 'rolled-back',
+    help: [
+      'this is not a recovery failure: the cell that restored an earlier durable state ended these bindings on purpose',
+    ],
+  })
+}
+
 function recoveryDiagnostic(bindings, count) {
   return diagnostic({
     code: 'PTC-R002',
@@ -631,13 +652,15 @@ class SessionKernel {
       // A binding the log proves but the replay never installed is a loss the
       // model has to hear about by name, even when no cell was skipped: the
       // restored suffix looks complete while anything older is simply absent.
+
       if (this.missingBindings !== undefined && this.missingBindings.length > 0) {
         const missing = [...new Set(this.missingBindings)]
         this.recoveryNotice = recoveryDiagnostic(missing, missing.length)
       }
     }
-    const leadingDiagnostics = this.recoveryNotice === undefined || this.recoveryNoticeShown
-      ? [] : [this.recoveryNotice]
+    const leadingDiagnostics = [
+      ...(this.recoveryNotice === undefined || this.recoveryNoticeShown ? [] : [this.recoveryNotice]),
+    ]
     this.recoveryNoticeShown = this.recoveryNotice !== undefined
     this.recoveryNotice = undefined
     if (request.journal !== undefined) request.journal.diagnostics.push(...leadingDiagnostics)
@@ -689,8 +712,13 @@ class SessionKernel {
       for (const value of node.journal.values ?? []) replayedNames.add(value.name)
       for (const name of bindingNamesOfOperations(node.journal.operations)) replayedNames.add(name)
     }
+    // A recorded rewind ended these bindings on purpose: they are gone by record,
+    // not by omission, so they are reported apart from the ones recovery failed to
+    // install. Nothing else may report them as missing.
+    const endedBindings = new Set(this.history.deletedBindings ?? [])
+    this.rewindEndedBindings = [...endedBindings].filter(name => !replayedNames.has(name))
     this.missingBindings = (this.history.provenBindings ?? [])
-      .filter(name => !replayedNames.has(name))
+      .filter(name => !replayedNames.has(name) && !endedBindings.has(name))
     for (const node of path) {
       const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
       const bindingDescriptors = bindings === request.bindings

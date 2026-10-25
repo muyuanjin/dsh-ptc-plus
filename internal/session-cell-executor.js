@@ -367,6 +367,35 @@ function stateArguments(value) {
 export class SessionCellExecutor {
   constructor(kernel) {
     this.kernel = kernel
+    this.pendingRestore = undefined
+  }
+
+  /**
+   * Install recorded values into the worker without running any program.
+   *
+   * Recovery restores a cell the journal recorded as volatile from the values
+   * that cell produced. Sending its source instead would redispatch whatever
+   * ambient source made it volatile, so this path carries values only: the
+   * worker commits each one as a declaration and reports the names it could
+   * not install. A missing worker is reported the same way rather than thrown,
+   * because the caller has to tell the model which bindings it lost.
+   */
+  async restoreBindings(values, config = this.kernel.config) {
+    const kernel = this.kernel
+    const failedAll = reason => values.map(entry => ({ name: entry.name, reason }))
+    if (kernel.disposed) return { restored: [], failed: failedAll('session kernel disposed') }
+    if (kernel.client.worker === undefined) return { restored: [], failed: failedAll('no live worker') }
+    const id = ++kernel.sequence
+    const valueLimits = kernel.valueLimits(config)
+    return new Promise(resolve => {
+      this.pendingRestore = { id, resolve }
+      try {
+        kernel.client.post({ type: 'restore', id, values, valueLimits })
+      } catch (error) {
+        this.pendingRestore = undefined
+        resolve({ restored: [], failed: failedAll(error instanceof Error ? error.message : String(error)) })
+      }
+    })
   }
 
   async executeCell(request, replayRecord = undefined, config = this.kernel.config) {
@@ -747,6 +776,18 @@ export class SessionCellExecutor {
   }
 
   onMessage(message) {
+    if (message?.type === 'restored') {
+      const pending = this.pendingRestore
+      if (pending === undefined || pending.id !== message.id) return
+      this.pendingRestore = undefined
+      const restored = Array.isArray(message.restored) ? message.restored.filter(name => typeof name === 'string') : []
+      const failed = Array.isArray(message.failed)
+        ? message.failed.filter(entry => entry !== null && typeof entry === 'object' && typeof entry.name === 'string')
+          .map(entry => ({ name: entry.name, reason: typeof entry.reason === 'string' ? entry.reason : 'the worker did not report a reason' }))
+        : []
+      pending.resolve({ restored, failed })
+      return
+    }
     if (message?.type === 'observation-started') {
       const kernel = this.kernel
       const observation = kernel.workerObservation

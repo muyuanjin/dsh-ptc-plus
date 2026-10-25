@@ -333,6 +333,23 @@ export function createStatefulRootRuntime({ readAmbient, typeofAmbient, writeAmb
       const entry = mapGet(entries, name)
       return entry?.source === 'local' && entry.object !== true && entry.read === undefined ? { value: entry.value } : undefined
     },
+    /**
+     * Install a recorded binding without running the cell that produced it.
+     *
+     * A volatile cell cannot be replayed: re-executing its source would
+     * redispatch the ambient effects that made it volatile. Recovery therefore
+     * installs the value the journal recorded, as the committed local
+     * declaration the original cell's own commit produced. Returns false when
+     * the store cannot publish a session identity for the name, so the caller
+     * reports that binding instead of claiming it was restored.
+     */
+    restoreValue(name, value) {
+      const entry = storeValue(name, value, { declaration: true })
+      if (entry === undefined) return false
+      publish(name, () => read(name), next => write(name, next))
+      changed(name, 'local')
+      return true
+    },
     has: name => mapHas(entries, name) && mapGet(entries, name).object !== true && mapGet(entries, name).deleted !== true,
     facts() {
       const facts = []

@@ -1330,6 +1330,33 @@ function collectVolatileBindingValues(names, limits) {
   return { values, unrecorded }
 }
 
+/**
+ * Install the values recovery recorded for a volatile cell.
+ *
+ * The worker never runs the restoration cell's source: each binding is decoded
+ * and committed directly, so an ambient read, a timer or a child process
+ * reached by the original cell is not dispatched a second time. A value the
+ * codec cannot decode is reported by name so recovery can say which binding it
+ * could not bring back.
+ */
+function restoreRecordedValues(message) {
+  const limits = message.valueLimits
+  const restored = []
+  const failed = []
+  for (const entry of message.values ?? []) {
+    const name = entry?.name
+    if (typeof name !== 'string' || name === '') continue
+    try {
+      const value = decodeValue(entry.wire, limits)
+      if (statefulRoots.restoreValue(name, value)) restored.push(name)
+      else failed.push({ name, reason: 'the store cannot publish a session identity for this name' })
+    } catch (error) {
+      failed.push({ name, reason: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return { restored, failed }
+}
+
 function refreshLegacyPublication(name) {
   const publications = activeExecution?.nativePublications
   const publication = publications === undefined ? undefined : mapGet(publications, name)
@@ -1578,6 +1605,13 @@ parentPort.on('message', (message) => {
 channel.on('message', (message) => {
   if (message?.type === 'prepare') {
     channel.postMessage({ type: 'ready', id: message.id })
+    return
+  }
+  if (message?.type === 'restore') {
+    // Recovery installs the values a volatile cell recorded. No cell code runs
+    // here: replaying the source would redispatch the ambient effects that made
+    // the cell volatile, which is exactly what the record exists to avoid.
+    channel.postMessage({ type: 'restored', id: message.id, ...restoreRecordedValues(message) })
     return
   }
   if (message?.type === 'observe') {

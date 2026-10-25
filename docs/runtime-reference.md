@@ -82,8 +82,8 @@ Capability management is experimental and defaults to off. These inputs are froz
 | `capabilityRecoveryBytes` | `8192` | Separate description-recovery budget in UTF-8 bytes, minimum 1 |
 | `modelPreviewEnabled` | `false` | Select plugin result/log previews; otherwise delegate to the Host policy |
 | `retentionPayloadRuns` | `8` | Newest cells whose argument text stays in the session-log checkpoint, 8–512; older cells must be refolded from the log to be edited or republished |
-| `retentionPayloadBytes` | `8388608` | Cumulative budget for that retained text, 1 MiB–64 MiB; the oldest payload is dropped past it and a single larger cell is dropped as well, so the checkpoint never grows with what the session wrote |
-| `retentionClusters` | `5000` | Cell clusters that keep identity and observations before the oldest fold into an interval summary, 0–50000; `0` means unlimited (no count-based folding, the payload budget is the only bound) |
+| `retentionPayloadBytes` | `8388608` | Cumulative budget for that retained text, 1 MiB–16 MiB; the oldest payload is dropped past it and a single larger cell is dropped as well, so the checkpoint never grows with what the session wrote. A checkpoint is roughly twice this budget, so the maximum bounds the worst case near 32 MB |
+| `retentionClusters` | `8` | Cell clusters that keep identity and observations before the oldest fold into an interval summary, 0–50000; it defaults to `retentionPayloadRuns`, which is what keeps a long session from growing linearly. `0` means unlimited (no count-based folding, the payload budget is the only bound) |
 
 A window below 8 cells or 1 MiB is not supported: a checkpoint with fewer cells in flight than that cannot keep its stored publication and its replay equal, so a smaller request falls back to the default instead of being honoured.
 | `modelPreviewTokens` | `4096` | Estimated model-presentation token cap, minimum 1 |

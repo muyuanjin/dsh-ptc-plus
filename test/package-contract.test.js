@@ -127,8 +127,20 @@ function packageFileSelector(selector) {
   return new RegExp(`^${pattern}$`)
 }
 
+// macOS CI can hand the process a TMPDIR whose directory does not exist yet,
+// which makes mkdtemp fail with ENOENT. Create the root once, then retry.
+async function mkdtempUnderTmp(prefix) {
+  const root = tmpdir()
+  try {
+    return await mkdtemp(join(root, prefix))
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+    await mkdir(root, { recursive: true })
+    return mkdtemp(join(root, prefix))
+  }
+}
 test('execution smoke rejects capability-only changes and accepts the real plugin', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'ptc-seam-smoke-'))
+  const directory = await mkdtempUnderTmp('ptc-seam-smoke-')
   t.after(() => rm(directory, { recursive: true, force: true }))
   const smoke = fileURLToPath(new URL('../scripts/dsh-execution-seam-smoke.mjs', import.meta.url))
   const run = plugin => spawnSync(process.execPath, [smoke, plugin], {
@@ -238,7 +250,7 @@ test('packed surface ships every artifact the runtime loads', async () => {
 })
 
 test('reused frozen Host rejects installed service drift despite unchanged lock inputs', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'ptc-installed-host-'))
+  const root = await mkdtempUnderTmp('ptc-installed-host-')
   t.after(() => rm(root, { recursive: true, force: true }))
   const packages = { 'node_modules/@deepseek-ai/dsh': { version: '8.0.0' },
     'node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-tools': { version: '8.0.0' } }
@@ -298,7 +310,7 @@ test('published release discovery follows a moved prerelease channel while lates
 })
 
 test('published baseline refresh captures channel and provenance changes without rediscovering an unchanged cohort', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'ptc-published-baseline-'))
+  const root = await mkdtempUnderTmp('ptc-published-baseline-')
   t.after(() => rm(root, { recursive: true, force: true }))
   const latestRoot = join(root, 'latest')
   const currentRoot = join(root, 'current')

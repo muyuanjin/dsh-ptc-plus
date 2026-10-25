@@ -2092,22 +2092,22 @@ var CONFIG_FIELDS = Object.freeze([
     type: "integer",
     default: 8388608,
     min: 1048576,
-    max: 67108864,
+    max: 16777216,
     label: "\u4FDD\u7559\u8F7D\u8377\u9884\u7B97 (UTF-8 bytes)",
     labelEn: "Retained payload budget (UTF-8 bytes)",
-    description: "\u4FDD\u7559\u5355\u5143\u683C\u53C2\u6570\u539F\u6587\u7684\u7D2F\u8BA1\u4E0A\u9650\u3002\u8FBE\u5230\u4E0A\u9650\u540E\u6700\u65E7\u7684\u539F\u6587\u88AB\u79FB\u9664\uFF0C\u68C0\u67E5\u70B9\u4F53\u79EF\u56E0\u6B64\u4E0E\u4F1A\u8BDD\u5199\u5165\u603B\u91CF\u65E0\u5173\uFF1B\u5355\u4E2A\u8D85\u8FC7\u9884\u7B97\u7684\u5355\u5143\u683C\u4E5F\u4F1A\u88AB\u79FB\u9664\u5E76\u4ECE\u65E5\u5FD7\u91CD\u6298\u3002",
-    descriptionEn: "Cumulative budget for the retained argument text. Past it the oldest payload is removed, which keeps the checkpoint independent of how much the session wrote; a single cell larger than the budget is removed as well and refolded from the log."
+    description: "\u4FDD\u7559\u5355\u5143\u683C\u53C2\u6570\u539F\u6587\u7684\u7D2F\u8BA1\u4E0A\u9650\u3002\u8FBE\u5230\u4E0A\u9650\u540E\u6700\u65E7\u7684\u539F\u6587\u88AB\u79FB\u9664\uFF0C\u68C0\u67E5\u70B9\u4F53\u79EF\u56E0\u6B64\u4E0E\u4F1A\u8BDD\u5199\u5165\u603B\u91CF\u65E0\u5173\uFF1B\u5355\u4E2A\u8D85\u8FC7\u9884\u7B97\u7684\u5355\u5143\u683C\u4E5F\u4F1A\u88AB\u79FB\u9664\u5E76\u4ECE\u65E5\u5FD7\u91CD\u6298\u3002\u68C0\u67E5\u70B9\u4F53\u79EF\u7EA6\u4E3A\u672C\u9884\u7B97\u7684\u4E24\u500D\uFF0C\u4E0A\u9650 16 MiB \u5BF9\u5E94\u7EA6 32 MB \u7684\u6700\u574F\u60C5\u51B5\u3002",
+    descriptionEn: "Cumulative budget for the retained argument text. Past it the oldest payload is removed, which keeps the checkpoint independent of how much the session wrote; a single cell larger than the budget is removed as well and refolded from the log. A checkpoint is roughly twice this budget, so the 16 MiB maximum bounds the worst case near 32 MB."
   },
   {
     key: "retentionClusters",
     type: "integer",
-    default: 5e3,
+    default: 8,
     min: 0,
     max: 5e4,
     label: "\u4FDD\u7559\u5355\u5143\u683C\u7C07\u4E0A\u9650",
     labelEn: "Retained cluster limit",
-    description: "\u68C0\u67E5\u70B9\u4FDD\u7559\u591A\u5C11\u4E2A\u5355\u5143\u683C\u7C07\u7684\u8EAB\u4EFD\u4E0E\u89C2\u6D4B\uFF0C\u8D85\u8FC7\u540E\u6700\u65E7\u7684\u7C07\u6298\u8FDB\u533A\u95F4\u6458\u8981\uFF08\u5176\u540E\u7EED\u64CD\u4F5C\u9700\u8981\u4ECE\u65E5\u5FD7\u91CD\u6298\uFF09\u3002\u586B 0 \u8868\u793A\u4E0D\u9650\u5236\uFF1A\u4E0D\u505A\u6309\u6570\u91CF\u7684\u6298\u53E0\uFF0C\u53EA\u7531\u8F7D\u8377\u9884\u7B97\u7EA6\u675F\u4F53\u79EF\u3002",
-    descriptionEn: "How many cell clusters keep their identity and observations in the checkpoint; older ones fold into an interval summary and need a log refold afterwards. 0 means unlimited: no count-based folding, with the payload budget as the only bound."
+    description: '\u68C0\u67E5\u70B9\u4FDD\u7559\u591A\u5C11\u4E2A\u5355\u5143\u683C\u7C07\u7684\u8EAB\u4EFD\u4E0E\u89C2\u6D4B\uFF0C\u8D85\u8FC7\u540E\u6700\u65E7\u7684\u7C07\u6298\u8FDB\u533A\u95F4\u6458\u8981\uFF08\u5176\u540E\u7EED\u64CD\u4F5C\u9700\u8981\u4ECE\u65E5\u5FD7\u91CD\u6298\uFF09\u3002\u9ED8\u8BA4\u4E0E"\u4FDD\u7559\u6700\u8FD1\u5355\u5143\u683C\u6570"\u4E00\u81F4\uFF0C\u6240\u4EE5\u68C0\u67E5\u70B9\u4E0D\u4F1A\u968F\u4F1A\u8BDD\u957F\u5EA6\u7EBF\u6027\u589E\u957F\uFF1B\u8C03\u5927\u80FD\u4FDD\u7559\u66F4\u591A\u65E0\u9700\u91CD\u6298\u7684\u6062\u590D\u8BC1\u636E\uFF0C\u4F46\u68C0\u67E5\u70B9\u66F4\u5927\u3002\u586B 0 \u8868\u793A\u4E0D\u9650\u5236\uFF1A\u4E0D\u505A\u6309\u6570\u91CF\u7684\u6298\u53E0\uFF0C\u53EA\u7531\u8F7D\u8377\u9884\u7B97\u7EA6\u675F\u4F53\u79EF\u3002',
+    descriptionEn: "How many cell clusters keep their identity and observations in the checkpoint; older ones fold into an interval summary and need a log refold afterwards. It defaults to the retained-cells window, which is what keeps a long session from growing linearly; a larger value keeps more recovery evidence without a refold at the cost of a bigger checkpoint. 0 means unlimited: no count-based folding, with the payload budget as the only bound."
   },
   {
     key: "capabilityPromptTextEnabled",
@@ -10755,6 +10755,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const account = accountPromptText(resolved);
     const [draft, setDraft] = React32.useState(null);
     const [selectedAnchorId, setSelectedAnchorId] = React32.useState(null);
+    const anchorPanelRef = React32.useRef(null);
     const [openSlots, setOpenSlots] = React32.useState({});
     const overrides2 = draft ?? document2.overrides;
     const byteCount = (text) => new TextEncoder().encode(text).length;
@@ -10843,6 +10844,12 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       }) : null;
     };
     const select = (anchorId) => setSelectedAnchorId(anchorId);
+    React32.useEffect(() => {
+      if (selectedAnchorId === null) return;
+      const node = anchorPanelRef.current;
+      if (node === null || typeof node.scrollIntoView !== "function") return;
+      node.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }, [selectedAnchorId]);
     const rowKey = (event, anchorId) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
@@ -11024,7 +11031,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const selectedIndex = selectedAnchor === void 0 ? 0 : account.anchors.indexOf(selectedAnchor) + 1;
     const anchorPanel = h(
       "section",
-      { className: "ptcPlusPromptPanel", "data-prompt-panel": "anchor" },
+      { className: "ptcPlusPromptPanel", "data-prompt-panel": "anchor", ref: anchorPanelRef },
       h(
         "h5",
         { className: "ptcPlusPromptPanelTitle" },

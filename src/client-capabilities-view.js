@@ -963,6 +963,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     // the pane shows that difference without a draft.
     const [draft, setDraft] = React.useState(null)
     const [selectedAnchorId, setSelectedAnchorId] = React.useState(null)
+    const anchorPanelRef = React.useRef(null)
     const [openSlots, setOpenSlots] = React.useState({})
     const overrides = draft ?? document.overrides
     const byteCount = text => new TextEncoder().encode(text).length
@@ -1038,6 +1039,14 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         : null
     }
     const select = anchorId => setSelectedAnchorId(anchorId)
+    // The expanded panel sits below the table, so on a short viewport selecting a
+    // lower row would otherwise leave the editor it opened off-screen.
+    React.useEffect(() => {
+      if (selectedAnchorId === null) return
+      const node = anchorPanelRef.current
+      if (node === null || typeof node.scrollIntoView !== 'function') return
+      node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }, [selectedAnchorId])
     const rowKey = (event, anchorId) => {
       if (event.key !== 'Enter' && event.key !== ' ') return
       event.preventDefault()
@@ -1168,7 +1177,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const defaultAnchor = account.anchors.find(anchor => anchor.wired === true && editableSlots(anchor).length > 0)
     const selectedAnchor = account.anchors.find(anchor => anchor.anchorId === selectedAnchorId) ?? defaultAnchor
     const selectedIndex = selectedAnchor === undefined ? 0 : account.anchors.indexOf(selectedAnchor) + 1
-    const anchorPanel = h('section', { className: 'ptcPlusPromptPanel', 'data-prompt-panel': 'anchor' },
+    const anchorPanel = h('section', { className: 'ptcPlusPromptPanel', 'data-prompt-panel': 'anchor', ref: anchorPanelRef },
       h('h5', { className: 'ptcPlusPromptPanelTitle' },
         t('capabilities.prompt.rowExpand', { index: selectedIndex })),
       selectedAnchor === undefined

@@ -8379,6 +8379,14 @@ test('prompt text pane is a dense table whose expanded row owns the only editor'
     copy['capabilities.prompt.rowExpand'].replace('{index}', '1'))
   await act(async () => { fireEvent.click(runCodeRow) })
   expect(runCodeRow.getAttribute('data-selected')).toBe('true')
+  // Selecting a row scrolls the expanded panel into view, otherwise the editor it
+  // opens sits below the fold on a short viewport.
+  const scrollIntoView = vi.fn()
+  panel.scrollIntoView = scrollIntoView
+  await act(async () => { fireEvent.click(rows.at(-1)) })
+  expect(scrollIntoView).toHaveBeenCalledTimes(1)
+  expect(scrollIntoView.mock.calls[0][0]).toMatchObject({ block: 'nearest' })
+  await act(async () => { fireEvent.click(runCodeRow) })
   expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
     copy['capabilities.prompt.rowExpand'].replace('{index}', String(rows.indexOf(runCodeRow) + 1)))
   const chips = panel.querySelector('[data-anchor-chips]')

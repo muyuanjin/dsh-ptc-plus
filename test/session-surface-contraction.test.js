@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { comparableVisibleCalls, contractsLiveBindings, surfaceRewroteHistory } from '../internal/session-runtime.js'
+import { comparableVisibleCalls, contractsLiveBindings, replacementAppliedSince, surfaceRewroteHistory } from '../internal/session-runtime.js'
 
 // A republish that appends a call or re-renders the same history is not a
 // history change: the call set only grows and every call keeps its source, so
@@ -145,5 +145,44 @@ test('an interior gap, an empty set or a missing newest call still contracts', (
     liveCallSeqs: new Set([5, 9]),
     visibleCallSeqs: new Set(),
     surfaceIsReadable: true,
+  }), true)
+})
+
+// The gate has to describe the cell that just settled, not the whole session.
+// An edit recorded many cells ago is history: the surface may have dropped its
+// record for an unrelated reason (a windowed re-render), and treating that as a
+// replacement this runtime just applied would disable the window rule forever.
+test('an edit from an earlier cell does not count as a replacement', () => {
+  const events = [
+    { seq: 54, type: 'tool/call', data: { name: 'run_code' } },
+    { seq: 56, type: 'tool/ptc-dispatch', data: { name: 'edit_run_code' } },
+    { seq: 70, type: 'tool/call', data: { name: 'run_code' } },
+  ]
+  const dropped = new Set([56])
+  assert.equal(replacementAppliedSince(events, dropped, new Set([70])), false)
+  // The window rule therefore still applies to the shape it was written for.
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([2, 5, 9, 70]),
+    visibleCallSeqs: new Set([9, 70]),
+    surfaceIsReadable: true,
+    surfaceReplacementApplied: replacementAppliedSince(events, dropped, new Set([70])),
+  }), false)
+})
+
+// An edit dispatched by the cell that just settled is a replacement the runtime
+// applied: the strict contract stays in charge and the surface's silence about
+// the replaced call is proof, not a window.
+test('an edit dispatched by the settled cell counts as a replacement', () => {
+  const events = [
+    { seq: 54, type: 'tool/call', data: { name: 'run_code' } },
+    { seq: 56, type: 'tool/ptc-dispatch', data: { name: 'edit_run_code' } },
+  ]
+  const dropped = new Set([56])
+  assert.equal(replacementAppliedSince(events, dropped, new Set([54, 56])), true)
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([2, 5, 9]),
+    visibleCallSeqs: new Set([5, 9]),
+    surfaceIsReadable: true,
+    surfaceReplacementApplied: true,
   }), true)
 })

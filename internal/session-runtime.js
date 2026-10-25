@@ -401,10 +401,16 @@ export function windowedOldest({ liveCallSeqs, visibleCallSeqs }) {
  * compaction) leaves no such record. The distinction lets a windowed surface stay
  * unknown while a real replacement still contracts.
  */
-export function replacementAppliedSince(events, seqs) {
+export function replacementAppliedSince(events, seqs, ownSeqs) {
   if (!Array.isArray(events) || !seqs || seqs.size === 0) return false
+  // Only a record this runtime dispatched for the cell that just settled can be
+  // a replacement it applied. An edit recorded by an older cell is history: the
+  // surface may have dropped it for unrelated reasons (a windowed re-render),
+  // and treating it as a fresh replacement would disable that rule forever.
+  if (!(ownSeqs instanceof Set)) return false
   for (const event of events) {
     if (!seqs.has(event?.seq)) continue
+    if (!ownSeqs.has(event.seq)) continue
     if (event?.data?.name !== 'edit_run_code') continue
     if (event.type === 'tool/call' || event.type === 'tool/ptc-dispatch') return true
   }
@@ -471,6 +477,11 @@ class SessionKernel {
     this.replayed = false
     this.unmeasuredCells = 0
     this.liveCallSeqs = new Set()
+    // The calls the most recently settled cell dispatched itself, including its
+    // nested dispatches. A generation bump counts as a replacement only when one
+    // of these seqs is the record that disappeared: an edit dispatched by an
+    // older cell is history, not a replacement this runtime just applied.
+    this.lastCellCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
     this.offPathRestores = 0
@@ -698,7 +709,9 @@ class SessionKernel {
       const droppedSeqs = this.visibleSurfaceCalls !== undefined && currentSurface !== undefined
         ? new Set([...this.visibleSurfaceCalls.seqs].filter(seq => !currentSurface.seqs.has(seq)))
         : new Set()
-      const surfaceReplacementApplied = replacementAppliedSince(observedSession?.events, droppedSeqs)
+      const surfaceReplacementApplied = replacementAppliedSince(
+        observedSession?.events, droppedSeqs, this.lastCellCallSeqs,
+      )
       const rewroteHistory = surfaceRewroteHistory(this.visibleSurfaceCalls, currentSurface, {
         windowedSuffixAllowed: !surfaceReplacementApplied,
       })
@@ -1282,7 +1295,16 @@ class SessionKernel {
       // A live cell establishes this worker's timeline even when historical
       // replay was disabled. Only a reset may reopen its recovery boundary.
       this.replayed = true
-      this.liveCallSeqs.add(request.callSeq ?? request.sourceCallSeq)
+      const ownSeq = request.callSeq ?? request.sourceCallSeq
+      this.liveCallSeqs.add(ownSeq)
+      // Remember what this cell dispatched, so the next generation bump can tell
+      // "this runtime replaced a call just now" from "some earlier cell edited".
+      const dispatched = new Set()
+      if (ownSeq !== undefined) dispatched.add(ownSeq)
+      for (const call of journal?.calls ?? []) {
+        if (call?.settle !== undefined) dispatched.add(call.settle)
+      }
+      this.lastCellCallSeqs = dispatched
     }
     this.active = undefined
     if (terminate) {

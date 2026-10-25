@@ -1616,7 +1616,10 @@ test('keeps disabled derived edit provenance through visible surface replacement
     code: 'return typeof editableSurface',
     description: 'inspect hidden edit',
   })
-  surfaceNodes = [inspectCall.assistantSeq, hiddenCall.assistantSeq]
+  // Hide the calls in the middle while the oldest and the newest stay visible:
+  // an interior gap is a real removal, not a window, so the edit that produced
+  // the derived call loses its provenance and the kernel must rebuild.
+  surfaceNodes = [sourceCall.assistantSeq, hiddenCall.assistantSeq]
   const hidden = await runtime.run(
     { id: session.id, session, callId: 'disabled-edit-after-hide' },
     { program: 'return typeof editableSurface', bindings: [], signal: new AbortController().signal },

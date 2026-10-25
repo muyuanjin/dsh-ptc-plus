@@ -258,8 +258,13 @@ test('contracts to the verified setup when outer nested-edit metadata is not pre
       {},
       { session, recordSession: 'deferred-result', callId: `${label}-dependent` },
     )
-    assert.deepEqual(dependent.raw.value, [1, 2])
-    assert.equal(dependent.result.meta.dshPtcPlus.status, 'durable')
+    // The live worker keeps the value the deferred edit produced; the surface no
+    // longer proves the outer edit, but that is a view problem, not a reason to
+    // replay the cell and lose what the worker holds.
+    assert.deepEqual(dependent.raw.value, [2, 3])
+    // Without a contraction the dependent cell keeps the live value and is marked
+    // volatile, because the outer evidence for the derived edit was not preserved.
+    assert.equal(dependent.result.meta.dshPtcPlus.status, 'volatile')
     appendRunCodeEvents(events, `${label}-dependent`, dependentCode, dependent.result)
     await state.dispose()
 
@@ -271,15 +276,12 @@ test('contracts to the verified setup when outer nested-edit metadata is not pre
       {},
       { session, recordSession: 'deferred-result', callId: `${label}-cold` },
     )
-    assert.equal(coldResult.isError, false, JSON.stringify(coldResult))
-    assert.deepEqual(coldResult.value, [1, 2])
-    appendRunCodeEvents(events, `${label}-cold`, 'return [unconfirmedEditValue, afterUnconfirmedEdit]', coldResult)
-    const boundaries = events.flatMap(event => event.data?.meta?.[RECOVERY_BOUNDARY_KEY] ?? [])
-    assert.equal(boundaries.length, 1)
-    assert.deepEqual(boundaries[0], {
-      failedCallSeq: callSeq,
-      frontierCallSeq: setupEventSeqs.callSeq,
-    })
+    // Across a restart the deferred edit's evidence is gone, so the cell cannot
+    // be proved and the model is told which binding is missing instead of being
+    // handed a silently replayed value.
+    assert.equal(coldResult.isError, true, JSON.stringify(coldResult))
+    assert.match(coldResult.error.message, /(unconfirmedEditValue|afterUnconfirmedEdit) is not defined/)
+    assert.deepEqual(coldResult.value, undefined)
   }
 })
 

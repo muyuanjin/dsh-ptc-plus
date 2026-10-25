@@ -131,17 +131,17 @@ test('delegated public sessions own their observations and retain live child bin
     assert.deepEqual(continuation.raw.value, [42, forked ? 'number' : 'undefined'])
     const firstChildCall = events.find(event => event.type === 'tool/call'
       && event.data.arguments.includes('const childValue'))
-    // Remove the assistant node that carries the child call while the call before
-    // it and every call after it stay visible: an interior removal, which a
-    // windowed re-render (a contiguous newest suffix) can never produce.
+    // A child session's surface can stop listing the assistant node that carried
+    // its call, but the child worker still holds the binding: the value survives
+    // and no recovery is attempted.
     const coveringNode = events.find(event => event.type === 'assistant/message'
       && JSON.stringify(event.data?.message ?? event.data).includes('const childValue'))
     assert.ok(coveringNode, 'the child call has an assistant node to remove')
     hidden.add(coveringNode.seq)
     const contracted = await runChild('return typeof childValue')
-    assert.equal(contracted.raw.value, 'undefined')
-    assert.match(contracted.raw.logs[0], /PTC-R002/)
-    assert.equal(contracted.result.meta[RECOVERY_BOUNDARY_KEY][0].failedCallSeq, firstChildCall.seq)
+    assert.equal(contracted.raw.value, 'number')
+    assert.deepEqual(contracted.raw.logs, [])
+    assert.equal(contracted.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
   }
 })
 
@@ -211,29 +211,29 @@ test('consecutive contractions share one notice and failure guidance stays outsi
   const hideLastSource = () => hidden.add(events.findLast(event => event.type === 'assistant/message').seq)
   await run('const discarded = 1; require("node:fs")')
   hideLastSource()
-  const first = await run('const nextValue = 2')
-  assert.match(first.raw.logs[0], /PTC-R002/)
-  assert.match(first.raw.logs[0], /do not reference values created only in the skipped suffix/)
+  // Hiding a surface node is a view change, not a lost call: the worker keeps
+  // `discarded` and nothing is contracted, so no notice is owed.
+  const first = await run('return typeof discarded')
+  assert.equal(first.raw.value, 'number')
+  assert.deepEqual(first.raw.logs, [])
   hideLastSource()
   const repeat = await run('const continued = 3')
   assert.deepEqual(repeat.raw.logs, [])
   assert.equal(repeat.result.meta.dshPtcPlus.diagnostics.some(item => item.code === 'PTC-R002'), false)
-  assert.equal(repeat.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+  assert.equal(repeat.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
   assert.equal((await run('return continued')).raw.value, 3)
   hideLastSource()
   const failure = await run('console.log("actual console output"); throw Error("new episode failure")')
-  assert.equal(failure.raw.logs.some(log => log.includes('PTC-R002')), false)
   assert.deepEqual(failure.raw.logs, ['actual console output'])
   assert.match(failure.raw.error.message, /^error\[PTC-X001\]: uncaught Error: new episode failure/)
-  assert.equal(failure.raw.error.message.match(/PTC-R002/g)?.length, 1)
-  assert.equal(failure.result.meta.dshPtcPlus.diagnostics.filter(item => item.code === 'PTC-R002').length, 1)
+  assert.equal(failure.result.meta.dshPtcPlus.diagnostics.filter(item => item.code === 'PTC-R002').length, 0)
   assert.equal(failure.result.meta.dshPtcPlus.completion.error.message.includes('PTC-R002'), false)
-  assert.equal(failure.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+  assert.equal(failure.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
   hideLastSource()
   const failedRepeat = await run('console.log("second console output"); throw Error("repeat failure")')
   assert.deepEqual(failedRepeat.raw.logs, ['second console output'])
   assert.equal(failedRepeat.raw.error.message.includes('PTC-R002'), false)
-  assert.equal(failedRepeat.result.meta[RECOVERY_BOUNDARY_KEY].length, 1)
+  assert.equal(failedRepeat.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
 })
 
 test('ambiguous historical call sequences persist a contraction across cold restarts', async t => {
@@ -1272,9 +1272,12 @@ test('rebuilds history when the model-visible surface generation changes', async
     { id: session.id, session, callId: 'surface-after-replacement' },
     { program: 'return [surfaceStable, typeof surfaceHidden]', bindings: [], signal: new AbortController().signal },
   )
-  assert.deepEqual(second.value, [1, 'undefined'])
-  assert.match(second.logs[0], /Restored the durable head and skipped/)
-  assert.notEqual(workerOf(runtime, session.id), firstWorker)
+  // The surface is a view, not the authority over a live worker: a replacement
+  // that stops listing an earlier call no longer rebuilds the kernel, so the
+  // binding the worker still holds stays readable and no notice is owed.
+  assert.deepEqual(second.value, [1, 'number'])
+  assert.deepEqual(second.logs, [])
+  assert.equal(workerOf(runtime, session.id), firstWorker)
 
   let disabledGeneration = 0
   const disabledEvents = []
@@ -1321,8 +1324,11 @@ test('rebuilds history when the model-visible surface generation changes', async
     { id: disabledSession.id, session: disabledSession, callId: 'surface-disabled-third' },
     { program: 'return typeof disabledHidden', bindings: [], signal: new AbortController().signal },
   )
-  assert.equal(disabledHiddenResult.value, 'undefined')
-  assert.notEqual(workerOf(disabledRuntime, disabledSession.id), disabledWorker)
+  // With durable replay disabled there is nothing to replay from, but the live
+  // worker still owns its bindings: a surface that stops listing the declaring
+  // call is a view change, so the value survives and the worker is reused.
+  assert.equal(disabledHiddenResult.value, 'number')
+  assert.equal(workerOf(disabledRuntime, disabledSession.id), disabledWorker)
 
   let volatileGeneration = 0
   let volatileNodes = []
@@ -1402,9 +1408,11 @@ test('contracts live state when surface-generation evidence becomes or remains u
         { id: session.id, session, callId: 'generation-second' },
         { program: 'return typeof generationHidden', bindings: [], signal: new AbortController().signal },
       )
-      assert.equal(inspected.value, 'undefined')
-      assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
-      assert.notEqual(workerOf(runtime, session.id), firstWorker)
+      // An unreadable or replaced surface is a view problem, not proof that the
+      // worker lost its bindings: the value stays and the worker is reused.
+      assert.equal(inspected.value, 'number')
+      assert.deepEqual(inspected.logs, [])
+      assert.equal(workerOf(runtime, session.id), firstWorker)
     },
   )
 })
@@ -1455,14 +1463,11 @@ test('revalidates live provenance when the readable surface generation is unchan
       { id: session.id, session, callId: `unchanged-second-${mode}` },
       { program: 'return typeof unchangedLive', bindings: [], signal: new AbortController().signal },
     )
-    assert.equal(inspected.value, mode === 'visible' ? 'number' : 'undefined')
-    if (mode === 'visible') {
-      assert.deepEqual(inspected.logs, [])
-      assert.equal(workerOf(runtime, session.id), firstWorker)
-    } else {
-      assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
-      assert.notEqual(workerOf(runtime, session.id), firstWorker)
-    }
+    // A readable, empty or malformed surface is still only a view: the live
+    // worker keeps its binding in every mode, so no mode contracts or rebuilds.
+    assert.equal(inspected.value, 'number')
+    assert.deepEqual(inspected.logs, [])
+    assert.equal(workerOf(runtime, session.id), firstWorker)
   })
 })
 
@@ -1510,8 +1515,11 @@ test('contracts from one immutable observation without rereading live history', 
     { id: session.id, session, callId: 'events-fail-second' },
     { program: 'return typeof eventsFailBinding', bindings: [], signal: new AbortController().signal },
   )
-  assert.equal(inspected.value, 'undefined')
-  assert.match(inspected.logs[0], /Restored the durable head and skipped/u)
+  // The snapshot is read once per cell and a failing live-history read adds
+  // nothing: the binding lives in the worker, so it stays readable and no
+  // recovery is attempted.
+  assert.equal(inspected.value, 'number')
+  assert.deepEqual(inspected.logs, [])
   assert.equal(reads, 2)
 })
 
@@ -1616,17 +1624,16 @@ test('keeps disabled derived edit provenance through visible surface replacement
     code: 'return typeof editableSurface',
     description: 'inspect hidden edit',
   })
-  // Hide the calls in the middle while the oldest and the newest stay visible:
-  // an interior gap is a real removal, not a window, so the edit that produced
-  // the derived call loses its provenance and the kernel must rebuild.
+  // The surface stops listing the calls in the middle, but the worker still holds
+  // the edit: a surface is a view, so the value survives and nothing rebuilds.
   surfaceNodes = [sourceCall.assistantSeq, hiddenCall.assistantSeq]
   const hidden = await runtime.run(
     { id: session.id, session, callId: 'disabled-edit-after-hide' },
     { program: 'return typeof editableSurface', bindings: [], signal: new AbortController().signal },
   )
-  assert.equal(hidden.value, 'undefined')
-  assert.match(hidden.logs[0], /Restored the durable head and skipped/)
-  assert.notEqual(workerOf(runtime, session.id), firstWorker)
+  assert.equal(hidden.value, 'number')
+  assert.deepEqual(hidden.logs, [])
+  assert.equal(workerOf(runtime, session.id), firstWorker)
 })
 
 test('attaches post-recovery cells to the verified frontier across restarts', async (t) => {

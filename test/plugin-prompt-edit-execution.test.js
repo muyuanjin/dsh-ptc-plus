@@ -868,11 +868,13 @@ test('releases nested edit claims after failed derived dispatch and lost root me
   assert.equal(lost.receipt.accepted, true)
   assert.deepEqual(lost.result.meta, {})
   assert.equal(completedDerivedEffects, 1)
-  // Missing provenance contracts computation state; already completed effects stay completed.
+  // Missing provenance used to contract the frontier; now the live worker keeps
+  // the value the completed derived edit produced, and the edit is never
+  // redispatched (the stub above would throw if it were).
   const live = await state.runDurable(session.id, 'return claimValue', {
     edit_run_code: async () => { throw new Error('live read redispatched edit') },
   }, { session, callId: 'read-after-loss' })
-  assert.equal(live.value, 1)
+  assert.equal(live.value, 2)
   assert.equal(completedDerivedEffects, 1)
 
   await seed('editable-after-loss')

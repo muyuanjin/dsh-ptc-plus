@@ -120,52 +120,6 @@ function visibleCallSources(session) {
   return comparableVisibleCalls(events, seqs)
 }
 
-/**
- * Whether a surface republish actually rewrote history.
- *
- * A surface republish keeps every binding; only a removed call or a changed call
- * source is a history change. Two shapes remove calls, and they differ:
- *
- * - A windowed surface delivers a suffix of the same history: the host keeps the
- *   newest calls and stops listing the oldest ones after a context rewrite, a
- *   working-directory change or a compaction. The kernel still holds those
- *   bindings and the newest call is unchanged, so the surface did not rewrite
- *   what the model is working on. Rebuilding there loses bindings the edit never
- *   touched, which is the reported failure.
- * - A rewrite removes a call that is still inside the visible range, or drops the
- *   newest call, or changes a source. The model-visible history really changed,
- *   and the kernel must follow it.
- *
- * An unreadable surface decides nothing, as before.
- */
-export function surfaceRewroteHistory(previous, current, { windowedSuffixAllowed = true } = {}) {
-  if (previous === undefined || current === undefined) {
-    // No comparable snapshot: keep the older, conservative rule.
-    return undefined
-  }
-  const missing = []
-  for (const seq of previous.seqs) {
-    if (!current.seqs.has(seq)) {
-      missing.push(seq)
-      continue
-    }
-    const before = previous.sources.get(seq)
-    const after = current.sources.get(seq)
-    if (before !== undefined && after !== undefined && before !== after) return true
-  }
-  if (missing.length === 0) return false
-  // The newest call must survive: losing it means the surface moved backwards.
-  const previousNewest = Math.max(...previous.seqs)
-  const currentNewest = Math.max(...current.seqs)
-  if (currentNewest < previousNewest) return true
-  // A replacement the runtime applied is never a trim, even when the calls it
-  // dropped form a prefix: the surface stopped showing what the runtime did.
-  if (!windowedSuffixAllowed) return missing.length > 0
-  // A removed call inside the visible range is a rewrite; only a prefix of
-  // dropped calls (a windowed suffix) is a trim.
-  const currentOldest = Math.min(...current.seqs)
-  return missing.some(seq => seq >= currentOldest)
-}
 
 /**
  * Wording of the contraction notice.
@@ -334,92 +288,6 @@ function disposedHistoryCells(sessionLog, callSeq) {
   } catch {
     return 1
   }
-}
-
-/**
- * Decide whether the live worker's bindings lost their provenance.
- *
- * Returns true only when the surface was read and proves that a live call is no
- * longer part of it. An unreadable surface is undecidable: a queued message or a
- * mid-flight replacement must not cost the user the REPL, so the decision stays
- * false and the worker keeps its state.
- */
-export function contractsLiveBindings({
-  liveCallSeqs, visibleCallSeqs, surfaceIsReadable, surfaceReplacementApplied = false,
-}) {
-  if (!surfaceIsReadable) return false
-  if (!(visibleCallSeqs instanceof Set)) return false
-  // A windowed surface lists a contiguous newest suffix of the kernel's calls: it
-  // cannot speak about the calls it stopped listing, so those stay unknown. The
-  // window is decidable from the visible set itself — the oldest visible call must
-  // be one the kernel holds, every held call at or above it must be visible, and
-  // the newest held call must be visible. An empty set, an interior gap or a
-  // missing newest call is not a window: those keep the older contract and prove
-  // lost provenance.
-  //
-  // The window rule applies only to a host re-render. When the runtime itself
-  // applied a replacement — an accepted edit, an explicit rewind — the surface is
-  // expected to be missing the replaced call, so the older, strict contract decides.
-  const windowOldest = surfaceReplacementApplied
-    ? undefined
-    : windowedOldest({ liveCallSeqs, visibleCallSeqs })
-  for (const callSeq of liveCallSeqs) {
-    if (windowOldest !== undefined && callSeq < windowOldest) continue
-    if (!visibleCallSeqs.has(callSeq)) return true
-  }
-  return false
-}
-
-/**
- * Oldest call a windowed surface still covers, or undefined when the visible set
- * is not a contiguous suffix of the kernel's calls.
- *
- * `undefined` covers three shapes: an empty visible set, a visible call the kernel
- * never ran, and a held call above the oldest visible one that the surface omits.
- * All three leave the older, conservative contract in charge.
- */
-export function windowedOldest({ liveCallSeqs, visibleCallSeqs }) {
-  if (!(visibleCallSeqs instanceof Set) || visibleCallSeqs.size === 0) return undefined
-  if (!(liveCallSeqs instanceof Set) || liveCallSeqs.size === 0) return undefined
-  const visible = [...visibleCallSeqs]
-  const oldest = Math.min(...visible)
-  // The window is bounded by the oldest call the surface still lists, which need
-  // not be a call the kernel holds: a surface that also lists calls from before the
-  // current frontier (a rollback, a replay that stopped earlier) still speaks only
-  // about the calls at or above that bound. Requiring the bound itself to be held
-  // read exactly that case as "not a window" and rebuilt the kernel, dropping
-  // bindings the surface never disproved.
-  const newest = Math.max(...liveCallSeqs)
-  if (!visibleCallSeqs.has(newest)) return undefined
-  for (const callSeq of liveCallSeqs) {
-    if (callSeq >= oldest && !visibleCallSeqs.has(callSeq)) return undefined
-  }
-  return oldest
-}
-
-/**
- * Whether the log records a replacement the runtime itself applied, at or after
- * `sinceSeq`.
- *
- * An accepted edit dispatches `edit_run_code`, and that dispatch is what replaces
- * the target call's effect; a host re-render (a working-directory change, a
- * compaction) leaves no such record. The distinction lets a windowed surface stay
- * unknown while a real replacement still contracts.
- */
-export function replacementAppliedSince(events, seqs, ownSeqs) {
-  if (!Array.isArray(events) || !seqs || seqs.size === 0) return false
-  // Only a record this runtime dispatched for the cell that just settled can be
-  // a replacement it applied. An edit recorded by an older cell is history: the
-  // surface may have dropped it for unrelated reasons (a windowed re-render),
-  // and treating it as a fresh replacement would disable that rule forever.
-  if (!(ownSeqs instanceof Set)) return false
-  for (const event of events) {
-    if (!seqs.has(event?.seq)) continue
-    if (!ownSeqs.has(event.seq)) continue
-    if (event?.data?.name !== 'edit_run_code') continue
-    if (event.type === 'tool/call' || event.type === 'tool/ptc-dispatch') return true
-  }
-  return false
 }
 
 class ReplayFailure extends Error {
@@ -704,49 +572,16 @@ class SessionKernel {
       // worker and its bindings instead of dropping them on a transient read.
       const surfaceIsReadable = surfaceReadable(observedSession)
       const visibleCallSeqs = surfaceIsReadable ? visibleExecutableCallSeqs(observedSession) : undefined
-      // A republish that only appends or re-renders the same history keeps every
-      // binding: only a removed call or a rewritten source is a history change.
+      // The surface is a view, not the authority over a live worker. A re-render,
+      // a windowed republish, a working-directory change or an edit the runtime
+      // appended must never cost the user bindings the worker still holds. Only a
+      // lost worker — or the first replay after a restart — may rebuild.
       const currentSurface = surfaceIsReadable ? visibleCallSources(observedSession) : undefined
-      // A host re-render and a replacement the runtime applied look identical from
-      // the visible set alone; the calls the surface stopped listing tell them
-      // apart. Only a re-render that merely dropped older calls may use the window
-      // rule, so a hidden edit still contracts.
-      const droppedSeqs = this.visibleSurfaceCalls !== undefined && currentSurface !== undefined
-        ? new Set([...this.visibleSurfaceCalls.seqs].filter(seq => !currentSurface.seqs.has(seq)))
-        : new Set()
-      const surfaceReplacementApplied = replacementAppliedSince(
-        observedSession?.events, droppedSeqs, this.lastCellCallSeqs,
-      )
-      const rewroteHistory = surfaceRewroteHistory(this.visibleSurfaceCalls, currentSurface, {
-        windowedSuffixAllowed: !surfaceReplacementApplied,
-      })
       if (currentSurface !== undefined) this.visibleSurfaceCalls = currentSurface
-      const contractsLiveState = contractsLiveBindings({
-        liveCallSeqs: this.liveCallSeqs,
-        visibleCallSeqs,
-        surfaceIsReadable,
-        surfaceReplacementApplied,
-      })
-      // Without a comparable snapshot the older, conservative rule decides; with
-      // one, a superset (append or re-render) is explicitly not a rebuild reason.
-      const historyChanged = rewroteHistory === undefined
-        ? contractsLiveState
-        : rewroteHistory || contractsLiveState
-      // When a real session rebuilds unexpectedly, `DSH_PTC_RECOVERY_TRACE=1`
-      // prints the one fact that decided it: a missing call sequence, a
-      // rewritten source, or the absence of a comparable surface snapshot.
-      // It only reports; the decision below stays exactly the same.
-      if (historyChanged && process.env.DSH_PTC_RECOVERY_TRACE === '1') {
-        const live = [...this.liveCallSeqs]
-        const visible = visibleCallSeqs instanceof Set ? [...visibleCallSeqs] : undefined
-        const missing = visible === undefined ? undefined : live.filter(seq => !visible.includes(seq))
-        const reason = rewroteHistory === undefined ? 'no-snapshot'
-          : rewroteHistory ? 'history-rewritten' : 'live-call-missing'
-        process.stderr.write(`ptc-recovery-trace reason=${reason} live=${live.length}`
-          + ` visible=${visible === undefined ? 'unreadable' : visible.length}`
-          + ` missing=${missing === undefined ? '?' : missing.join(',') || 'none'}\n`)
-      }
-      if ((config.durableReplay && !this.replayed) || historyChanged) {
+      const workerAlive = this.client.worker !== undefined
+      const initialReplay = config.durableReplay && !this.replayed
+      if (!workerAlive || initialReplay) {
+
         const worker = this.client.worker
         // A refused stop stays recorded here, so the later admission check in
         // prepareWorker() blocks computation beside an unreclaimed helper.

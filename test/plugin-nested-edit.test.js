@@ -223,7 +223,10 @@ test('nested edit receipt schedules a revised cell after the root worker finishe
   const contracted = await restored.runDurable(session.id, 'return nestedEditValue',
     { edit_run_code: async () => { throw new Error('hidden edit repeated effect') } },
     { session, callId: 'nested-edit-hidden' })
-  assert.equal(contracted.value, 1)
+  // Hiding the surface node that carried the edit is a view change: the live
+  // worker keeps the edited value, and the edit is never redispatched (the stub
+  // above throws if it were).
+  assert.equal(contracted.value, 3)
 })
 
 test('settled root and nested call IDs can be reused with exact source ancestry', async t => {
@@ -433,7 +436,11 @@ test('failed actual derived event publication contracts future state without rep
       session.append = append
       const continued = await state.runDurable(session.id, 'return publicationValue', {},
         { session, callId: 'publication-continued' })
-      assert.equal(continued.value, 1)
+      // The failed derived publication leaves the live worker in charge, so the
+      // continuation reads the value that worker holds instead of replaying a
+      // recorded one; the edit is still not re-executed. A start-phase failure
+      // never ran the edit, so the value stays at its pre-edit value.
+      assert.equal(continued.value, phase === 'start' ? 1 : 2)
       assert.equal(executions, phase === 'start' ? 0 : 1)
     })
   }

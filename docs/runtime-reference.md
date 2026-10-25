@@ -250,6 +250,22 @@ Inside a cell, omitting the JavaScript argument of a native `tools` member is ac
 - Cold recovery replays journals from the session log; there are no compressed checkpoints or worker-LRU eviction.
 - DSH services or plugin APIs not exposed as a native tool or owner-provided program binding are not made callable through name-based reflection.
 
+## 注入上下文的重复成本
+
+一次会话里模型看到的内容由几个来源拼成，只有其中一小部分由本插件产生：
+
+| 来源 | `source.kind` | 归属 | 实测字节（2026-10-25 会话） |
+| --- | --- | --- | --- |
+| 能力环境说明 | `plugin:ptc-plus` | 本插件 | 498 B，每会话一次 |
+| 全局绑定 API 参考 | `plugin:ptc-plus` | 本插件 | 1 690 B，每会话一次 |
+| 工作区指令（`AGENTS.md`） | `agent-instructions` | 宿主 `@deepseek-ai/dsh-agent-instructions` | 23 122 B，每会话一次 |
+| 技能目录 | `skill-catalog` | 宿主 | 8 974 B，每会话一次 |
+| 运行时上下文 / 时间 / 工作目录 | `runtime-context`、`time-context`、`working-directory` | 宿主 | 各数百字节，按事件发生 |
+
+本插件对每个会话只追加两条消息，且各自只出现一次；`test/runtime-messages.test.js` 与 `test/capability-environment.test.js` 钉住该行为。任何“同一段注入出现多次”的现象都不由本插件产生：`agent-instructions` 的生成点是宿主包 `dsh-agent-instructions`，本仓库没有写入该 `source.kind` 的代码。
+
+历史观测：2026-10-12 的会话 `session-066846e1-…` 里 `agent-instructions` 出现三次（23 122 B 一次，随后两次逐字节相同的 23 221 B）；2026-10-25 的会话只有一次。因此重复注入属于宿主的按轮/按步重发行为，本仓库既不能复现也无法修复——调整注入策略需要修改宿主，或由宿主按摘要去重。测量这类成本时，应区分“插件的两条固定消息”和“宿主的会话级注入”，不要把后者计入插件噪音。
+
 ## 值传输失败
 
 [PTC Value V1](value-wire.md) 区分 live 值、canonical IPC 与模型展示。输出失败 `PTC-O001` 报告不支持的类型/shape 或预算超限及值路径：类型失败需显式选取支持的数据，预算失败需缩小 graph。普通输出编码失败保留 live binding，不重复执行 cell。程序参数编码失败不派发调用；已完成调用的结果编码失败明确报告可能已有外部效果，不自动重试或重置。诊断不为识别类型执行 getter、toJSON 或用户方法。

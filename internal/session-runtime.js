@@ -108,17 +108,6 @@ export function comparableVisibleCalls(events, visibleSeqs) {
   return { seqs: calls, sources }
 }
 
-function visibleCallSources(session) {
-  const seqs = visibleExecutableCallSeqs(session)
-  if (!(seqs instanceof Set)) return undefined
-  let events
-  try {
-    events = sessionEvents(session)
-  } catch {
-    return undefined
-  }
-  return comparableVisibleCalls(events, seqs)
-}
 
 
 /**
@@ -335,10 +324,6 @@ class SessionKernel {
     this.history = history
     this.initialRecoveryBoundary = recoveryBoundaryForHistory(history)
     this.surfaceGeneration = surfaceGeneration(session, surfaceProvenanceRequired)
-    // Snapshot of the last readable surface: the call set plus each call's source
-    // digest, so a republish that only appends or re-renders is not mistaken for
-    // a history change.
-    this.visibleSurfaceCalls = undefined
     this.cwd = cwd
     this.userBindingsCwd = userBindingsCwd
     this.observeValues = observeValues
@@ -350,11 +335,6 @@ class SessionKernel {
     this.replayed = false
     this.unmeasuredCells = 0
     this.liveCallSeqs = new Set()
-    // The calls the most recently settled cell dispatched itself, including its
-    // nested dispatches. A generation bump counts as a replacement only when one
-    // of these seqs is the record that disappeared: an edit dispatched by an
-    // older cell is history, not a replacement this runtime just applied.
-    this.lastCellCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
     this.offPathRestores = 0
@@ -574,10 +554,9 @@ class SessionKernel {
       const visibleCallSeqs = surfaceIsReadable ? visibleExecutableCallSeqs(observedSession) : undefined
       // The surface is a view, not the authority over a live worker. A re-render,
       // a windowed republish, a working-directory change or an edit the runtime
-      // appended must never cost the user bindings the worker still holds. Only a
-      // lost worker — or the first replay after a restart — may rebuild.
-      const currentSurface = surfaceIsReadable ? visibleCallSources(observedSession) : undefined
-      if (currentSurface !== undefined) this.visibleSurfaceCalls = currentSurface
+      // appended never costs the user bindings the worker still holds: this block
+      // rebuilds only when the worker is gone, the kernel was disposed, an explicit
+      // rewind or head cut was applied, or the first replay after a restart runs.
       const workerAlive = this.client.worker !== undefined
       const initialReplay = config.durableReplay && !this.replayed
       if (!workerAlive || initialReplay) {
@@ -1137,14 +1116,6 @@ class SessionKernel {
       this.replayed = true
       const ownSeq = request.callSeq ?? request.sourceCallSeq
       this.liveCallSeqs.add(ownSeq)
-      // Remember what this cell dispatched, so the next generation bump can tell
-      // "this runtime replaced a call just now" from "some earlier cell edited".
-      const dispatched = new Set()
-      if (ownSeq !== undefined) dispatched.add(ownSeq)
-      for (const call of journal?.calls ?? []) {
-        if (call?.settle !== undefined) dispatched.add(call.settle)
-      }
-      this.lastCellCallSeqs = dispatched
     }
     this.active = undefined
     if (terminate) {

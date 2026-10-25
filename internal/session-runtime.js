@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { diagnostic, renderDiagnostic } from './diagnostic.js'
@@ -17,6 +18,7 @@ import {
   recoverJournal,
   visibleExecutableCallSeqs,
 } from './session-journal-recovery.js'
+import { sessionEvents } from './session-events.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { encodeValueAtBoundary, valueWiresEqual } from './value-wire.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
@@ -68,6 +70,54 @@ function surfaceGeneration(session, provenanceRequired = true) {
   } catch {
     return provenanceRequired ? UNAVAILABLE_SURFACE_GENERATION : undefined
   }
+}
+
+/**
+ * Per-call source digest of the visible surface.
+ *
+ * A surface republish appends or re-renders; a history change removes a call or
+ * rewrites its source. Distinguishing the two needs the call set plus each
+ * call's own bytes, not the whole message tree: digests stay cheap, and an
+ * unchanged call keeps its digest across a re-render.
+ */
+function visibleCallSources(session) {
+  const seqs = visibleExecutableCallSeqs(session)
+  if (!(seqs instanceof Set)) return undefined
+  const sources = new Map()
+  let events
+  try {
+    events = sessionEvents(session)
+  } catch {
+    return undefined
+  }
+  for (const event of events ?? []) {
+    if (!seqs.has(event?.seq) || event?.type !== 'tool/call') continue
+    const source = typeof event.data?.arguments === 'string' ? event.data.arguments : ''
+    sources.set(event.seq, createHash('sha256').update(source).digest('hex'))
+  }
+  return { seqs, sources }
+}
+
+/**
+ * Whether a surface republish actually rewrote history.
+ *
+ * Only a removed call or a changed call source is a history change; a superset
+ * of the previous call set (an append, or a re-render of the same history) keeps
+ * every binding, so it must not reset the worker. An unreadable surface decides
+ * nothing, as before.
+ */
+export function surfaceRewroteHistory(previous, current) {
+  if (previous === undefined || current === undefined) {
+    // No comparable snapshot: keep the older, conservative rule.
+    return undefined
+  }
+  for (const seq of previous.seqs) {
+    if (!current.seqs.has(seq)) return true
+    const before = previous.sources.get(seq)
+    const after = current.sources.get(seq)
+    if (before !== undefined && after !== undefined && before !== after) return true
+  }
+  return false
 }
 
 /**
@@ -301,6 +351,10 @@ class SessionKernel {
     this.history = history
     this.initialRecoveryBoundary = recoveryBoundaryForHistory(history)
     this.surfaceGeneration = surfaceGeneration(session, surfaceProvenanceRequired)
+    // Snapshot of the last readable surface: the call set plus each call's source
+    // digest, so a republish that only appends or re-renders is not mistaken for
+    // a history change.
+    this.visibleSurfaceCalls = undefined
     this.cwd = cwd
     this.userBindingsCwd = userBindingsCwd
     this.observeValues = observeValues
@@ -529,12 +583,22 @@ class SessionKernel {
       // worker and its bindings instead of dropping them on a transient read.
       const surfaceIsReadable = surfaceReadable(observedSession)
       const visibleCallSeqs = surfaceIsReadable ? visibleExecutableCallSeqs(observedSession) : undefined
+      // A republish that only appends or re-renders the same history keeps every
+      // binding: only a removed call or a rewritten source is a history change.
+      const currentSurface = surfaceIsReadable ? visibleCallSources(observedSession) : undefined
+      const rewroteHistory = surfaceRewroteHistory(this.visibleSurfaceCalls, currentSurface)
+      if (currentSurface !== undefined) this.visibleSurfaceCalls = currentSurface
       const contractsLiveState = contractsLiveBindings({
         liveCallSeqs: this.liveCallSeqs,
         visibleCallSeqs,
         surfaceIsReadable,
       })
-      if ((config.durableReplay && !this.replayed) || contractsLiveState) {
+      // Without a comparable snapshot the older, conservative rule decides; with
+      // one, a superset (append or re-render) is explicitly not a rebuild reason.
+      const historyChanged = rewroteHistory === undefined
+        ? contractsLiveState
+        : rewroteHistory || contractsLiveState
+      if ((config.durableReplay && !this.replayed) || historyChanged) {
         const worker = this.client.worker
         // A refused stop stays recorded here, so the later admission check in
         // prepareWorker() blocks computation beside an unreclaimed helper.

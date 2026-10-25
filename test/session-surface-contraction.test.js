@@ -1,7 +1,41 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { contractsLiveBindings } from '../internal/session-runtime.js'
+import { contractsLiveBindings, surfaceRewroteHistory } from '../internal/session-runtime.js'
+
+// A republish that appends a call or re-renders the same history is not a
+// history change: the call set only grows and every call keeps its source, so
+// the worker and its bindings stay. Treating any generation bump as a rewrite is
+// what made an ordinary capability observation reset the kernel mid-session.
+test('a superset or identical surface never rewrites history', () => {
+  const before = { seqs: new Set([2, 5]), sources: new Map([[2, 'a'], [5, 'b']]) }
+  assert.equal(surfaceRewroteHistory(before, {
+    seqs: new Set([2, 5, 8]),
+    sources: new Map([[2, 'a'], [5, 'b'], [8, 'c']]),
+  }), false)
+  assert.equal(surfaceRewroteHistory(before, {
+    seqs: new Set([2, 5]),
+    sources: new Map([[2, 'a'], [5, 'b']]),
+  }), false)
+})
+
+test('a removed call or a rewritten source is a history change', () => {
+  const before = { seqs: new Set([2, 5]), sources: new Map([[2, 'a'], [5, 'b']]) }
+  assert.equal(surfaceRewroteHistory(before, {
+    seqs: new Set([5]),
+    sources: new Map([[5, 'b']]),
+  }), true)
+  assert.equal(surfaceRewroteHistory(before, {
+    seqs: new Set([2, 5]),
+    sources: new Map([[2, 'a'], [5, 'rewritten']]),
+  }), true)
+})
+
+test('without a comparable snapshot the discriminator decides nothing', () => {
+  const before = { seqs: new Set([2]), sources: new Map([[2, 'a']]) }
+  assert.equal(surfaceRewroteHistory(undefined, before), undefined)
+  assert.equal(surfaceRewroteHistory(before, undefined), undefined)
+})
 
 // A live binding loses its provenance only when the surface was read and proves
 // the call is gone. An unreadable surface — a queued message, a mid-flight

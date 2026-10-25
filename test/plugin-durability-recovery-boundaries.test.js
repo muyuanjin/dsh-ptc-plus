@@ -1785,3 +1785,38 @@ void await repl.state({ action: 'restore', name: 'before-ended' })
   assert.notEqual(ended, undefined, 'the rewind must name the binding it ended')
   assert.match(ended.message, /\(abandoned\)/u)
 })
+
+// A host republish that only appends a node (a capability observation, a
+// re-render) is not a history change: the call set is a superset and every call
+// keeps its source. Rebuilding the kernel on that bump is what made an ordinary
+// capability call mid-session drop the user's bindings.
+test('a surface republish that only appends a node keeps the worker and its bindings', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const events = []
+  const session = appendOnlySession('surface-append-keeps-worker', events)
+  let generation = 0
+  session.surface = {
+    get replaceGeneration() { return generation },
+    get nodes() {
+      return events
+        .filter(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+        .map(event => event.seq)
+    },
+  }
+  const run = code => state.executeRun(session.id, code, {}, { session })
+  const first = await run('const kept = 41')
+  assert.equal(first.raw.error, undefined, first.raw.error?.message)
+  const second = await run('const other = 2')
+  assert.equal(second.raw.error, undefined, second.raw.error?.message)
+
+  // Republish: one more visible node, a new generation, no call removed.
+  session.append('assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: 'republished surface' }] } })
+  generation += 1
+
+  const after = await run('return kept + other')
+  assert.equal(after.raw.error, undefined, after.raw.error?.message)
+  assert.equal(after.raw.value, 43)
+  assert.deepEqual(after.raw.logs, [])
+  assert.equal(after.result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+})

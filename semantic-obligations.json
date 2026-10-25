@@ -23,6 +23,7 @@
         "internal/binding-pattern.js",
         "internal/binding-source-analysis.js",
         "internal/binding-update-policy.js",
+        "internal/bounded-literal.js",
         "internal/cell-analysis-contract.js",
         "internal/cell-analysis.js",
         "internal/cell-error.js",
@@ -76,12 +77,13 @@
       ],
       "oracle": "native Node for preserved JavaScript; explicit PTC dialect assertions for declared differences",
       "evidence": [
-        "test/semantic-test262.test.js",
-        "test/semantic-dialect.test.js",
-        "test/stateful-source-line-mapping.test.js",
-        "test/validated-parse-repair.test.js",
+        "test/bounded-literal.test.js",
         "test/plugin-prompt-edit-execution.test.js",
-        "test/stateful-root-bindings.test.js"
+        "test/semantic-dialect.test.js",
+        "test/semantic-test262.test.js",
+        "test/stateful-root-bindings.test.js",
+        "test/stateful-source-line-mapping.test.js",
+        "test/validated-parse-repair.test.js"
       ],
       "dependsOn": []
     },

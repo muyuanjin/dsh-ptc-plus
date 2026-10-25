@@ -237,6 +237,9 @@ const CONFORMANCE_CELL = `"use strict";
 }`
 let activeRun
 let activeExecution
+// Compile-time proof that a binding's initializer is a bounded object literal,
+// keyed by binding name for the running cell.
+let declaredBoundedLiterals = new Map()
 let suppressReplCwdObservation = false
 let nextCallId = 0
 let nextStaticAdapterId = 0
@@ -1538,6 +1541,11 @@ async function runCell(message) {
     volatileReason: message.volatileReason,
   }
   activeExecution = execution
+  // Compile-time evidence that a declaration's initializer is a bounded object
+  // literal, keyed by binding name. Settlement uses it to decide whether a value
+  // can be recorded without walking an object the codec cannot size; nothing
+  // reads it yet, so this commit changes no recording behaviour.
+  declaredBoundedLiterals = mapFromArray(message.declarationEvidence ?? [], entry => entry)
   const cellGlobals = []
   const committedRedeclarations = new Set()
 

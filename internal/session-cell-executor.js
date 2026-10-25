@@ -692,6 +692,12 @@ export class SessionCellExecutor {
             returnSignal: prepared.returnSignal,
             asyncCompletion: prepared.asyncCompletion,
             commitSignal: prepared.commitSignal,
+            // Compile-time evidence that a binding's initializer is a bounded
+            // object literal. Nothing records from it yet; settlement will use
+            // it to decide whether a value can be captured without walking it.
+            declarationEvidence: prepared.declarations
+              .filter(declaration => declaration.boundedLiteral !== undefined)
+              .map(declaration => [declaration.name, declaration.boundedLiteral]),
             maxOutputBytes: config.maxOutputBytes,
             valueLimits,
             durability,

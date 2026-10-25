@@ -1,4 +1,5 @@
 /** Compile each cell into a private native frame backed by session identities. */
+import { boundedLiteralEvidence } from './bounded-literal.js'
 import { adaptRootModuleImports } from './managed-module-operations.js'
 import { parse } from '@babel/parser'
 import { createHash } from 'node:crypto'
@@ -321,10 +322,20 @@ export function compileStatefulRoot(program, {
       return remember(text, [{ generatedStart: 6, generatedEnd: 6 + source.length,
         originalStart: original.start, originalEnd: original.end }])
     }
+    const firstDeclaration = declarations.length
     const target = record(names[0], 'variable', node, bindings[0], `:${declarator.start}`)
     for (const binding of bindings.slice(1)) {
       record(binding.name, 'variable', node, binding, `:${declarator.start}`)
       declarations.at(-1).commitDependency = target
+    }
+    // A single `const name = { … }` initializer proves its own size from the
+    // source, so settlement may record that value without walking an object the
+    // codec cannot size. A destructuring pattern has no one initializer to prove.
+    if (declarator.id.type === 'Identifier' && supplied === undefined && declarator.init !== null) {
+      const evidence = boundedLiteralEvidence(declarator.init)
+      if (evidence !== undefined) {
+        for (const declaration of declarations.slice(firstDeclaration)) declaration.boundedLiteral = evidence
+      }
     }
     if (declarator.init === null && supplied === undefined) {
       return emptyCompletion(`${runtime}.declare(${JSON.stringify(names[0])}, ${JSON.stringify(target)})`)

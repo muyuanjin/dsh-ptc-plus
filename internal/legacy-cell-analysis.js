@@ -1,4 +1,5 @@
 /** Historical legacy-v1 lowering, retained from c51616c8d6c8:cell-analysis.js. */
+import { boundedLiteralEvidence } from './bounded-literal.js'
 import { ModuleRewriteError, rewriteModuleImportsExports } from './legacy-cell-rewriter.js'
 import { parseExecutableCell } from './legacy-cell-parser.js'
 import {
@@ -74,6 +75,7 @@ function topLevelDeclarations(body, variableRedeclarations = false) {
     if (statement.type === 'VariableDeclaration') {
       const definitionSpan = declarationSpan(statement)
       for (const declaration of statement.declarations) {
+        const first = declarations.length
         addPatternDeclarations(
           declaration.id,
           declarations,
@@ -81,6 +83,14 @@ function topLevelDeclarations(body, variableRedeclarations = false) {
           definitionSpan,
           statement.kind !== 'const' || variableRedeclarations,
         )
+        // A plain `const name = { … }` initializer proves its own size from the
+        // source, so recovery may record the value without walking it. A
+        // destructuring pattern has no single initializer to prove.
+        const evidence = declaration.id.type === 'Identifier' && declaration.init !== null
+          ? boundedLiteralEvidence(declaration.init) : undefined
+        if (evidence !== undefined) {
+          for (const record of declarations.slice(first)) record.boundedLiteral = evidence
+        }
       }
     } else if ((statement.type === 'FunctionDeclaration' || statement.type === 'ClassDeclaration')
       && statement.id !== null) {

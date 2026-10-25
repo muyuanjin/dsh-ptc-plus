@@ -598,6 +598,20 @@ class SessionKernel {
       const historyChanged = rewroteHistory === undefined
         ? contractsLiveState
         : rewroteHistory || contractsLiveState
+      // When a real session rebuilds unexpectedly, `DSH_PTC_RECOVERY_TRACE=1`
+      // prints the one fact that decided it: a missing call sequence, a
+      // rewritten source, or the absence of a comparable surface snapshot.
+      // It only reports; the decision below stays exactly the same.
+      if (historyChanged && process.env.DSH_PTC_RECOVERY_TRACE === '1') {
+        const live = [...this.liveCallSeqs]
+        const visible = visibleCallSeqs instanceof Set ? [...visibleCallSeqs] : undefined
+        const missing = visible === undefined ? undefined : live.filter(seq => !visible.includes(seq))
+        const reason = rewroteHistory === undefined ? 'no-snapshot'
+          : rewroteHistory ? 'history-rewritten' : 'live-call-missing'
+        process.stderr.write(`ptc-recovery-trace reason=${reason} live=${live.length}`
+          + ` visible=${visible === undefined ? 'unreadable' : visible.length}`
+          + ` missing=${missing === undefined ? '?' : missing.join(',') || 'none'}\n`)
+      }
       if ((config.durableReplay && !this.replayed) || historyChanged) {
         const worker = this.client.worker
         // A refused stop stays recorded here, so the later admission check in

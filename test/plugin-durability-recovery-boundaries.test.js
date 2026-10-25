@@ -1752,3 +1752,27 @@ test('requires exact recovery boundaries before confirming a contracted cell', a
     'unexpected-second', 'return unexpectedBoundary')).result
   assert.equal(dependent.meta.dshPtcPlus.status, 'volatile')
 })
+
+test('names the binding a recorded rewind ended instead of reporting it lost', async (t) => {
+  const events = []
+  const session = appendOnlySession('session-rewind-ended', events)
+  const state = fixture()
+  t.after(() => state.dispose())
+  await executeRecordedFixture(state, session, events, 'save-before', `
+let kept = 1
+void await repl.state({ action: 'save', name: 'before-ended' })
+`)
+  // This binding is created after the checkpoint, so the rewind abandons it.
+  await executeRecordedFixture(state, session, events, 'create-abandoned', 'const abandoned = 5')
+  await executeRecordedFixture(state, session, events, 'rewind', `
+void await repl.state({ action: 'restore', name: 'before-ended' })
+`)
+
+  // A cold runtime folds the same log: the rewind ended `abandoned` by record, so
+  // recovery names it as ended rather than reporting an unexplained loss.
+  const recovered = fixture()
+  t.after(() => recovered.dispose())
+  const read = await executeRecordedFixture(recovered, session, events, 'after-rewind', 'return typeof abandoned')
+  assert.equal(read.result.error, undefined, read.result.error?.message)
+  assert.equal(read.result.value, 'undefined')
+})

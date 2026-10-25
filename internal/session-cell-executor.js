@@ -410,6 +410,24 @@ export class SessionCellExecutor {
       kernel.completeJournal(request.journal, 'noop', result)
       return result
     }
+    // A restore-only request installs recorded values: it must not compile or run
+    // the node's program. Preparing it first could reject source that is dead by
+    // definition — the node is not on the path to the head, so it may reference
+    // bindings a recorded rewind ended — and a rejected preparation is what made
+    // the off-path repair install nothing. The catalog advances from the recorded
+    // names instead, so later cells still compile against them.
+    if (request.restoreValues !== undefined) {
+      try {
+        await kernel.prepareWorker()
+        await kernel.ensureWorker(config.maxOldGenerationSizeMb)
+      } catch (error) {
+        if (error instanceof CellAdmissionBlocked) throw error
+        return earlyResult('worker-exit', messageOf(error))
+      }
+      const outcome = await this.restoreBindings(request.restoreValues, config)
+      kernel.bindingCatalog = kernel.bindingCatalog.restore(outcome.restored)
+      return { logs: [], restored: outcome.restored, failed: outcome.failed }
+    }
 
     let userBindings
     const userBindingsShadowPolicy = replayRecord?.userBindingsShadowPolicy ?? LIVE_USER_BINDINGS_SHADOW_POLICY
@@ -509,22 +527,6 @@ export class SessionCellExecutor {
       result.error.message = renderDiagnostic(failure, request.program)
       kernel.completeJournal(request.journal, 'noop', result, undefined, [failure])
       return result
-    }
-
-    // A recorded volatile cell is restored, not replayed: the values it produced
-    // are installed and its declarations enter the binding catalog from the same
-    // source analysis a live cell used, so later cells compile against them.
-    if (request.restoreValues !== undefined) {
-      try {
-        await kernel.prepareWorker()
-        await kernel.ensureWorker(config.maxOldGenerationSizeMb)
-      } catch (error) {
-        if (error instanceof CellAdmissionBlocked) throw error
-        return earlyResult('worker-exit', messageOf(error))
-      }
-      const outcome = await this.restoreBindings(request.restoreValues, config)
-      kernel.bindingCatalog = priorBindingCatalog.advance(prepared, request.program)
-      return { logs: [], restored: outcome.restored, failed: outcome.failed }
     }
 
     let worker

@@ -136,7 +136,7 @@ function unverifiedCompletionDiagnostic(count) {
  * restored an earlier durable state abandoned them. Reporting them apart from a
  * genuine loss keeps the two costs distinguishable.
  */
-function rewindEndedDiagnostic(bindings) {
+export function rewindEndedDiagnostic(bindings) {
   const names = bindings.length === 0 ? '' : ` (${bindings.join(', ')})`
   return diagnostic({
     code: 'PTC-R005',
@@ -658,6 +658,13 @@ class SessionKernel {
         const missing = [...new Set(this.missingBindings)]
         this.recoveryNotice = recoveryDiagnostic(missing, missing.length)
       }
+      // A rewind that ended a binding is recorded, not a loss: report it only when
+      // the replay installed nothing under that name anywhere (path, off-path or
+      // catalog), so a correct value never carries a "dropped" notice.
+      if (this.rewindEndedBindings !== undefined && this.rewindEndedBindings.length > 0) {
+        const ended = [...new Set(this.rewindEndedBindings)]
+        this.recoveryNotice = rewindEndedDiagnostic(ended)
+      }
     }
     const leadingDiagnostics = [
       ...(this.recoveryNotice === undefined || this.recoveryNoticeShown ? [] : [this.recoveryNotice]),
@@ -751,9 +758,6 @@ class SessionKernel {
       this.offPathRestores += 1
       for (const value of values) replayedNames.add(value.name)
     }
-    this.rewindEndedBindings = [...endedBindings].filter(name => !replayedNames.has(name))
-    this.missingBindings = (this.history.provenBindings ?? [])
-      .filter(name => !replayedNames.has(name) && !endedBindings.has(name))
     for (const node of path) {
       const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
       const bindingDescriptors = bindings === request.bindings
@@ -828,6 +832,16 @@ class SessionKernel {
       }
     }
     for (const node of path) this.liveCallSeqs.add(node.callSeq)
+    // Names the replay installed include the ones the binding catalog supplies: a
+    // binding can come back through the catalog without any cell executing, so the
+    // arithmetic below counts that evidence too. Without it a rewound branch whose
+    // binding returned through the catalog was reported as ended while its value was
+    // correct.
+    const installed = new Set(replayedNames)
+    for (const name of this.bindingCatalog.inputs().knownBindings) installed.add(name)
+    this.rewindEndedBindings = [...endedBindings].filter(name => !installed.has(name))
+    this.missingBindings = (this.history.provenBindings ?? [])
+      .filter(name => !installed.has(name) && !endedBindings.has(name))
   }
 
   completeJournal(journal, status, result, volatileReason, diagnostics = [], completion = undefined, values = undefined) {

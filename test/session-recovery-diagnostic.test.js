@@ -50,3 +50,15 @@ test('binding names come from the saves a journal recorded', () => {
   assert.deepEqual(bindingNamesOfOperations([]), [])
   assert.deepEqual(bindingNamesOfOperations(undefined), [])
 })
+
+test('a recorded rewind reports the bindings it ended, apart from a loss', async () => {
+  const { rewindEndedDiagnostic } = await import('../internal/session-runtime.js')
+  const diagnostic = rewindEndedDiagnostic(['abandoned', 'stale'])
+  assert.equal(diagnostic.code, 'PTC-R005')
+  assert.equal(diagnostic.severity, 'warning')
+  assert.equal(diagnostic.phase, 'recover')
+  assert.match(diagnostic.message, /Dropped 2 binding\(s\) \(abandoned, stale\) because a recorded rewind ended them/u)
+  // The notice must not be confused with a genuine loss: it says the record ended
+  // them, and it names them instead of only counting.
+  assert.doesNotMatch(diagnostic.message, /unreconstructable|no recorded value proves/u)
+})

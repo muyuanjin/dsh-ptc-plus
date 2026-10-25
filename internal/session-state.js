@@ -94,6 +94,33 @@ export class BindingCatalog {
     }
   }
 
+  /**
+   * Catalog after installing recorded values.
+   *
+   * A restored node is not compiled: its source may be dead (it can reference a
+   * binding a recorded rewind ended), so there is no preparation to take
+   * declarations from. The journal records the names and values but not their
+   * declaration kind, so a restored binding is catalogued as reassignable. That is
+   * deliberately permissive: refusing a later `let`-style redeclaration would break
+   * continuation, while accepting one only widens what the session may do with a
+   * binding whose original declaration the log cannot describe.
+   */
+  restore(names) {
+    if (!Array.isArray(names) || names.length === 0) return this
+    const entries = new Map(this.#entries)
+    for (const name of names) {
+      if (typeof name !== 'string' || entries.has(name)) continue
+      entries.set(name, { kind: 'let', writable: true })
+    }
+    return new BindingCatalog({
+      entries,
+      namespaces: this.#namespaces,
+      userBindingAncestry: this.#userBindingAncestry,
+      rootCandidates: this.#rootCandidates,
+      dynamicOrigins: this.#dynamicOrigins,
+    })
+  }
+
   advance(prepared, source = undefined, committedRedeclarations = undefined, rootBindingFacts = undefined) {
     const semantics = normalizeLanguageSemantics(prepared.languageSemantics ?? LEGACY_LANGUAGE_SEMANTICS)
     if (semantics === LEGACY_LANGUAGE_SEMANTICS) {

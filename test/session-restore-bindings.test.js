@@ -69,3 +69,32 @@ test('a missing worker reports every binding instead of throwing', async t => {
   assert.deepEqual(outcome.restored, [])
   assert.deepEqual(outcome.failed.map(entry => entry.name), ['lost'])
 })
+
+/**
+ * A restore-only request installs recorded values and never touches the program.
+ *
+ * An off-path node is dead by definition: it is not on the path to the head, so
+ * its source may reference bindings a recorded rewind ended. Preparing that source
+ * used to reject the request, which is why the off-path repair installed nothing;
+ * the request now installs the values and advances the catalog from their names.
+ */
+test('installs recorded values without compiling the dead program', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  await runtime.run('restore-only', { program: 'let seeded = 1', bindings: [] })
+  const executor = sessionCellExecutor(runtime, 'restore-only')
+
+  const outcome = await executor.executeCell({
+    // If this program ever ran, the request would fail: the proof of "no execution"
+    // is that the restore succeeds while the source would throw.
+    program: 'throw new Error("the dead program must not run")',
+    restoreValues: [{ name: 'early', wire: encodeValue(7, LIMITS) }],
+  })
+  assert.deepEqual(outcome.restored, ['early'])
+  assert.deepEqual(outcome.failed, [])
+
+  // The catalog advanced from the recorded name, so a later cell compiles against it.
+  const read = await runtime.run('restore-only', { program: 'return early', bindings: [] })
+  assert.equal(read.error, undefined)
+  assert.equal(read.value, 7)
+})

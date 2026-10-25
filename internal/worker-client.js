@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
@@ -69,7 +69,14 @@ export class WorkerClient {
       if (!isAbsolute(scratchRoot)) {
         throw new Error(`ptc-plus: host temporary directory must be absolute, got ${JSON.stringify(scratchRoot)}`)
       }
-      this.scratchReady = mkdtemp(join(scratchRoot, 'dsh-ptc-plus-'))
+      this.scratchReady = mkdtemp(join(scratchRoot, 'dsh-ptc-plus-')).catch(async error => {
+        // A host that points TMPDIR at a directory it has not created yet (macOS CI)
+        // fails mkdtemp with ENOENT; create the root once and retry instead of
+        // failing the cell with a worker-exit error.
+        if (error?.code !== 'ENOENT') throw error
+        await mkdir(scratchRoot, { recursive: true })
+        return mkdtemp(join(scratchRoot, 'dsh-ptc-plus-'))
+      })
     }
     this.workerLimit = maxOldGenerationSizeMb
     let scratchDirectory

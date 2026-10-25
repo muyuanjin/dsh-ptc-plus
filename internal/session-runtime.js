@@ -285,6 +285,7 @@ class SessionKernel {
     this.liveCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
+    this.offPathRestores = 0
     this.recoveryNotice = disposedCells > 0
       // A kernel whose owning agent or session was disposed must not resurrect
       // the disposed environment: the history is gone by contract, and a later
@@ -716,6 +717,40 @@ class SessionKernel {
     // not by omission, so they are reported apart from the ones recovery failed to
     // install. Nothing else may report them as missing.
     const endedBindings = new Set(this.history.deletedBindings ?? [])
+    // A node off the path to the head never replays, so its bindings would vanish.
+    // Its recorded values are the only evidence they existed, and installing them is
+    // not a replay: no cell code runs, so no ambient effect is redispatched. Install
+    // them before the path replay so a later cell on the path still wins, and skip
+    // anything a recorded rewind ended.
+    const pathNodes = new Set(path)
+    for (const node of this.history.nodes ?? []) {
+      if (pathNodes.has(node)) continue
+      const values = (node.journal.values ?? []).filter(value => !endedBindings.has(value.name))
+      if (values.length === 0) continue
+      const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
+      const bindingDescriptors = bindings === request.bindings
+        ? request.bindingDescriptors : normalizeBindingDescriptors(bindings)
+      const installed = await this.cellExecutor.executeCell(
+        {
+          ...request,
+          bindings: bindingDescriptors.namespaces,
+          bindingDescriptors,
+          program: node.code,
+          journal: undefined,
+          restoreValues: values,
+          ...(node.userBindings === undefined ? { userBindings: undefined } : { userBindings: node.userBindings }),
+        },
+        node.journal,
+        config,
+      )
+      if (installed.error !== undefined) continue
+      // Off-path restoration is a repair of evidence the head chain cannot reach, not
+      // a replay of the session: it stays silent. The cells the path did replay own
+      // the notice, and anything this repair could not install is still named by the
+      // contraction diagnostic.
+      this.offPathRestores += 1
+      for (const value of values) replayedNames.add(value.name)
+    }
     this.rewindEndedBindings = [...endedBindings].filter(name => !replayedNames.has(name))
     this.missingBindings = (this.history.provenBindings ?? [])
       .filter(name => !replayedNames.has(name) && !endedBindings.has(name))

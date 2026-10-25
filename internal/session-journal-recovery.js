@@ -126,6 +126,12 @@ function applyOperations(state, operations, nodeIndex) {
       if (reachableAfter.has(index)) continue
       for (const name of recordedBindingNames(state.nodes[index])) state.deletedBindings.add(name)
     }
+    // The cutting node is not reachable from the new head either: the rewind it
+    // performed ends whatever that same cell created before the cut, so its own
+    // names belong to the recorded deletion rather than to an omission.
+    if (nodeIndex !== undefined) {
+      for (const name of recordedBindingNames(state.nodes[nodeIndex])) state.deletedBindings.add(name)
+    }
   }
   state.head = transition.head
   state.checkpoints = transition.checkpoints

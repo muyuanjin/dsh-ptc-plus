@@ -27,7 +27,7 @@ import { bindingToggleMessage } from '../internal/binding-toggle-receipt.js'
 import { bindingToggleConversationDefinition } from '../src/client-binding-toggle.js'
 import { isHostComponent } from '../src/client-host-compat.js'
 import { createFallbackModal, createSelect } from '../src/client-primitives.js'
-import { createSessionCapabilityControlsView } from '../src/client-capabilities-view.js'
+import { capabilityReceiptVisible, createCapabilityCommandCard, createSessionCapabilityControlsView, firstHumanMessageSeq } from '../src/client-capabilities-view.js'
 import { cycleCapabilitySort, sortCapabilityEntries } from '../src/client-capability-sort.js'
 
 const sessionCatalog = (entries, management = 'managed', savedSettings = undefined) => (
@@ -1687,7 +1687,7 @@ test.each([{ enabled: false }, { bindings: false }])('disabled computation featu
   expect(rpcCalls).toEqual([])
 })
 
-test.each(['recorded', 'pending', 'unavailable', 'usage', 'saved-only', 'paused', 'off'])('capability command %s receipt is a single notice following locale without changing history', async state => {
+test.each(['recorded', 'unavailable', 'usage', 'saved-only', 'paused', 'off'])('capability command %s receipt is a single notice following locale without changing history', async state => {
   const commandNode = { commandId: 'capability-history', args: 'refresh', outcome: {
     kind: ['unavailable', 'usage', 'saved-only'].includes(state) ? 'error' : 'success',
     text: capabilityCommandReceipt(state, 'historic-session', state === 'saved-only' ? 'Update failed' : undefined) } }
@@ -1721,15 +1721,88 @@ test('a capability environment delivered without a submitted command renders no 
   expect(document.body.textContent).not.toContain('能力已准备')
 })
 
-test('a submitted capability command still renders exactly one pending notice', async () => {
+test('a pending publication never becomes chat content', async () => {
   const commandNode = { commandId: 'submitted', name: 'capabilities', args: 'set session tools.probe availability full',
     outcome: { kind: 'success', text: capabilityCommandReceipt('pending', 'fresh-session') } }
   const { runtime } = await fixture({ bindings: false, commandNode })
   const view = runtime.renderRoot()
   await runtime.flush()
-  const notices = view.container.querySelectorAll('.ptcPlusCapabilityCommandNotice')
+  expect(view.container.querySelector('.ptcPlusCapabilityCommandNotice')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusCapabilityReceipt')).toBeNull()
+  expect(document.body.textContent).not.toContain('Capabilities prepared')
+  expect(document.body.textContent).not.toContain('能力已准备')
+})
+
+const capabilityCardCopy = (key, params = {}) => String(SETTINGS_COPY.en[key] ?? key)
+  .replace(/\{(\w+)\}/g, (_, name) => params[name] ?? '')
+
+const humanMessageNode = seq => ({ kind: 'user', anchorSeq: seq, data: { source: { kind: 'user' } } })
+
+function renderCapabilityCard(node, { blank = false, hasMore = false, nodes = new Map() } = {}) {
+  const Card = createCapabilityCommandCard(React)
+  const view = render(React.createElement(Card, {
+    node, t: capabilityCardCopy,
+    useSession: selector => selector({ blank, hasMore }),
+    useChat: selector => selector({ nodes }),
+  }))
+  cleanups.push(() => view.unmount())
+  return view.container
+}
+
+test('a capability receipt recorded before the first human message stays out of chat', () => {
+  const container = renderCapabilityCard({
+    seq: 3, commandId: 'earlier', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'earlier-session') },
+  }, { nodes: new Map([['human', humanMessageNode(9)]]) })
+  expect(container.textContent).toBe('')
+})
+
+test('a capability receipt in a truncated window fails open instead of hiding a legitimate row', () => {
+  const container = renderCapabilityCard({
+    seq: 3, commandId: 'paged', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'paged-session') },
+  }, { hasMore: true, nodes: new Map([['human', humanMessageNode(9)]]) })
+  expect(container.querySelectorAll('.ptcPlusCapabilityCommandNotice')).toHaveLength(1)
+})
+
+test('a capability receipt reads a chat store whose values() returns an array', () => {
+  const container = renderCapabilityCard({
+    seq: 3, commandId: 'store-shaped', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'store-session') },
+  }, { nodes: { values: () => [humanMessageNode(9)] } })
+  expect(container.textContent).toBe('')
+})
+
+test('a capability receipt after the first human message keeps its single notice', () => {
+  const container = renderCapabilityCard({
+    seq: 12, commandId: 'later', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'current-session') },
+  }, { nodes: new Map([['human', humanMessageNode(9)]]) })
+  const notices = container.querySelectorAll('.ptcPlusCapabilityCommandNotice')
   expect(notices).toHaveLength(1)
-  expect(notices[0].textContent).toBe(SETTINGS_COPY.en['capabilities.card.pending'])
+  expect(notices[0].textContent).toBe(SETTINGS_COPY.en['capabilities.card.recorded'])
+})
+
+test('a blank session renders no capability receipt', () => {
+  const container = renderCapabilityCard({
+    seq: 12, commandId: 'blank', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'blank-session') },
+  }, { blank: true })
+  expect(container.textContent).toBe('')
+})
+
+test('capability receipt visibility follows the first human message', () => {
+  expect(firstHumanMessageSeq(new Map([
+    ['plugin', { kind: 'context', anchorSeq: 1, data: { source: { kind: 'plugin:ptc-plus' } } }],
+    ['steering', { kind: 'steering', anchorSeq: 4, data: { source: { kind: 'user' } } }],
+    ['human', humanMessageNode(9)],
+  ]))).toBe(9)
+  expect(firstHumanMessageSeq(undefined)).toBeNull()
+  expect(capabilityReceiptVisible({ seq: 3 }, { firstUserSeq: 9 })).toBe(false)
+  expect(capabilityReceiptVisible({ seq: 3 }, { firstUserSeq: 9, windowComplete: false })).toBe(true)
+  expect(capabilityReceiptVisible({ seq: 12 }, { firstUserSeq: 9 })).toBe(true)
+  expect(capabilityReceiptVisible({ seq: 12 }, { blank: true })).toBe(false)
+  expect(capabilityReceiptVisible({ seq: 12 })).toBe(true)
 })
 
 test.each(['catalog', 'malformed', 'invalid-name'])('capability command %s result stays compact and retains the exact historical source', async kind => {

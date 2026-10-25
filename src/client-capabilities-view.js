@@ -48,18 +48,66 @@ function validCatalogRule(rule, temporary = false) {
         ? ['enabled', 'closed'].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))))
 }
 
+/** A Chat snapshot without a node store cannot order a receipt against the conversation. */
+const noSnapshot = () => undefined
+
+/**
+ * The first human message is the conversation's opening position. DSH may reuse
+ * a blank Session, so capability commands recorded before that message are
+ * history from an earlier attempt, not part of this conversation; they must not
+ * appear above the user's first sentence.
+ */
+export function firstHumanMessageSeq(nodes) {
+  if (nodes === null || nodes === undefined || typeof nodes.values !== 'function') return null
+  let first = null
+  for (const node of nodes.values()) {
+    if (node?.kind !== 'user' || node.data?.source?.kind !== 'user') continue
+    const seq = node.anchorSeq ?? node.data?.seq
+    if (!Number.isSafeInteger(seq)) continue
+    if (first === null || seq < first) first = seq
+  }
+  return first
+}
+
+/**
+ * A capability receipt belongs to chat only after the conversation has opened.
+ * A blank Session has nothing to announce, and a receipt recorded before the
+ * first human message describes a previous attempt's publication. A truncated
+ * Chat window cannot prove where the conversation opened, so its earliest
+ * loaded message must not hide a receipt the session may still own.
+ */
+export function capabilityReceiptVisible(node, { blank = false, firstUserSeq = null, windowComplete = true } = {}) {
+  if (blank === true) return false
+  if (windowComplete !== true) return true
+  return !(Number.isSafeInteger(node?.seq) && Number.isSafeInteger(firstUserSeq) && node.seq < firstUserSeq)
+}
+
 export function createCapabilityCommandCard(React) {
   const h = React.createElement
-  return function CapabilityCommandCard({ node, t }) {
+  return function CapabilityCommandCard({ node, t, useChat, useSession }) {
     const [showSource, setShowSource] = React.useState(false)
+    // Both hooks are always called so the seat keeps one hook order whether or
+    // not the surrounding Chat or Session supplies its store.
+    const readSession = typeof useSession === 'function' ? useSession : noSnapshot
+    const blank = readSession(snapshot => snapshot?.blank === true) === true
+    // `hasMore` marks a window that does not reach the session start; only a
+    // complete window may claim its earliest human message is the first one.
+    const windowComplete = readSession(snapshot => snapshot?.hasMore !== true)
+    const readChat = typeof useChat === 'function' ? useChat : noSnapshot
+    const firstUserSeq = readChat(snapshot => firstHumanMessageSeq(snapshot?.nodes))
     // A capability notice is the outcome of a `/capabilities` command the user
     // submitted. What a new session publishes is a model-visible runtime context,
     // not chat, so a node without that submitted input is not a user command and
     // renders no notice: a fresh session has no change to announce.
     if (typeof node.args !== 'string') return null
+    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete })) return null
     const command = `/${node.name ?? 'capabilities'}${node.args ? ` ${String(node.args).trim()}` : ''}`
     const text = node.outcome?.text
     const receipt = readCapabilityCommandReceipt(text)
+    // Pending is the plan's publication state, not an outcome: it becomes true
+    // only at the next accepted model step, so a durable notice would state a
+    // future that a historical row can no longer verify.
+    if (receipt?.state === 'pending') return null
     const legacyRefresh = text === 'Session capability environment refreshed; the model-visible notification is recorded.'
     if (receipt || String(node.args ?? '').trim() === 'refresh' || legacyRefresh) {
       const outcome = receipt ? t(`capabilities.card.${receipt.state}`, { error: receipt.error ?? '' })

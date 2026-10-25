@@ -9171,14 +9171,38 @@ function capabilityRuleLabel(t2, rule, empty2 = "capabilities.policy.inheritRule
 function validCatalogRule(rule, temporary = false) {
   return rule !== null && typeof rule === "object" && !Array.isArray(rule) && Object.entries(rule).every(([dimension, choice]) => ["availability", "disclosure"].includes(dimension) && (temporary && choice === "automatic" || (dimension === "availability" ? ["enabled", "closed"].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))));
 }
+var noSnapshot = () => void 0;
+function firstHumanMessageSeq(nodes) {
+  if (nodes === null || nodes === void 0 || typeof nodes.values !== "function") return null;
+  let first = null;
+  for (const node of nodes.values()) {
+    if (node?.kind !== "user" || node.data?.source?.kind !== "user") continue;
+    const seq = node.anchorSeq ?? node.data?.seq;
+    if (!Number.isSafeInteger(seq)) continue;
+    if (first === null || seq < first) first = seq;
+  }
+  return first;
+}
+function capabilityReceiptVisible(node, { blank = false, firstUserSeq = null, windowComplete = true } = {}) {
+  if (blank === true) return false;
+  if (windowComplete !== true) return true;
+  return !(Number.isSafeInteger(node?.seq) && Number.isSafeInteger(firstUserSeq) && node.seq < firstUserSeq);
+}
 function createCapabilityCommandCard(React32) {
   const h = React32.createElement;
-  return function CapabilityCommandCard({ node, t: t2 }) {
+  return function CapabilityCommandCard({ node, t: t2, useChat, useSession }) {
     const [showSource, setShowSource] = React32.useState(false);
+    const readSession = typeof useSession === "function" ? useSession : noSnapshot;
+    const blank = readSession((snapshot2) => snapshot2?.blank === true) === true;
+    const windowComplete = readSession((snapshot2) => snapshot2?.hasMore !== true);
+    const readChat = typeof useChat === "function" ? useChat : noSnapshot;
+    const firstUserSeq = readChat((snapshot2) => firstHumanMessageSeq(snapshot2?.nodes));
     if (typeof node.args !== "string") return null;
+    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete })) return null;
     const command2 = `/${node.name ?? "capabilities"}${node.args ? ` ${String(node.args).trim()}` : ""}`;
     const text = node.outcome?.text;
     const receipt = readCapabilityCommandReceipt(text);
+    if (receipt?.state === "pending") return null;
     const legacyRefresh = text === "Session capability environment refreshed; the model-visible notification is recorded.";
     if (receipt || String(node.args ?? "").trim() === "refresh" || legacyRefresh) {
       const outcome2 = receipt ? t2(`capabilities.card.${receipt.state}`, { error: receipt.error ?? "" }) : legacyRefresh ? t2("capabilities.card.recorded") : node.outcome ? (typeof text === "string" && !text.trim() ? void 0 : capabilityCommandText(t2, text)) ?? t2(node.outcome.kind === "error" ? "capabilities.commandFailed" : "capabilities.refreshAcknowledged") : t2("capabilities.refreshing");
@@ -41385,7 +41409,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.apply": "\u63D0\u4EA4\u5E76\u751F\u6548",
     "capabilities.quick.prefill": "\u586B\u5165\u547D\u4EE4\u8349\u7A3F",
     "capabilities.card.recorded": "\u4F1A\u8BDD\u80FD\u529B\u5DF2\u66F4\u65B0\u3002",
-    "capabilities.card.pending": "\u80FD\u529B\u5DF2\u51C6\u5907\uFF0C\u5C06\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u7684\u6A21\u578B\u6B65\u9AA4\u751F\u6548\u3002",
     "capabilities.card.paused": "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587\u5DF2\u5173\u95ED\uFF1B\u672C\u4F1A\u8BDD\u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.card.off": "\u80FD\u529B\u7BA1\u7406\u5DF2\u5173\u95ED\uFF1B\u672C\u4F1A\u8BDD\u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.card.saved-only": "\u5168\u5C40\u8BBE\u7F6E\u5DF2\u4FDD\u5B58\uFF0C\u4F1A\u8BDD\u66F4\u65B0\u5931\u8D25\u3002{error}",
@@ -42099,7 +42122,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.apply": "Submit and apply",
     "capabilities.quick.prefill": "Fill command draft",
     "capabilities.card.recorded": "Session capabilities updated.",
-    "capabilities.card.pending": "Capabilities prepared; they take effect at the next accepted model step.",
     "capabilities.card.paused": "Capabilities and context are off; this session stays with the Host capabilities.",
     "capabilities.card.off": "Capability management is off; this session stays with the Host capabilities.",
     "capabilities.card.saved-only": "Global settings saved; session update failed. {error}",

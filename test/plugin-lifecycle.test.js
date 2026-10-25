@@ -502,7 +502,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       modelPreviewTokens: 4096,
       retentionPayloadRuns: 8,
       retentionPayloadBytes: 8388608,
-      retentionClusters: 5000,
+      retentionClusters: 8,
       capabilityPromptTextEnabled: true,
       legacyBindingSettings: false,
       enabled: true,

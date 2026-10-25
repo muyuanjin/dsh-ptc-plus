@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto'
  */
 export const RETENTION_BOUNDS = Object.freeze({
   runs: Object.freeze({ min: 8, max: 512 }),
-  bytes: Object.freeze({ min: 1024 * 1024, max: 64 * 1024 * 1024 }),
+  bytes: Object.freeze({ min: 1024 * 1024, max: 16 * 1024 * 1024 }),
   // 0 is the only unlimited spelling; a cluster cap of 0 means the count window
   // never folds anything and only the payload budget bounds the checkpoint.
   clusters: Object.freeze({ min: 0, max: 50000 }),
@@ -35,7 +35,11 @@ export const RETENTION_BOUNDS = Object.freeze({
 export const DEFAULT_RETENTION_LIMITS = Object.freeze({
   runs: 8,
   bytes: 8 * 1024 * 1024,
-  clusters: 5000,
+  // The count window defaults to the payload window: cells beyond it fold into the
+  // chained summary instead of keeping a per-cluster record, which is what keeps a
+  // long session from growing linearly. A larger value keeps more recovery evidence
+  // without a log refold at the cost of a bigger checkpoint.
+  clusters: 8,
 })
 
 /**
@@ -94,6 +98,12 @@ export function resolveRetentionLimits(config = {}) {
     clusters: config.retentionClusters,
   }
   const resolved = {}
+  // The cluster window follows the payload window unless it is configured: a user
+  // who raises the retained cells expects the same number of cells to keep their
+  // cluster records, not eight of them.
+  if (configured.clusters === undefined || configured.clusters === null || configured.clusters === '') {
+    configured.clusters = normalizeConfigured('runs', configured.runs)
+  }
   for (const kind of ['runs', 'bytes', 'clusters']) {
     const base = normalizeConfigured(kind, configured[kind])
     // The environment may only tighten the configured bound, never widen it.

@@ -109,3 +109,28 @@ test('configuring retention takes effect immediately for later folds', () => {
     configureRetention(previous)
   }
 })
+
+test('the shipped window folds clusters instead of keeping every one', () => withEnvironment({}, () => {
+  // The count window defaults to the retained-cells window. With the old 5000 every
+  // settled cell kept its cluster records, so a 900-cell session cost 78% more than a
+  // 450-cell one and the checkpoint grew with session length again (issue #10).
+  assert.equal(DEFAULT_RETENTION_LIMITS.clusters, DEFAULT_RETENTION_LIMITS.runs)
+  assert.equal(DEFAULT_RETENTION_LIMITS.clusters, 8)
+  assert.equal(retainedClusterCount(DEFAULT_RETENTION_LIMITS), 8)
+  // Raising the payload window without naming a cluster cap keeps them equal, so a
+  // user who asks for more editable history also keeps that many cluster records.
+  assert.deepEqual(resolveRetentionLimits({ retentionPayloadRuns: 64 }),
+    { runs: 64, bytes: DEFAULT_RETENTION_LIMITS.bytes, clusters: 64 })
+  // An explicit cap still wins over the coupling.
+  assert.equal(resolveRetentionLimits({ retentionPayloadRuns: 64, retentionClusters: 5 }).clusters, 5)
+}))
+
+test('the byte budget maximum bounds the worst-case checkpoint near 32 MB', () => withEnvironment({}, () => {
+  assert.equal(DEFAULT_RETENTION_LIMITS.bytes, 8 * 1024 * 1024)
+  assert.equal(RETENTION_BOUNDS.bytes.max, 16 * 1024 * 1024)
+  // A checkpoint runs about twice the payload budget, so the maximum keeps the worst
+  // case near 32 MB instead of the 128 MB the previous 64 MiB maximum allowed.
+  assert.ok(RETENTION_BOUNDS.bytes.max * 2 <= 32 * 1024 * 1024)
+  assert.deepEqual(resolveRetentionLimits({ retentionPayloadBytes: 64 * 1024 * 1024 }),
+    { ...DEFAULT_RETENTION_LIMITS })
+}))

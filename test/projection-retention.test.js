@@ -10,6 +10,7 @@ const assert = (await import('node:assert/strict')).default
 const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
   verifyRetentionSummaryAgainstEvents, validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
+const { configureRetention } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION } = await import('../internal/session-journal-schema.js')
@@ -72,11 +73,23 @@ function fold(events) {
   return state
 }
 
+// The digest-in-place policy is observable only while the cluster cap is above the
+// payload window: with the shipped default the two coincide and everything past the
+// window folds into the summary. These cases raise the cap on purpose.
+function withClusterCap(cap, body) {
+  configureRetention({ retentionClusters: cap })
+  try {
+    return body()
+  } finally {
+    configureRetention({})
+  }
+}
+
 const settlementList = state => Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
 const executableList = state => Object.values(state.executableCalls).map(pair => pair[1])
 const resultList = state => Object.values(state.results).map(pair => pair[1])
 
-test('the retention window digests old payloads and keeps every cluster', () => {
+test('the retention window digests old payloads and keeps every cluster', () => withClusterCap(5000, () => {
   const events = []
   const payload = 'x'.repeat(2048)
   for (let index = 0; index < 12; index += 1) {
@@ -112,7 +125,7 @@ test('the retention window digests old payloads and keeps every cluster', () => 
   }
   assert.ok(state.retainedBytes < 4096 * 10, `digested clusters stay small: ${state.retainedBytes}`)
   validateSessionTimelineState(state)
-})
+}))
 
 test('the newest run always stays inside the window so tips and edits keep working', () => {
   const events = []
@@ -125,7 +138,7 @@ test('the newest run always stays inside the window so tips and edits keep worki
   assert.equal(state.editableRun?.source, state.latestRun?.source)
 })
 
-test('a digested cluster can be refolded from the same events', () => {
+test('a digested cluster can be refolded from the same events', () => withClusterCap(5000, () => {
   const events = []
   for (let index = 0; index < 10; index += 1) {
     const id = `refold-${index}`
@@ -139,7 +152,7 @@ test('a digested cluster can be refolded from the same events', () => {
   assert.equal(Object.keys(full.settledResultsByEventSeq).length, 10, 'the full fold keeps every cluster')
   assert.equal(typeof settlementList(full)[0].call.data.arguments, 'string', 'and its text')
   assert.equal(full.retentionSummary, null, 'a full-retention fold never compacts')
-})
+}))
 
 test('the newest cell keeps its payload when it fits the budget', () => {
   const events = []
@@ -171,7 +184,7 @@ test('a compacted state keeps its boundary and admits a refolded digest', () => 
 // The floor is 8 cells: a window any smaller cannot keep the stored publication and
 // the replay equal. At exactly that floor the property users buy must still hold —
 // a digested cluster keeps what recovery reads, and an edit can refold its source.
-test('at the supported floor a digested cluster still recovers bindings and refolds its source', () => {
+test('at the supported floor a digested cluster still recovers bindings and refolds its source', () => withClusterCap(5000, () => {
   const events = []
   for (let index = 0; index < 12; index += 1) {
     const id = `floor-${index}`
@@ -198,7 +211,7 @@ test('at the supported floor a digested cluster still recovers bindings and refo
     .map(pair => pair[1])
     .filter(settlement => typeof settlement.call.data.argumentsDigest !== 'string')
   assert.equal(recovered.length, 12, 'the refold restores the text for every cluster')
-})
+}))
 
 test('a checkpoint stays below a small multiple of the payload budget', () => {
   // The budget bounds the retained payload, not the serialized checkpoint: the

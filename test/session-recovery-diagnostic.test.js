@@ -33,10 +33,15 @@ test('a contraction without journal names keeps the cell-count wording', () => {
 // dropped names, because the model would then stop referencing a name that the
 // contraction never took away.
 test('binding names come from the saves a journal recorded', () => {
+  // A checkpoint save and a binding save share the `save` shape, so the kind is what
+  // separates a branch name from a binding name. An untagged save is a checkpoint,
+  // which is what every operation recorded before the kind existed came from.
   assert.deepEqual(
     bindingNamesOfOperations([
-      { action: 'save', name: 'greeting' },
-      { action: 'save', name: 'total' },
+      { action: 'save', name: 'greeting', kind: 'binding' },
+      { action: 'save', name: 'branch', kind: 'checkpoint' },
+      { action: 'save', name: 'total', kind: 'binding' },
+      { action: 'save', name: 'legacy' },
       { action: 'delete', name: 'greeting' },
       { action: 'restore' },
     ]),

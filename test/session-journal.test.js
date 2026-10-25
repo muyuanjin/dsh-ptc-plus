@@ -2489,18 +2489,28 @@ test('recovers durable branches, checkpoints, volatile suffixes, and confirmed n
   assert.deepEqual(pathToHead(state).map(node => node.code), ['const one = 1', 'const two = 2', 'const confirmed = true'])
   assert.deepEqual([...state.checkpoints], [])
   assert.deepEqual(state.volatileSuffix, [])
-  // Every name a journal saved is a binding the log proves. Recovery reports the
-  // ones its replay never installed, so a cell missing from the path cannot take
-  // its bindings away without saying so.
-  assert.deepEqual(state.provenBindings, ['one'])
+  // `repl.state({ action: "save" })` records a checkpoint name in the same shape a
+  // binding save uses, so an untagged save proves no binding. Recovery reports only
+  // the bindings the log proves, never a branch name.
+  assert.deepEqual(state.provenBindings, [])
 
   const tailOnly = recoverJournal({ events }, 2)
-  assert.deepEqual(tailOnly.provenBindings, ['one'])
+  assert.deepEqual(tailOnly.provenBindings, [])
   const absent = recoverJournal()
   assert.deepEqual(absent, { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], provenBindings: [], available: true })
   assert.equal(recoverJournal({ events }, 5).nodes.length, 2)
 })
 
+test('proves a binding only from a save tagged as a binding', () => {
+  const events = [
+    callEvent(1, 'checkpoint', 'const one = 1'),
+    resultEvent(1, journal({ operations: [{ action: 'save', name: 'one', kind: 'checkpoint' }] })),
+    callEvent(2, 'binding', 'const two = 2'),
+    resultEvent(2, journal({ operations: [{ action: 'save', name: 'two', kind: 'binding' }] })),
+  ]
+  const state = recoverJournal({ events })
+  assert.deepEqual(state.provenBindings, ['two'])
+})
 test('reduces ordered state operations independently of live and cold side effects', () => {
   const nodes = [
     { parent: undefined },

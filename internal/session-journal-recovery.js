@@ -102,14 +102,18 @@ function applyOperations(state, operations, nodeIndex) {
 /**
  * Binding names a recorded journal operation list saves.
  *
- * A contraction has to say what it costs, and a journal already names every
- * binding it wrote. Only `save` creates a binding, so `delete` and `restore`
- * contribute nothing to the list of names a dropped cell takes with it.
+ * Only a save with `kind: "binding"` creates a binding. `repl.state({ action:
+ * "save" })` records a checkpoint name in the same `save` shape, which is why an
+ * untagged save is a checkpoint: every operation recorded before the kind existed
+ * came from that control call. Treating those names as bindings made a contraction
+ * report a branch name as a dropped variable.
  */
 export function bindingNamesOfOperations(operations) {
   const names = new Set()
   for (const operation of operations ?? []) {
-    if (operation.action === 'save' && typeof operation.name === 'string') names.add(operation.name)
+    if (operation.action === 'save' && operation.kind === 'binding' && typeof operation.name === 'string') {
+      names.add(operation.name)
+    }
   }
   return [...names]
 }

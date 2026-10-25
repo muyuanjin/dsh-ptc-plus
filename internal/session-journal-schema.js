@@ -54,7 +54,7 @@ export const DEFAULT_EXPORT_BINDINGS = new Set([
 ])
 export const CALL_SUCCESS_FIELDS = new Set(['global', 'member', 'args', 'argsDigest', 'argsBytes', 'ok', 'value', 'settle'])
 export const CALL_ERROR_FIELDS = new Set(['global', 'member', 'args', 'argsDigest', 'argsBytes', 'ok', 'error', 'settle'])
-export const OPERATION_FIELDS = new Set(['action', 'name'])
+export const OPERATION_FIELDS = new Set(['action', 'name', 'kind'])
 export const RETURN_FIELDS = new Set(['kind', 'hasValue', 'value'])
 export const THROW_FIELDS = new Set(['kind', 'error'])
 export const ERROR_FIELDS = new Set(['kind', 'message'])

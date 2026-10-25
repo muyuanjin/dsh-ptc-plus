@@ -139,7 +139,12 @@ function normalizeOperations(value) {
       throw new Error(`invalid dsh-ptc-plus journal operation at index ${index}`)
     }
     assertOwnFields(operation, OPERATION_FIELDS, `journal operation at index ${index}`)
-    return { action: operation.action, ...(operation.name === undefined ? {} : { name: operation.name }) }
+    if (operation.kind !== undefined
+      && (operation.action !== 'save' || !['binding', 'checkpoint'].includes(operation.kind))) {
+      throw new Error(`invalid dsh-ptc-plus journal operation kind at index ${index}`)
+    }
+    return { action: operation.action, ...(operation.name === undefined ? {} : { name: operation.name }),
+      ...(operation.kind === undefined ? {} : { kind: operation.kind }) }
   })
 }
 

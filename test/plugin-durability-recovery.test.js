@@ -332,7 +332,7 @@ return { saved, branchTypes, receipt }
   })
   assert.equal(written.meta.dshPtcPlus.status, 'durable')
   assert.equal(written.meta.dshPtcPlus.calls.filter(call => call.global === 'tools').length, 1)
-  assert.deepEqual(written.meta.dshPtcPlus.operations, [{ action: 'save', name: 'local-computation' }])
+  assert.deepEqual(written.meta.dshPtcPlus.operations, [{ action: 'save', name: 'local-computation', kind: 'checkpoint' }])
   appendRunCodeEvents(session.events, 'annex-b-source', source, written)
   await writer.dispose()
   const restored = fixture()

@@ -778,7 +778,7 @@ export class SessionCellExecutor {
         throw new Error(`cannot save a durable REPL state from a volatile segment; volatile reason: ${active.durability.reason ?? 'replayability is unproved'}. This save rejection leaves live bindings usable in the current worker; continue computation from them. It does not undo external effects.`)
       }
       active.control.names.add(name)
-      active.journal.operations.push({ action, name })
+      active.journal.operations.push({ action, name, kind: 'checkpoint' })
       return { action, name, saved: true }
     }
     if (action === 'delete') {

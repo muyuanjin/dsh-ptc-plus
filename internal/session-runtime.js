@@ -36,6 +36,26 @@ import {
 const WORKER_URL = new URL('./kernel-worker.js', import.meta.url)
 const UNAVAILABLE_SURFACE_GENERATION = Symbol('unavailableSurfaceGeneration')
 
+/**
+ * Tell "the surface proves this call is gone" apart from "the surface cannot be
+ * read right now".
+ *
+ * A queued message, a mid-flight surface replacement or any transient host
+ * state can leave `session.surface.nodes` unreadable for one request. Reading
+ * that as an empty visible set made every live binding look contracted, so the
+ * worker was reset and the journal replayed; a replay that cannot reproduce an
+ * old completion then contracted the whole suffix and the user lost the REPL.
+ * Only a readable surface may decide that a live binding lost its provenance.
+ */
+function surfaceReadable(session) {
+  try {
+    if (!Array.isArray(session?.surface?.nodes)) return false
+    return Array.isArray(session?.events)
+  } catch {
+    return false
+  }
+}
+
 function surfaceGeneration(session, provenanceRequired = true) {
   try {
     const surface = session?.surface
@@ -69,6 +89,23 @@ function resolvedRuntimeConfig(config) {
 
 function emptyHistory() {
   return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
+}
+
+/**
+ * Decide whether the live worker's bindings lost their provenance.
+ *
+ * Returns true only when the surface was read and proves that a live call is no
+ * longer part of it. An unreadable surface is undecidable: a queued message or a
+ * mid-flight replacement must not cost the user the REPL, so the decision stays
+ * false and the worker keeps its state.
+ */
+export function contractsLiveBindings({ liveCallSeqs, visibleCallSeqs, surfaceIsReadable }) {
+  if (!surfaceIsReadable) return false
+  if (!(visibleCallSeqs instanceof Set)) return false
+  for (const callSeq of liveCallSeqs) {
+    if (!visibleCallSeqs.has(callSeq)) return true
+  }
+  return false
 }
 
 class ReplayFailure extends Error {
@@ -326,10 +363,15 @@ class SessionKernel {
     if (this.surfaceProvenanceRequired
       && (currentGeneration !== this.surfaceGeneration || hasLiveState)) {
       this.surfaceGeneration = currentGeneration
-      const visibleCallSeqs = visibleExecutableCallSeqs(observedSession)
-      const contractsLiveState = [...this.liveCallSeqs].some(callSeq => (
-        !(visibleCallSeqs instanceof Set) || !visibleCallSeqs.has(callSeq)
-      ))
+      // An unreadable surface is undecidable, not proof of contraction: keep the
+      // worker and its bindings instead of dropping them on a transient read.
+      const surfaceIsReadable = surfaceReadable(observedSession)
+      const visibleCallSeqs = surfaceIsReadable ? visibleExecutableCallSeqs(observedSession) : undefined
+      const contractsLiveState = contractsLiveBindings({
+        liveCallSeqs: this.liveCallSeqs,
+        visibleCallSeqs,
+        surfaceIsReadable,
+      })
       if ((config.durableReplay && !this.replayed) || contractsLiveState) {
         const worker = this.client.worker
         // A refused stop stays recorded here, so the later admission check in

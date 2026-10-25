@@ -672,7 +672,7 @@ class SessionKernel {
     for (const node of path) this.liveCallSeqs.add(node.callSeq)
   }
 
-  completeJournal(journal, status, result, volatileReason, diagnostics = [], completion = undefined) {
+  completeJournal(journal, status, result, volatileReason, diagnostics = [], completion = undefined, values = undefined) {
     if (journal === undefined) return
     journal.status = status
     journal.completion = result.error === undefined
@@ -683,6 +683,13 @@ class SessionKernel {
         }
       : { kind: 'throw', error: { kind: result.error.kind, message: result.error.message } }
     if (volatileReason !== undefined) journal.volatileReason = volatileReason
+    // A volatile cell keeps the values it produced so recovery can install them
+    // without running the cell again; a value the codec could not transfer is
+    // named instead of being omitted silently.
+    if (values !== undefined && (values.values.length > 0 || values.unrecorded.length > 0)) {
+      journal.values = values.values
+      if (values.unrecorded.length > 0) journal.unrecordedBindings = values.unrecorded
+    }
     if (diagnostics.length > 0) journal.diagnostics.push(...diagnostics)
     if (status === 'volatile') {
       journal.operations = journal.operations.filter(operation => operation.action !== 'save')
@@ -789,6 +796,7 @@ class SessionKernel {
         const status = active.durability.status
         this.completeJournal(
           journal, status, result, active.durability.reason, active.diagnostics, active.completion,
+          active.volatileBindingValues,
         )
         this.tentatives.set(journal, {
           callSeq: request.callSeq,

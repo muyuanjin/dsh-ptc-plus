@@ -35,7 +35,7 @@ export const WHOLE_ENTRY_JOURNAL_FIELDS = new Set(['version', 'bindingPolicy', '
 export const PER_NAME_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, 'userBindingsShadowPolicy', 'userBindingNames'])
 export const LANGUAGE_SEMANTICS_JOURNAL_FIELDS = new Set([...PER_NAME_JOURNAL_FIELDS, 'languageSemantics'])
 export const MODULE_TRANSFORM_JOURNAL_FIELDS = new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, 'moduleTransform'])
-export const JOURNAL_FIELDS = new Set([...MODULE_TRANSFORM_JOURNAL_FIELDS, 'executionCwd'])
+export const JOURNAL_FIELDS = new Set([...MODULE_TRANSFORM_JOURNAL_FIELDS, 'executionCwd', 'values', 'unrecordedBindings'])
 export const FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter(field => field !== 'userBindingsReusePolicy'))
 export const RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter(field => field !== 'userBindingsFingerprint'))
 export const PREDECESSOR_JOURNAL_FIELDS = new Set(['version', 'bindingMode', 'rewritePolicy', 'status', 'calls', 'operations', 'confirms', 'diagnostics', 'completion', 'volatileReason'])

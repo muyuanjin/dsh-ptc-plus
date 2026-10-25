@@ -834,6 +834,16 @@ export class SessionCellExecutor {
         type: 'volatile',
         reason: typeof message.volatileReason === 'string' ? message.volatileReason : undefined,
       })
+      // The worker sends the values this volatile cell produced so the journal
+      // can keep them; recovery installs them instead of re-running the cell.
+      const recorded = message.volatileBindingValues
+      if (recorded !== undefined && typeof recorded === 'object'
+        && Array.isArray(recorded.values) && Array.isArray(recorded.unrecorded)
+        && recorded.values.every(entry => entry !== null && typeof entry === 'object'
+          && typeof entry.name === 'string' && entry.wire !== undefined)
+        && recorded.unrecorded.every(name => typeof name === 'string')) {
+        active.volatileBindingValues = recorded
+      }
     }
     if (active.replay !== undefined && active.durability.status !== 'durable') {
       active.resolve({ logs, error: { kind: 'recovery', message: 'durable history requested a volatile capability during replay' } }, true)

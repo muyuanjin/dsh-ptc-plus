@@ -50,7 +50,7 @@ import {
   createUserBindingsSnapshot,
   USER_BINDINGS_META_KEY,
 } from '../internal/user-bindings.js'
-import { encodeValue } from '../internal/value-wire.js'
+import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
   PROTECTED_MODULE_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/module-transform-contract.js'
 
@@ -643,6 +643,23 @@ test('normalizes complete journal values and detaches nested value wires', () =>
     status: 'volatile',
     volatileReason: 'ambient Date',
   })).volatileReason, 'ambient Date')
+
+  // A volatile cell cannot be replayed, so its record keeps the values it
+  // produced. Recovery installs them instead of running the cell again, and a
+  // value the codec could not transfer is named so a contraction can say what
+  // it costs.
+  const recorded = normalizeJournal(journal({
+    status: 'volatile',
+    volatileReason: 'ambient Date',
+    values: [{ name: 'answer', wire: encodeValue(41) }],
+    unrecordedBindings: ['cli'],
+  }))
+  assert.equal(recorded.status, 'volatile')
+  assert.deepEqual(recorded.values.map(entry => entry.name), ['answer'])
+  assert.equal(decodeValue(recorded.values[0].wire), 41)
+  assert.deepEqual(recorded.unrecordedBindings, ['cli'])
+  assert.ok(Object.isFrozen(recorded.values))
+  assert.equal(normalizeJournal(journal({ values: undefined })).values, undefined)
 
   assert.deepEqual(normalizeJournal(journal({
     status: 'discarded',

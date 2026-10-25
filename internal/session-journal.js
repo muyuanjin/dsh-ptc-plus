@@ -366,6 +366,33 @@ function normalizeExecutionCwd(value) {
 }
 
 /** Validate and detach one journal emitted by the runtime. */
+/**
+ * Values a volatile settlement recorded for the bindings it created.
+ *
+ * A volatile cell cannot be replayed, so the record carries the values it
+ * produced and recovery installs them without running the cell again. Names the
+ * codec could not transfer are kept apart so a contraction can name them
+ * instead of pretending they were never created.
+ */
+function normalizeJournalValues(values) {
+  if (values === undefined) return undefined
+  if (!Array.isArray(values)) throw new Error('invalid dsh-ptc-plus journal values')
+  return Object.freeze(values.map(entry => {
+    if (!isRecord(entry) || typeof entry.name !== 'string' || entry.name === '') {
+      throw new Error('invalid dsh-ptc-plus journal value entry')
+    }
+    return Object.freeze({ name: entry.name, wire: normalizeValueWire(entry.wire) })
+  }))
+}
+
+function normalizeUnrecordedBindings(names) {
+  if (names === undefined) return undefined
+  if (!Array.isArray(names) || names.some(name => typeof name !== 'string' || name === '')) {
+    throw new Error('invalid dsh-ptc-plus journal unrecorded bindings')
+  }
+  return Object.freeze([...new Set(names)])
+}
+
 export function normalizeJournal(value, options = {}) {
   if (!isRecord(value)) throw new Error('invalid dsh-ptc-plus journal')
   if (!JOURNAL_VERSIONS.has(value.version)
@@ -395,6 +422,8 @@ export function normalizeJournal(value, options = {}) {
     migrated.completion,
     migrated.status === 'durable' || migrated.status === 'volatile',
   )
+  const recordedValues = normalizeJournalValues(migrated.values)
+  const unrecordedBindings = normalizeUnrecordedBindings(migrated.unrecordedBindings)
   if ((migrated.status === 'discarded' || migrated.status === 'noop')
     && (calls.length !== 0 || operations.length !== 0)) {
     throw new Error(`${migrated.status} dsh-ptc-plus journal must not contain calls or operations`)
@@ -424,6 +453,8 @@ export function normalizeJournal(value, options = {}) {
     diagnostics: Object.freeze(diagnostics),
     ...(completion === undefined ? {} : { completion }),
     ...(migrated.volatileReason === undefined ? {} : { volatileReason: migrated.volatileReason }),
+    ...(recordedValues === undefined ? {} : { values: recordedValues }),
+    ...(unrecordedBindings === undefined ? {} : { unrecordedBindings }),
   })
 }
 

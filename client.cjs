@@ -2440,7 +2440,7 @@ var WHOLE_ENTRY_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingPol
 var PER_NAME_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...WHOLE_ENTRY_JOURNAL_FIELDS, "userBindingsShadowPolicy", "userBindingNames"]);
 var LANGUAGE_SEMANTICS_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...PER_NAME_JOURNAL_FIELDS, "languageSemantics"]);
 var MODULE_TRANSFORM_JOURNAL_FIELDS = /* @__PURE__ */ new Set([...LANGUAGE_SEMANTICS_JOURNAL_FIELDS, "moduleTransform"]);
-var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...MODULE_TRANSFORM_JOURNAL_FIELDS, "executionCwd"]);
+var JOURNAL_FIELDS = /* @__PURE__ */ new Set([...MODULE_TRANSFORM_JOURNAL_FIELDS, "executionCwd", "values", "unrecordedBindings"]);
 var FINGERPRINT_REUSE_JOURNAL_FIELDS = new Set([...WHOLE_ENTRY_JOURNAL_FIELDS].filter((field) => field !== "userBindingsReusePolicy"));
 var RELATIONLESS_JOURNAL_FIELDS = new Set([...FINGERPRINT_REUSE_JOURNAL_FIELDS].filter((field) => field !== "userBindingsFingerprint"));
 var PREDECESSOR_JOURNAL_FIELDS = /* @__PURE__ */ new Set(["version", "bindingMode", "rewritePolicy", "status", "calls", "operations", "confirms", "diagnostics", "completion", "volatileReason"]);

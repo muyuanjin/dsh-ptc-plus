@@ -116,6 +116,14 @@ export function bindingNamesOfOperations(operations) {
 
 function applyRecord(state, record, invalidCallSeqs) {
   const { call, code, result } = record
+  // Every binding a journal names is a binding the session log proves. Recording
+  // the names here lets recovery report a binding it could not install instead of
+  // letting an unreplayed node take it silently.
+  const recordNames = [
+    ...(result?.journal?.values ?? []).map(value => value.name),
+    ...bindingNamesOfOperations(result?.journal?.operations),
+  ]
+  for (const name of recordNames) state.provenBindings.add(name)
   if (invalidCallSeqs.has(call.seq)) return
   const journal = result.journal
   if (journal.status === 'noop') return
@@ -194,6 +202,7 @@ function foldRecords(records, invalidCallSeqs, options = {}) {
     head: undefined,
     checkpoints: new Map(),
     volatileSuffix: [],
+    provenBindings: new Set(),
     trusted: true,
     surfaceContracted: options.surfaceContracted === true,
   }
@@ -2088,7 +2097,7 @@ export function foldSessionTimeline(events) {
 export function recoverJournal(session, currentCallSeq, options = {}) {
   const events = sessionEvents(session)
   if (!Array.isArray(events)) {
-    return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true }
+    return { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], provenBindings: [], available: true }
   }
   // Recovery rebuilds bindings from the cell sources and journals. A checkpoint
   // outside the payload window keeps those as digests, so the fold is repeated with
@@ -2330,14 +2339,18 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   }
   applyBoundariesBefore(Number.POSITIVE_INFINITY)
   if (unavailableBoundary !== undefined) registerUnavailable(unavailableBoundary, state)
-  if (process.env.DEBUG_RECOVER) console.error('DEBUG nodes', state.nodes.map(node => [node.call?.seq, typeof node.code, node.hidden]), 'head', state.head, 'suffix', state.volatileSuffix.length)
-  return {
+  // The names the session log proves stay off the enumerable history shape so
+  // every existing consumer sees the same object it saw before; recovery-only
+  // readers (the missing-binding notice) reach them through this property.
+  const history = {
     nodes: state.nodes,
     head: state.head,
     checkpoints: state.checkpoints,
     volatileSuffix: state.volatileSuffix,
     available: found && !state.surfaceContracted && unavailableBoundary === undefined,
   }
+  history.provenBindings = [...state.provenBindings]
+  return history
 }
 
 /** Prove that recovery consumes every persisted boundary at its declared frontier. */

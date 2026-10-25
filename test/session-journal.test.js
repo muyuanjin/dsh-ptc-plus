@@ -608,7 +608,7 @@ test('ignores an unjournaled edit call with an invalid historical sequence', () 
     data: { name: 'edit_run_code', callId: 'invalid-edit', arguments: '{"edits":[]}' },
   }] }
   assert.deepEqual(recoverJournal(session), {
-    nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: false,
+    nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], provenBindings: [], available: false,
   })
 })
 
@@ -2489,9 +2489,15 @@ test('recovers durable branches, checkpoints, volatile suffixes, and confirmed n
   assert.deepEqual(pathToHead(state).map(node => node.code), ['const one = 1', 'const two = 2', 'const confirmed = true'])
   assert.deepEqual([...state.checkpoints], [])
   assert.deepEqual(state.volatileSuffix, [])
+  // Every name a journal saved is a binding the log proves. Recovery reports the
+  // ones its replay never installed, so a cell missing from the path cannot take
+  // its bindings away without saying so.
+  assert.deepEqual(state.provenBindings, ['one'])
 
+  const tailOnly = recoverJournal({ events }, 2)
+  assert.deepEqual(tailOnly.provenBindings, ['one'])
   const absent = recoverJournal()
-  assert.deepEqual(absent, { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], available: true })
+  assert.deepEqual(absent, { nodes: [], head: undefined, checkpoints: new Map(), volatileSuffix: [], provenBindings: [], available: true })
   assert.equal(recoverJournal({ events }, 5).nodes.length, 2)
 })
 

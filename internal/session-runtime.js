@@ -12,6 +12,7 @@ import {
 import {
   foldSessionTimeline,
   pathToHead,
+  bindingNamesOfOperations,
   recoveryBoundaryForHistory,
   recoverJournal,
   visibleExecutableCallSeqs,
@@ -170,6 +171,25 @@ function emptyHistory() {
 }
 
 /**
+ * How many historical REPL cells a disposed identity leaves behind.
+ *
+ * A disposed owner's environment is not resumed, so the count only sizes the
+ * one notice that tells the model how much history is gone. Prefer the proven
+ * executable calls and fall back to one so the notice is never silent.
+ */
+function disposedHistoryCells(sessionLog, callSeq) {
+  try {
+    const visible = visibleExecutableCallSeqs(sessionLog)
+    if (!(visible instanceof Set)) return 1
+    // The submitted cell already appears in the log; it is not history.
+    const historical = [...visible].filter(seq => seq !== callSeq)
+    return historical.length > 0 ? historical.length : 1
+  } catch {
+    return 1
+  }
+}
+
+/**
  * Decide whether the live worker's bindings lost their provenance.
  *
  * Returns true only when the surface was read and proves that a live call is no
@@ -226,7 +246,7 @@ class ReplayUnmeasured extends Error {
 }
 
 class SessionKernel {
-  constructor({ config, history, cwd, session, surfaceProvenanceRequired, userBindingsCwd, withInitiator, observeValues }) {
+  constructor({ config, history, cwd, session, surfaceProvenanceRequired, userBindingsCwd, withInitiator, observeValues, disposedCells = 0 }) {
     this.config = config
     this.history = history
     this.initialRecoveryBoundary = recoveryBoundaryForHistory(history)
@@ -244,9 +264,14 @@ class SessionKernel {
     this.liveCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
-    this.recoveryNotice = history.volatileSuffix.length === 0
-      ? undefined
-      : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
+    this.recoveryNotice = disposedCells > 0
+      // A kernel whose owning agent or session was disposed must not resurrect
+      // the disposed environment: the history is gone by contract, and a later
+      // cell starts from an empty REPL with the loss reported once.
+      ? recoveryDiagnostic([], disposedCells)
+      : history.volatileSuffix.length === 0
+        ? undefined
+        : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
     this.recoveryNoticeShown = false
     this.active = undefined
     this.sequence = 0
@@ -603,6 +628,13 @@ class SessionKernel {
         const names = [...new Set(this.restoredFromRecord.flatMap(item => item.bindings))]
         this.recoveryNotice = restoredFromRecordDiagnostic(this.restoredFromRecord.length, names)
       }
+      // A binding the log proves but the replay never installed is a loss the
+      // model has to hear about by name, even when no cell was skipped: the
+      // restored suffix looks complete while anything older is simply absent.
+      if (this.missingBindings !== undefined && this.missingBindings.length > 0) {
+        const missing = [...new Set(this.missingBindings)]
+        this.recoveryNotice = recoveryDiagnostic(missing, missing.length)
+      }
     }
     const leadingDiagnostics = this.recoveryNotice === undefined || this.recoveryNoticeShown
       ? [] : [this.recoveryNotice]
@@ -649,6 +681,16 @@ class SessionKernel {
     const limits = this.valueLimits(config)
     const emptyArgsWire = encodeValueAtBoundary({}, limits, 'parameter')
     const path = pathToHead(this.history)
+    // Every binding the session log proves has to come back or be named. A node
+    // that is not on the path to the head never replays, so its bindings would
+    // otherwise disappear without a diagnostic.
+    const replayedNames = new Set()
+    for (const node of path) {
+      for (const value of node.journal.values ?? []) replayedNames.add(value.name)
+      for (const name of bindingNamesOfOperations(node.journal.operations)) replayedNames.add(name)
+    }
+    this.missingBindings = (this.history.provenBindings ?? [])
+      .filter(name => !replayedNames.has(name))
     for (const node of path) {
       const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
       const bindingDescriptors = bindings === request.bindings
@@ -1075,6 +1117,10 @@ export class SessionRuntime {
   constructor(config = {}, options = {}) {
     this.config = resolvedRuntimeConfig(config)
     this.kernels = new Map()
+    // Identities whose owning agent or session was disposed. Their environment is
+    // gone by contract, so a later cell in the same identity must start empty
+    // instead of replaying bindings the disposed owner once held.
+    this.disposedSessions = new Set()
     this.pendingNoops = new Map()
     this.settlements = new WeakSet()
     this.preparingCells = new Set()
@@ -1223,13 +1269,20 @@ export class SessionRuntime {
     }
     let kernel = this.kernels.get(sessionId)
     if (kernel === undefined) {
+      // A disposed agent or session loses its live environment by contract: the
+      // next cell in that identity starts empty and is told how many historical
+      // cells the disposed environment held. Replaying them would hand the
+      // disposed owner's bindings to whoever runs next in the same identity.
+      const disposedCells = this.disposedSessions.has(sessionId)
+        ? disposedHistoryCells(sessionLog, callSeq)
+        : 0
       let history
       try {
-        history = cellConfig.durableReplay
-          ? recoverJournal(sessionLog, callSeq, {
+        history = disposedCells > 0 || !cellConfig.durableReplay
+          ? emptyHistory()
+          : recoverJournal(sessionLog, callSeq, {
             visibleCallSeqs: visibleExecutableCallSeqs(sessionLog),
           })
-          : emptyHistory()
       } catch (error) {
         // Malformed PTC metadata is contracted by the ordered recovery owner.
         // Failure to read DSH's session source cannot prove a reset boundary.
@@ -1241,6 +1294,7 @@ export class SessionRuntime {
         // still come from the submitted snapshot passed to run().
         config: this.config,
         history,
+        disposedCells,
         cwd,
         session,
         surfaceProvenanceRequired,
@@ -1314,6 +1368,9 @@ export class SessionRuntime {
 
   async disposeSession(sessionId) {
     const id = String(sessionId)
+    // Recorded before the early return: an identity whose owner was disposed has
+    // no environment to resume, whether or not a kernel still existed here.
+    this.disposedSessions.add(id)
     for (const admission of this.preparingCells) {
       if (admission.sessionId === id) {
         admission.cancelled = true

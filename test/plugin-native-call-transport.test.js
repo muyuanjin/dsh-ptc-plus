@@ -832,9 +832,15 @@ test('preserves disabled derived edit bindings across visible surface generation
   const inspected = await run('disabled-edit-inspect', 'return editableSurface')
   assert.equal(inspected.result.value, 2)
   generation = 2
+  // Hide the assistant node that carried the derived edit while the calls before
+  // and after it stay visible: an interior removal, which a windowed re-render
+  // (a contiguous newest suffix) can never produce.
+  const editNode = events.find(event => event.type === 'assistant/message'
+    && JSON.stringify(event.data?.message ?? event.data).includes('edit_run_code'))
+  assert.ok(editNode, 'the derived edit has an assistant node to hide')
   surfaceNodes = events
     .filter(event => event.type === 'assistant/message' || event.type === 'tool/result')
-    .filter(event => event.seq >= inspected.call.seq - 1)
+    .filter(event => event.seq !== editNode.seq)
     .map(event => event.seq)
   const hidden = await run('disabled-edit-hidden', 'return typeof editableSurface')
   assert.equal(hidden.result.value, 'undefined')

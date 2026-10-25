@@ -72,8 +72,10 @@ test('a readable surface contracts only the calls it proves missing', () => {
     visibleCallSeqs: new Set([2, 5, 8]),
     surfaceIsReadable: true,
   }), false)
+  // A surface that stopped listing the newest held call is not a window: it
+  // proves that call is gone, so the older contract still decides.
   assert.equal(contractsLiveBindings({
-    liveCallSeqs: new Set([2, 5]),
+    liveCallSeqs: new Set([2, 5, 9]),
     visibleCallSeqs: new Set([5]),
     surfaceIsReadable: true,
   }), true)
@@ -112,4 +114,36 @@ test('a derived start record that is not a call never enters the compared domain
   const before = comparable
   const after = comparableVisibleCalls(events, new Set([2, 140]))
   assert.equal(surfaceRewroteHistory(before, after), false)
+})
+
+// A windowed surface keeps the newest calls and stops listing the oldest ones.
+// The kernel still holds those older calls, so their absence is unknown rather
+// than proof of loss: rebuilding there drops bindings the host never rewrote,
+// which is what a working-directory republish used to do.
+test('a windowed surface leaves the calls below its oldest entry unknown', () => {
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([2, 5, 9, 14, 20]),
+    visibleCallSeqs: new Set([14, 20]),
+    surfaceIsReadable: true,
+  }), false)
+})
+
+// An interior gap, an empty set or a missing newest call is not a window: the
+// surface covers the range it lists, so a held call it omits is lost.
+test('an interior gap, an empty set or a missing newest call still contracts', () => {
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([5, 9, 14, 20]),
+    visibleCallSeqs: new Set([5, 14, 20]),
+    surfaceIsReadable: true,
+  }), true)
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([5, 9]),
+    visibleCallSeqs: new Set([5]),
+    surfaceIsReadable: true,
+  }), true)
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([5, 9]),
+    visibleCallSeqs: new Set(),
+    surfaceIsReadable: true,
+  }), true)
 })

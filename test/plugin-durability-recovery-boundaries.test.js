@@ -104,6 +104,10 @@ test('delegated public sessions own their observations and retain live child bin
       await tools.delegate({});
       return parentValue;
     `, { delegate: async () => {
+      // A call that stays visible before the removed one. With it in place the
+      // hidden call sits inside the visible range, so the surface is not a
+      // windowed suffix and the removal still proves lost provenance.
+      await runChild('const childBase = 1; return childBase')
       first = await runChild(`const childValue = 41; require("node:fs");
         function childHelper() { return childValue }
         class ChildValue { read() { return childValue } }
@@ -127,7 +131,13 @@ test('delegated public sessions own their observations and retain live child bin
     assert.deepEqual(continuation.raw.value, [42, forked ? 'number' : 'undefined'])
     const firstChildCall = events.find(event => event.type === 'tool/call'
       && event.data.arguments.includes('const childValue'))
-    hidden.add(firstChildCall.seq - 1)
+    // Remove the assistant node that carries the child call while the call before
+    // it and every call after it stay visible: an interior removal, which a
+    // windowed re-render (a contiguous newest suffix) can never produce.
+    const coveringNode = events.find(event => event.type === 'assistant/message'
+      && JSON.stringify(event.data?.message ?? event.data).includes('const childValue'))
+    assert.ok(coveringNode, 'the child call has an assistant node to remove')
+    hidden.add(coveringNode.seq)
     const contracted = await runChild('return typeof childValue')
     assert.equal(contracted.raw.value, 'undefined')
     assert.match(contracted.raw.logs[0], /PTC-R002/)

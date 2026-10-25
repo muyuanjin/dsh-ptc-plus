@@ -676,25 +676,10 @@ test('restores a volatile cell from its recorded values after a cold restore', a
   const observed = await restored.executeRun('session-rejected', 'return typeof shouldNeverExist', {}, { session })
   // The cell reached an ambient source, so it cannot be replayed; the value it
   // produced was recorded, so the binding is installed instead of being dropped.
-  const text = [
-    'warning[PTC-R004]: Restored 1 cell(s) from recorded values; 1 binding(s) live: shouldNeverExist. The recorded completions were not replayed.',
-    'phase: recover',
-    'state: unchanged',
-    'help: continue from the bindings listed as live',
-    'help: do not assume the recorded cells ran again; external effects they performed were not repeated',
-  ].join('\n')
-  assert.deepEqual(observed.raw, { logs: [text], value: 'number' })
-  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics, [{
-    code: 'PTC-R004',
-    severity: 'warning',
-    phase: 'recover',
-    message: 'Restored 1 cell(s) from recorded values; 1 binding(s) live: shouldNeverExist. The recorded completions were not replayed.',
-    stateEffect: 'unchanged',
-    help: [
-      'continue from the bindings listed as live',
-      'do not assume the recorded cells ran again; external effects they performed were not repeated',
-    ],
-  }])
+  // A complete restore is deliberately silent: nothing is missing, and the next
+  // cell behaves exactly as it would have without the recovery.
+  assert.deepEqual(observed.raw, { logs: [], value: 'number' })
+  assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics, [])
 })
 
 test('recovers the last durable frontier when a run_code journal is missing', async (t) => {
@@ -890,10 +875,15 @@ return asyncValue
   const result = await restored.run(session.id, 'return asyncValue', {}, { session })
   // The setup cell recorded the number it ended with, so recovery installs that
   // value: the callback is not re-run, and the deadline it would have imposed on
-  // a replay never exists.
+  // a replay never exists. The restore is complete, so it stays silent; a notice
+  // here would only describe plugin mechanics, which is the friction the audit
+  // found in a real session.
   assert.equal(result.value, 0)
-  assert.match(result.logs.join('\n'), /PTC-R004/u)
-  assert.match(result.logs.join('\n'), /asyncValue/u)
+  // The recorded value is installed, so the callback is not re-run. What recovery
+  // says about the frontier is not the contract here: a complete restore stays
+  // silent, and an install that could not happen is named as a skipped cell. What
+  // must never appear is a claim that the value is live when it is not.
+  assert.doesNotMatch(result.logs.join('\n'), /PTC-R004/u)
 })
 
 test('keeps result and error conversion inside a statically classified execution', async (t) => {

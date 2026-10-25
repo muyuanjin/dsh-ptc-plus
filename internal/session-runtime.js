@@ -689,7 +689,18 @@ class SessionKernel {
       const droppedNames = this.missingBindings === undefined ? [] : [...new Set(this.missingBindings)]
       const endedNames = this.rewindEndedBindings === undefined ? [] : [...new Set(this.rewindEndedBindings)]
       const alreadyReported = this.recoveryEventCount > 0
-      if (restoredCount > 0 && liveNames.length === 0 && failedNames.length === 0 && alreadyReported) {
+      // A complete restore is invisible to the model. Every recorded binding was
+      // installed, nothing was dropped or ended, and the next cell behaves exactly
+      // as it would have without the recovery, so a notice would only report plugin
+      // mechanics: in the audited session one such line cost two reasoning blocks of
+      // source-code investigation and changed no decision. The names stay tracked so
+      // that a later disappearance can still be named; only the announcement goes.
+      const completeRestore = failedNames.length === 0
+        && droppedNames.length === 0
+        && endedNames.length === 0
+      if (restoredCount > 0 && completeRestore) {
+        this.restoredFromRecord = []
+      } else if (restoredCount > 0 && liveNames.length === 0 && failedNames.length === 0 && alreadyReported) {
         this.restoredFromRecord = []
       } else if (restoredCount > 0) {
         this.recoveryEventCount += 1

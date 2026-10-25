@@ -46,7 +46,11 @@ export async function setFixtureTheme(page, theme) {
 // triggered reads the destination state exactly when the browser reaches it, so
 // the probe stays deterministic without paying a fixed sleep per control.
 // Reduced-motion fixtures declare no transition and need no frame wait.
-const SETTLE_LIMIT_MS = 500
+// A loaded CI runner can take longer than half a second to finish a 160 ms
+// transition; the budget guards against a stuck animation, not against a slow
+// frame, so it is generous enough to keep the gate deterministic off a fast
+// workstation while still failing a real hang.
+const SETTLE_LIMIT_MS = 5000
 
 export async function settleVisual(page) {
   await page.evaluate(async limit => {

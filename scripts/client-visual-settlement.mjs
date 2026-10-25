@@ -49,8 +49,8 @@ await runBrowserCases(cases, async (page, { id }) => {
     assert.equal(await page.evaluate(() => window.infinite.playState), 'running')
     assert.equal(await page.locator('#probe').evaluate(element => getComputedStyle(element).opacity), '0.5')
   } else {
-    await page.evaluate(() => document.querySelector('#probe').animate([{ opacity: 1 }, { opacity: 0.5 }], { duration: 2000 }))
-    await assert.rejects(settleVisual(page), /did not settle within 500 ms/)
+    await page.evaluate(() => document.querySelector('#probe').animate([{ opacity: 1 }, { opacity: 0.5 }], { duration: 30000 }))
+    await assert.rejects(settleVisual(page), /did not settle within 5000 ms/)
   }
 }, { concurrency: 1, channel: values['browser-channel'] })
 console.log('Visual settlement passed: empty styles, queued cancellation replacements, finite/infinite work and bounded failure')

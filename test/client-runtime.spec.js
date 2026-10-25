@@ -8274,7 +8274,7 @@ test('prompt text panel accounts for every owner, keeps unwired channels honest 
   const unwiredRow = anchorRows.find(row => row.dataset.anchorId === 'tools:sdk#capability-appendix')
   expect(unwiredRow.querySelectorAll('button').length).toBe(0)
   await act(async () => { fireEvent.click(unwiredRow) })
-  expect(unwiredRow.getAttribute('aria-selected')).toBe('true')
+  expect(unwiredRow.getAttribute('data-selected')).toBe('true')
   expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
 
   // A read-only slot is a chip, never a field: it carries its reason code and kind
@@ -8378,7 +8378,7 @@ test('prompt text pane is a dense table whose expanded row owns the only editor'
   expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
     copy['capabilities.prompt.rowExpand'].replace('{index}', '1'))
   await act(async () => { fireEvent.click(runCodeRow) })
-  expect(runCodeRow.getAttribute('aria-selected')).toBe('true')
+  expect(runCodeRow.getAttribute('data-selected')).toBe('true')
   expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
     copy['capabilities.prompt.rowExpand'].replace('{index}', String(rows.indexOf(runCodeRow) + 1)))
   const chips = panel.querySelector('[data-anchor-chips]')
@@ -8404,6 +8404,42 @@ test('prompt text pane is a dense table whose expanded row owns the only editor'
   }
   expect(panel.querySelector('textarea')).toBeNull()
   expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
+})
+
+test('prompt text pane expands a row from the keyboard and moves the current-row marker', async () => {
+  const copy = SETTINGS_COPY.en
+  const promptText = JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} })
+  const { view } = await capabilityWorkbenchFixture({ catalog: [], configuration: { promptText } })
+  await act(async () => { fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.prompt'] })) })
+  const table = view.container.querySelector('.ptcPlusPromptTable')
+  const panel = view.container.querySelector('[data-prompt-panel="anchor"]')
+  const rows = [...table.querySelectorAll('tbody tr[data-anchor-id]')]
+  const wiredRows = rows.filter(row => row.dataset.wired === 'true')
+  const first = wiredRows[0]
+  const second = wiredRows[1]
+
+  // The rows are keyboard reachable in table order.
+  expect(first.getAttribute('tabindex')).toBe('0')
+  first.focus()
+  expect(document.activeElement).toBe(first)
+
+  // Enter expands the focused row and marks it as the current one.
+  await act(async () => { fireEvent.keyDown(first, { key: 'Enter' }) })
+  expect(first.dataset.selected).toBe('true')
+  expect(first.getAttribute('aria-current')).toBe('true')
+  expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
+    copy['capabilities.prompt.rowExpand'].replace('{index}', String(rows.indexOf(first) + 1)))
+
+  // Space moves the expansion to another row; exactly one row stays current.
+  second.focus()
+  await act(async () => { fireEvent.keyDown(second, { key: ' ' }) })
+  expect(second.dataset.selected).toBe('true')
+  expect(second.getAttribute('aria-current')).toBe('true')
+  expect(first.dataset.selected).toBe('false')
+  expect(first.hasAttribute('aria-current')).toBe(false)
+  expect(panel.querySelector('.ptcPlusPromptPanelTitle').textContent).toBe(
+    copy['capabilities.prompt.rowExpand'].replace('{index}', String(rows.indexOf(second) + 1)))
+  expect(table.querySelectorAll('[aria-current="true"]')).toHaveLength(1)
 })
 
 test('prompt text pane stages edits, previews their delta and only writes on save', async () => {

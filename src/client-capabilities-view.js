@@ -1050,7 +1050,10 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         className: 'ptcPlusPromptRow',
         'data-anchor-id': anchor.anchorId,
         'data-wired': anchor.wired === true ? 'true' : 'false',
-        'aria-selected': selectedAnchorId === anchor.anchorId ? 'true' : 'false',
+        // A plain <table> row cannot carry aria-selected (that needs role="grid"),
+        // so the expanded row is announced with aria-current instead.
+        'data-selected': selectedAnchorId === anchor.anchorId ? 'true' : 'false',
+        'aria-current': selectedAnchorId === anchor.anchorId ? 'true' : undefined,
         tabIndex: 0,
         onClick: () => select(anchor.anchorId),
         onKeyDown: event => rowKey(event, anchor.anchorId),

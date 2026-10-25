@@ -53,9 +53,9 @@ const CLIENT_CSS = `
 .ptcPlusPromptTable tbody tr:nth-child(even){background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 45%,transparent)}
 .ptcPlusPromptTable tbody tr{cursor:pointer}
 .ptcPlusPromptTable tbody tr:hover{background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 80%,transparent)}
-.ptcPlusPromptTable tbody tr[aria-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 10%,transparent)}
+.ptcPlusPromptTable tbody tr[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 10%,transparent)}
 .ptcPlusPromptTable tbody tr:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}
-.ptcPlusPromptColIndex{width:30px}.ptcPlusPromptColChannel{width:64px}.ptcPlusPromptColPresence{width:13%}.ptcPlusPromptColBytes{width:32%}.ptcPlusPromptColReason{width:16%}.ptcPlusPromptColKind{width:12%}
+.ptcPlusPromptColIndex{width:28px}.ptcPlusPromptColChannel{width:58px}.ptcPlusPromptColAnchor{width:24%}.ptcPlusPromptColPresence{width:11%}.ptcPlusPromptColBytes{width:28%}.ptcPlusPromptColReason{width:15%}.ptcPlusPromptColKind{width:12%}
 .ptcPlusPromptIndex{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10.5px;color:var(--dsw-alias-label-tertiary);text-align:right}
 .ptcPlusPromptChannel{display:inline-flex;align-items:center;padding:0 6px;border-radius:4px;background:var(--dsw-alias-bg-layer-2);font-size:10.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}
 .ptcPlusPromptAnchorId{font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:11px;color:var(--dsw-alias-label-primary)}

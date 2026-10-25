@@ -1166,11 +1166,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
             t('capabilities.prompt.bytesOfLimit', { used: byteCount(current), max: PROMPT_TEXT_MAX_SLOT_BYTES })),
           h('span', { className: 'ptcPlusPromptEditorActions' },
             asset.omittable ? h('button', {
-              type: 'button', disabled: blocked,
+              type: 'button', className: 'ptcPlusButton', disabled: blocked,
               onClick: () => update(slot.slotId, ''),
             }, t('capabilities.prompt.omit')) : null,
             h('button', {
-              type: 'button', disabled: blocked || override === undefined,
+              type: 'button', className: 'ptcPlusButton', disabled: blocked || override === undefined,
               onClick: () => update(slot.slotId, undefined),
             }, t('capabilities.prompt.reset')))))
     }
@@ -1232,15 +1232,15 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
                   delta: entry.delta > 0 ? `+${group(entry.delta)}` : group(entry.delta),
                 }),
                 h('button', {
-                  type: 'button', disabled: blocked,
+                  type: 'button', className: 'ptcPlusButton', disabled: blocked,
                   onClick: () => restoreSlot(entry.slot.slotId),
                 }, t('capabilities.prompt.reset'))))))),
       h('div', { className: 'ptcPlusPromptActions' },
         h('button', {
-          type: 'button', className: 'ptcPlusPromptPrimary', disabled: blocked || !pending,
+          type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', disabled: blocked || !pending,
           onClick: save,
         }, t('capabilities.prompt.save')),
-        h('button', { type: 'button', disabled: blocked || !pending, onClick: cancel },
+        h('button', { type: 'button', className: 'ptcPlusButton', disabled: blocked || !pending, onClick: cancel },
           t('capabilities.prompt.cancel'))))
     return h('section', {
       className: 'ptcPlusPromptText', 'data-prompt-paused': paused ? 'true' : 'false',

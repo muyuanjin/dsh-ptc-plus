@@ -91,7 +91,7 @@ const CLIENT_CSS = `
 .ptcPlusPromptDiffDelta{display:flex;align-items:center;gap:8px;font-family:var(--dsw-alias-font-mono,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace);font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .ptcPlusPromptDiffDelta button{font-family:inherit;font-size:10px}
 .ptcPlusPromptActions{display:flex;justify-content:flex-end;gap:8px;margin-top:auto;padding-top:6px}
-.ptcPlusPromptPrimary{border-color:var(--dsw-alias-state-business-primary,#4d6bfe)!important;background:var(--dsw-alias-state-business-primary,#4d6bfe)!important;color:#fff!important}
+
 .ptcPlusPromptPaused{padding:8px 10px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px;margin:0}
 @media(max-width:900px){.ptcPlusPromptCards{grid-template-columns:repeat(2,minmax(0,1fr))}.ptcPlusPromptPanels{grid-template-columns:minmax(0,1fr)}}
 .ptcPlusPolicyRules{padding:14px;margin:12px 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusPolicyRules h4{margin:0}.ptcPlusPolicyRule{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:10px 0}.ptcPlusPolicyRule>strong{flex:1 1 100px;min-width:0;overflow-wrap:anywhere;font-size:12px}.ptcPlusPolicyRule>.ptcPlusCapabilityFilter{flex:1 1 160px}

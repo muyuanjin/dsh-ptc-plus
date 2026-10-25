@@ -8483,7 +8483,7 @@ test('prompt text pane stages edits, previews their delta and only writes on sav
 
   // 保存 writes once and clears the draft, so the preview stops describing a pending
   // change while the saved document now carries it.
-  await act(async () => { fireEvent.click(diff().querySelector('.ptcPlusPromptPrimary')) })
+  await act(async () => { fireEvent.click(diff().querySelector('button[data-kind="primary"]')) })
   expect(JSON.parse(snapshot.value.promptText).overrides['runCode.description']).toBe(overridden)
 
   // 取消 drops a staged edit and leaves the saved document alone.

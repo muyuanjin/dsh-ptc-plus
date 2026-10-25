@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { comparableVisibleCalls, contractsLiveBindings, replacementAppliedSince, surfaceRewroteHistory } from '../internal/session-runtime.js'
+import { comparableVisibleCalls, contractsLiveBindings, replacementAppliedSince, surfaceRewroteHistory, windowedOldest } from '../internal/session-runtime.js'
 
 // A republish that appends a call or re-renders the same history is not a
 // history change: the call set only grows and every call keeps its source, so
@@ -84,6 +84,31 @@ test('a readable surface contracts only the calls it proves missing', () => {
     visibleCallSeqs: new Set(),
     surfaceIsReadable: true,
   }), false)
+})
+
+// The window is bounded by the oldest call the surface still lists, which need not
+// be one the kernel holds. Real session session-2ec22082 held call 110 while the
+// surface listed 120 and 130: requiring the bound itself to be held read that as
+// "not a window" and rebuilt the kernel, dropping bindings the surface never
+// disproved.
+test('a window whose oldest entry the kernel does not hold still bounds the window', () => {
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([110, 130]),
+    visibleCallSeqs: new Set([120, 130]),
+    surfaceIsReadable: true,
+  }), false)
+  // A held call at or above the bound that the surface stopped listing is still
+  // proof it is gone.
+  assert.equal(contractsLiveBindings({
+    liveCallSeqs: new Set([110, 130]),
+    visibleCallSeqs: new Set([120]),
+    surfaceIsReadable: true,
+  }), true)
+  // A surface that does not list the newest held call is not a window.
+  assert.equal(windowedOldest({
+    liveCallSeqs: new Set([110, 130]),
+    visibleCallSeqs: new Set([120]),
+  }), undefined)
 })
 
 // A readable surface that yields no set at all cannot prove anything either.

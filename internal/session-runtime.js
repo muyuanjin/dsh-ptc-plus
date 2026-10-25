@@ -383,7 +383,12 @@ export function windowedOldest({ liveCallSeqs, visibleCallSeqs }) {
   if (!(liveCallSeqs instanceof Set) || liveCallSeqs.size === 0) return undefined
   const visible = [...visibleCallSeqs]
   const oldest = Math.min(...visible)
-  if (!liveCallSeqs.has(oldest)) return undefined
+  // The window is bounded by the oldest call the surface still lists, which need
+  // not be a call the kernel holds: a surface that also lists calls from before the
+  // current frontier (a rollback, a replay that stopped earlier) still speaks only
+  // about the calls at or above that bound. Requiring the bound itself to be held
+  // read exactly that case as "not a window" and rebuilt the kernel, dropping
+  // bindings the surface never disproved.
   const newest = Math.max(...liveCallSeqs)
   if (!visibleCallSeqs.has(newest)) return undefined
   for (const callSeq of liveCallSeqs) {

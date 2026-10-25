@@ -99,6 +99,21 @@ function applyOperations(state, operations, nodeIndex) {
   }
 }
 
+/**
+ * Binding names a recorded journal operation list saves.
+ *
+ * A contraction has to say what it costs, and a journal already names every
+ * binding it wrote. Only `save` creates a binding, so `delete` and `restore`
+ * contribute nothing to the list of names a dropped cell takes with it.
+ */
+export function bindingNamesOfOperations(operations) {
+  const names = new Set()
+  for (const operation of operations ?? []) {
+    if (operation.action === 'save' && typeof operation.name === 'string') names.add(operation.name)
+  }
+  return [...names]
+}
+
 function applyRecord(state, record, invalidCallSeqs) {
   const { call, code, result } = record
   if (invalidCallSeqs.has(call.seq)) return
@@ -107,13 +122,17 @@ function applyRecord(state, record, invalidCallSeqs) {
   if (journal.status === 'discarded') {
     if (journal.volatileReason !== undefined) {
       state.trusted = false
-      state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason })
+      const discardedBindings = bindingNamesOfOperations(journal.operations)
+      state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason,
+        ...(discardedBindings.length === 0 ? {} : { bindings: discardedBindings }) })
     }
     return
   }
   if (journal.status === 'volatile') {
     state.trusted = false
-    state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason ?? 'volatile cell' })
+    const volatileBindings = bindingNamesOfOperations(journal.operations)
+    state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason ?? 'volatile cell',
+      ...(volatileBindings.length === 0 ? {} : { bindings: volatileBindings }) })
     applyOperations(state, journal.operations, undefined)
     return
   }

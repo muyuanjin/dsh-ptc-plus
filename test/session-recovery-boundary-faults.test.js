@@ -37,7 +37,10 @@ test('historical recovery faults contract the frontier and preserve current comp
   fault = undefined
   assert.equal((await initial.run('initial', { program: 'return 42', bindings: [] })).value, 42)
   await initial.dispose()
-  for (const mode of ['planning', 'boundary', 'stalled', 'refresh']) {
+  // A replayed cell whose completion diverges no longer contracts (see the case
+  // below), so only the modes whose fault is an unreadable reader still produce a
+  // recovery boundary.
+  for (const mode of ['planning', 'refresh']) {
     fault = undefined
     const runtime = new SessionRuntime()
     t.after(() => runtime.dispose())
@@ -96,4 +99,37 @@ test('historical recovery faults contract the frontier and preserve current comp
     session: { events: [{ seq: -1, type: 'tool/call', data: { name: 'run_code', callId: 'current' } }] } },
   { program: 'return 42', bindings: [] })
   assert.equal(result.value, 42)
+})
+
+// A recorded cell that no longer reproduces its completion used to cost the whole
+// suffix: the replay threw, the frontier contracted, and every binding the log
+// still described disappeared. The replay's own bindings are real, so the
+// divergence is certified instead and the frontier stays where it was.
+test('a diverging completion keeps the frontier and reports an unverified result', async t => {
+  const { SessionRuntime } = await import('../internal/session-runtime.js')
+  const { sessionKernel, restartWorker } = await import('./runtime-observation.js')
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  await runtime.run('divergence', { program: 'return 0', bindings: [] })
+  const kernel = sessionKernel(runtime, 'divergence')
+  await restartWorker(runtime, 'divergence')
+  const journal = normalizeJournal({ version: 3, bindingMode: 'loose',
+    rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },
+    status: 'durable', calls: [], operations: [], confirms: [], diagnostics: [],
+    completion: { kind: 'return', hasValue: false } })
+  kernel.history = {
+    nodes: [{ callSeq: 0, code: 'throw Error("historical replay failed")', journal }],
+    head: 0,
+    checkpoints: new Map(),
+    volatileSuffix: [],
+    available: true,
+  }
+  const execution = await runtime.runTentative('divergence', { program: 'const kept = 7;return kept', bindings: [] })
+  runtime.finalize(execution.settlement, true)
+  const result = execution.result
+  assert.equal(result.error, undefined, result.error?.message)
+  assert.equal(result.value, 7)
+  assert.equal(execution.settlement.recoveryBoundaries, undefined)
+  assert.equal(result.logs.filter(log => log.includes('PTC-R003')).length, 1)
+  assert.equal(result.logs.filter(log => log.includes('PTC-R002')).length, 0)
 })

@@ -69,12 +69,48 @@ function surfaceGeneration(session, provenanceRequired = true) {
   }
 }
 
-function recoveryDiagnostic(count) {
+/**
+ * Wording of the contraction notice.
+ *
+ * A count of cells tells the model nothing it can act on; the binding names are
+ * what it must stop referencing. When no journal names them, the notice
+ * describes the contraction without pretending to know which bindings went away.
+ */
+export function recoveryDiagnosticMessage(bindings, count) {
+  const names = [...new Set(bindings ?? [])].filter(name => typeof name === 'string' && name !== '')
+  if (names.length === 0) {
+    return `Restored the durable head and skipped ${count ?? 1} unreconstructable historical cell(s); their source remains in the session log.`
+  }
+  return `Restored the durable head and dropped ${names.length} binding(s) (${names.join(', ')}) that no recorded value proves; their source remains in the session log.`
+}
+
+/**
+ * Notice for a replay whose completions diverged.
+ *
+ * The bindings exist because the replay produced them; what cannot be certified
+ * is the recorded completion payload. Saying so keeps the model from trusting a
+ * recorded result while leaving the live bindings in place.
+ */
+function unverifiedCompletionDiagnostic(count) {
+  return diagnostic({
+    code: 'PTC-R003',
+    severity: 'warning',
+    phase: 'recover',
+    message: `Replayed ${count} historical cell(s) whose completion differs from the record; their bindings are live and their recorded results stay unverified.`,
+    stateEffect: 'unchanged',
+    help: [
+      'continue from the restored bindings',
+      'do not rely on the recorded result values of the cells named here',
+    ],
+  })
+}
+
+function recoveryDiagnostic(bindings, count) {
   return diagnostic({
     code: 'PTC-R002',
     severity: 'warning',
     phase: 'recover',
-    message: `Restored the durable head and skipped ${count} unreconstructable historical cell(s); their source remains in the session log.`,
+    message: recoveryDiagnosticMessage(bindings, count),
     stateEffect: 'rolled-back',
     help: [
       'continue from the restored bindings',
@@ -82,6 +118,25 @@ function recoveryDiagnostic(count) {
     ],
   })
 }
+
+/** Every binding name the folded history no longer proves. */
+function droppedBindingNames(history) {
+  const names = []
+  for (const item of history?.volatileSuffix ?? []) {
+    for (const name of item.bindings ?? []) names.push(name)
+  }
+  return names
+}
+
+/**
+ * A replayed cell whose completion no longer matches its record.
+ *
+ * The bindings the replay produced are real; only the recorded completion
+ * payload cannot be certified. Contracting here used to drop every later
+ * binding the log still proves, so a divergence is recorded and the replay
+ * continues instead.
+ */
+class ReplayDivergence extends Error {}
 
 function resolvedRuntimeConfig(config) {
   return Object.freeze(resolveConfig(config))
@@ -164,9 +219,10 @@ class SessionKernel {
     this.replayed = false
     this.unmeasuredCells = 0
     this.liveCallSeqs = new Set()
+    this.unverifiedCompletions = []
     this.recoveryNotice = history.volatileSuffix.length === 0
       ? undefined
-      : recoveryDiagnostic(history.volatileSuffix.length)
+      : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
     this.recoveryNoticeShown = false
     this.active = undefined
     this.sequence = 0
@@ -388,11 +444,11 @@ class SessionKernel {
             const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
             if (boundary !== undefined) recoveryBoundaries.push(boundary)
             this.history = emptyHistory()
-            this.recoveryNotice = recoveryDiagnostic(1)
+            this.recoveryNotice = recoveryDiagnostic([], 1)
             this.initialRecoveryBoundary = undefined
           }
           if (this.history.volatileSuffix.length > 0) {
-            this.recoveryNotice = recoveryDiagnostic(this.history.volatileSuffix.length)
+            this.recoveryNotice = recoveryDiagnostic(droppedBindingNames(this.history), this.history.volatileSuffix.length)
           }
           this.initialRecoveryBoundary = recoveryBoundaryForHistory(this.history)
           if (this.initialRecoveryBoundary !== undefined) {
@@ -402,7 +458,7 @@ class SessionKernel {
         } else {
           this.history = emptyHistory()
           this.replayed = true
-          this.recoveryNotice = recoveryDiagnostic(1)
+          this.recoveryNotice = recoveryDiagnostic([], 1)
         }
       }
     }
@@ -414,7 +470,7 @@ class SessionKernel {
       // already contracted still has to reach the model in those cases.
       const leavingReplay = result => {
         if (skipped === 0) return result
-        const notice = recoveryDiagnostic(skipped)
+        const notice = recoveryDiagnostic([], skipped)
         if (request.journal !== undefined) request.journal.diagnostics.push(notice)
         return { ...result, logs: [...result.logs, renderDiagnostic(notice, request.program)] }
       }
@@ -513,7 +569,10 @@ class SessionKernel {
           this.durability = durabilityState()
         }
       }
-      if (skipped > 0) this.recoveryNotice = recoveryDiagnostic(skipped)
+      if (skipped > 0) this.recoveryNotice = recoveryDiagnostic([], skipped)
+      // A completion the replay could not certify is not a lost binding: the
+      // replay established them, and only the recorded payload stays unproved.
+      if (this.unverifiedCompletions.length > 0) this.recoveryNotice = unverifiedCompletionDiagnostic(this.unverifiedCompletions.length)
     }
     const leadingDiagnostics = this.recoveryNotice === undefined || this.recoveryNoticeShown
       ? [] : [this.recoveryNotice]
@@ -586,12 +645,12 @@ class SessionKernel {
           throw new Error(`cell replay infrastructure failed (${result.error.kind}): ${result.error.message}`)
         }
         if (completion.kind === 'return' && result.error !== undefined) {
-          throw new Error(`cell replay failed: ${result.error.message}`)
+          throw new ReplayDivergence(`recorded cell returned a value and the replay failed: ${result.error.message}`)
         }
         if (completion.kind === 'throw') {
           if (result.error === undefined) throw new Error('cell replay succeeded where the recorded cell failed')
           if (result.error.kind !== completion.error.kind || result.error.message !== completion.error.message) {
-            throw new Error('cell replay produced a different semantic failure')
+            throw new ReplayDivergence('cell replay produced a different semantic failure')
           }
         }
       } catch (error) {
@@ -599,6 +658,14 @@ class SessionKernel {
         // rethrown unchanged and never wrapped as a replay failure.
         if (error instanceof ReplayCancelled || error instanceof ReplayUnmeasured
           || error instanceof CellAdmissionBlocked) throw error
+        // The replay produced real bindings and a different completion. Contracting
+        // here dropped every later binding the log still proves, which is how a
+        // diverging completion cost the user the whole REPL; certify the divergence
+        // and keep replaying from the bindings the replay established.
+        if (error instanceof ReplayDivergence) {
+          this.unverifiedCompletions.push({ callSeq: node.callSeq, reason: error.message })
+          continue
+        }
         throw new ReplayFailure(node, error)
       }
     }

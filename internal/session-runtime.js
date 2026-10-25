@@ -19,6 +19,7 @@ import {
   visibleExecutableCallSeqs,
 } from './session-journal-recovery.js'
 import { sessionEvents } from './session-events.js'
+import { REPL_TOOL_NAMES } from './session-journal-schema.js'
 import { valueLimitsFromConfig } from './value-wire-schema.js'
 import { encodeValueAtBoundary, valueWiresEqual } from './value-wire.js'
 import { normalizeBindingDescriptors } from './binding-descriptors.js'
@@ -80,44 +81,87 @@ function surfaceGeneration(session, provenanceRequired = true) {
  * call's own bytes, not the whole message tree: digests stay cheap, and an
  * unchanged call keeps its digest across a re-render.
  */
+/**
+ * Reduce a visible call set to the seqs both sides of the recovery comparison can
+ * name: `run_code` and `edit_run_code` call records.
+ *
+ * `visibleExecutableCallSeqs` also carries the record a derived execution starts
+ * from, which can be a `tool/result` or a nested `tool/ptc-dispatch` rather than a
+ * `tool/call`. The kernel never tracks those as live calls, so keeping them in the
+ * comparison made a vanished non-call look like a rewritten history and reset the
+ * worker for nothing.
+ *
+ * @param {readonly {seq: number, type: string, data?: object}[]} events
+ * @param {Set<number>} visibleSeqs
+ * @returns {{seqs: Set<number>, sources: Map<number, string>}}
+ */
+export function comparableVisibleCalls(events, visibleSeqs) {
+  const calls = new Set()
+  const sources = new Map()
+  for (const event of events ?? []) {
+    if (!visibleSeqs.has(event?.seq) || event?.type !== 'tool/call') continue
+    if (typeof event.data?.name === 'string' && !REPL_TOOL_NAMES.has(event.data.name)) continue
+    calls.add(event.seq)
+    const source = typeof event.data?.arguments === 'string' ? event.data.arguments : ''
+    sources.set(event.seq, createHash('sha256').update(source).digest('hex'))
+  }
+  return { seqs: calls, sources }
+}
+
 function visibleCallSources(session) {
   const seqs = visibleExecutableCallSeqs(session)
   if (!(seqs instanceof Set)) return undefined
-  const sources = new Map()
   let events
   try {
     events = sessionEvents(session)
   } catch {
     return undefined
   }
-  for (const event of events ?? []) {
-    if (!seqs.has(event?.seq) || event?.type !== 'tool/call') continue
-    const source = typeof event.data?.arguments === 'string' ? event.data.arguments : ''
-    sources.set(event.seq, createHash('sha256').update(source).digest('hex'))
-  }
-  return { seqs, sources }
+  return comparableVisibleCalls(events, seqs)
 }
 
 /**
  * Whether a surface republish actually rewrote history.
  *
- * Only a removed call or a changed call source is a history change; a superset
- * of the previous call set (an append, or a re-render of the same history) keeps
- * every binding, so it must not reset the worker. An unreadable surface decides
- * nothing, as before.
+ * A surface republish keeps every binding; only a removed call or a changed call
+ * source is a history change. Two shapes remove calls, and they differ:
+ *
+ * - A windowed surface delivers a suffix of the same history: the host keeps the
+ *   newest calls and stops listing the oldest ones after a context rewrite, a
+ *   working-directory change or a compaction. The kernel still holds those
+ *   bindings and the newest call is unchanged, so the surface did not rewrite
+ *   what the model is working on. Rebuilding there loses bindings the edit never
+ *   touched, which is the reported failure.
+ * - A rewrite removes a call that is still inside the visible range, or drops the
+ *   newest call, or changes a source. The model-visible history really changed,
+ *   and the kernel must follow it.
+ *
+ * An unreadable surface decides nothing, as before.
  */
 export function surfaceRewroteHistory(previous, current) {
   if (previous === undefined || current === undefined) {
     // No comparable snapshot: keep the older, conservative rule.
     return undefined
   }
+  const missing = []
   for (const seq of previous.seqs) {
-    if (!current.seqs.has(seq)) return true
+    if (!current.seqs.has(seq)) {
+      missing.push(seq)
+      continue
+    }
     const before = previous.sources.get(seq)
     const after = current.sources.get(seq)
     if (before !== undefined && after !== undefined && before !== after) return true
   }
-  return false
+  if (missing.length === 0) return false
+  // The newest call must survive: losing it means the surface moved backwards.
+  const previousNewest = Math.max(...previous.seqs)
+  const currentNewest = Math.max(...current.seqs)
+  if (currentNewest < previousNewest) return true
+  // A removed call inside the visible range is a rewrite; only a prefix of
+  // dropped calls (a windowed suffix) is a trim.
+  const currentOldest = Math.min(...current.seqs)
+  return missing.some(seq => seq >= currentOldest)
 }
 
 /**

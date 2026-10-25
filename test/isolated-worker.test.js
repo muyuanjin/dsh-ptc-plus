@@ -208,6 +208,23 @@ test('adopts an on-demand utilization sample instead of a stale cache', async (t
   assert.deepEqual(worker.utilization, { idle: 12, active: 34 })
 })
 
+test('resolves a sample whose reply arrives after the deadline but before the deferred check', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  t.mock.module('node:child_process', { namedExports: { fork: () => current } })
+  current = new FakeChild()
+  const { IsolatedWorker } = await import('../internal/isolated-worker.js')
+  const worker = new IsolatedWorker({ helper: '/helper.js', entry: 'kernel-worker.js', workerData: {}, env: {} })
+
+  const sample = worker.sampleUtilization()
+  assert.deepEqual(current.sent.at(-1), { type: 'sample-utilization', id: 1 })
+  // The host loop stalled past the deadline: the deadline timer fires while the
+  // helper's answer already waits ahead of the poll-phase delivery.
+  t.mock.timers.tick(1000)
+  current.emit('message', { type: 'utilization-sample', id: 1, utilization: { idle: 7, active: 8 } })
+  assert.deepEqual(await sample, { idle: 7, active: 8 })
+  assert.equal(worker.utilizationRequests.size, 0)
+})
+
 test('rejects a sample that the helper does not answer before its deadline', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   t.mock.module('node:child_process', { namedExports: { fork: () => current } })

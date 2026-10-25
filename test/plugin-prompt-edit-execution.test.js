@@ -29,6 +29,7 @@ import {
   ptcAgent,
   runNestedEditCell,
 } from './plugin-fixture.js'
+import { boundedUniqueSuffix } from '../internal/validated-parse-repair.js'
 import { auditEditCalls, auditEditTransports, collectTrajectoryFacts } from '../scripts/acceptance-contract.mjs'
 
 test('continues from bindings after a partial failure without redispatching a native call', async (t) => {
@@ -339,8 +340,17 @@ for (const { label, rejectedCode, suffix, expected } of [
     `this cell was not executed; validated syntax repair: append ${JSON.stringify(suffix)} at the end of this cell`,
   ])
   const invocation = /tools\.edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
-  assert.notEqual(invocation, null)
-  const editArgs = JSON.parse(invocation[1])
+  // The help names the target cell instead of embeding the whole invocation:
+  // the model needs the delimiter and the edit target, not a 480-character JSON
+  // blob it has to copy verbatim before it can act.
+  assert.equal(invocation, null)
+  assert.match(diagnostic.help[1], new RegExp(`call_seq ${rejectedCallSeq}`))
+  assert.ok(diagnostic.help[1].length < 320, `help line should stay short: ${diagnostic.help[1].length}`)
+  const anchor = boundedUniqueSuffix(rejectedCode)
+  const editArgs = {
+    edits: [{ old_string: anchor, new_string: anchor + suffix }],
+    expected_target_call_seq: rejectedCallSeq,
+  }
   assert.equal(JSON.stringify(editArgs).includes(rejectedCode), false)
   assert.equal(editArgs.expected_target_call_seq, rejectedCallSeq)
   const edited = await runNestedEditCell(state, {
@@ -377,10 +387,12 @@ test('rejects a validated EOF repair after a newer matching cell becomes editabl
   const rejectedCallSeq = session.events.find(event => event.type === 'tool/call'
     && event.data?.callId === 'stale-parse').seq
   const diagnostic = rejected.meta.dshPtcPlus.diagnostics[0]
-  const invocation = /tools\.edit_run_code\((\{.*\})\)/.exec(diagnostic.help[1])
-  assert.notEqual(invocation, null)
-  const editArgs = JSON.parse(invocation[1])
-  assert.equal(editArgs.expected_target_call_seq, rejectedCallSeq)
+  assert.match(diagnostic.help[1], new RegExp(`call_seq ${rejectedCallSeq}`))
+  const anchor = boundedUniqueSuffix(rejectedCode)
+  const editArgs = {
+    edits: [{ old_string: anchor, new_string: anchor + ';' }],
+    expected_target_call_seq: rejectedCallSeq,
+  }
   const laterCode = 'const marker = "{"; return 7'
   await state.runDurable(
     session.id,

@@ -100,18 +100,47 @@ export function recoveryDiagnosticMessage(bindings, count) {
  * recorded instead, so the bindings are live while the recorded completions
  * were never re-derived.
  */
-function restoredFromRecordDiagnostic(count, bindings) {
-  const named = bindings.length === 0 ? '' : ` (${bindings.join(', ')})`
+export function restoredFromRecordDiagnostic(count, live, failed, continuation = false) {
+  // The cell count and the binding names describe different things: one cell can
+  // install several bindings, and an install can fail. Saying "restored N cells
+  // (a, b)" invites the model to read the names as the count and to trust a name
+  // that never made it into the worker, so the two facts stay separate and a
+  // failed name is never called live.
+  const livePart = live.length === 0
+    ? 'no binding was live'
+    : `${live.length} binding(s) live: ${live.join(', ')}`
+  const failedPart = failed.length === 0
+    ? ''
+    : `; ${failed.length} could not be installed and are NOT live: ${failed.join(', ')}`
   return diagnostic({
     code: 'PTC-R004',
     severity: 'warning',
     phase: 'recover',
-    message: `Restored ${count} cell(s) from recorded values${named}; their bindings are live and their completions were not replayed.`,
+    message: `Restored ${continuation ? 'another ' : ''}${count} cell(s) from recorded values; ${livePart}${failedPart}. The recorded completions were not replayed.`,
     stateEffect: 'unchanged',
     help: [
-      'continue from the restored bindings',
+      'continue from the bindings listed as live',
       'do not assume the recorded cells ran again; external effects they performed were not repeated',
     ],
+  })
+}
+
+/**
+ * Notice for a binding that was announced as live and then stopped existing.
+ *
+ * Reporting it when it happens keeps the model from reading a later
+ * `x is not defined` as its own mistake: the binding went away outside the
+ * cell that names it.
+ */
+export function vanishedBindingDiagnostic(names) {
+  const list = names.join(', ')
+  return diagnostic({
+    code: 'PTC-R006',
+    severity: 'warning',
+    phase: 'recover',
+    message: `${names.length} binding(s) reported live earlier are no longer available: ${list}. The REPL state lost them without a cell asking for it.`,
+    stateEffect: 'unchanged',
+    help: [`redeclare ${list} before using them again`],
   })
 }
 
@@ -295,6 +324,12 @@ class SessionKernel {
         ? undefined
         : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
     this.recoveryNoticeShown = false
+    // Bindings a recovery told the model were live, and the last help pair that
+    // explained a recovery. Both exist to keep one event from being reported
+    // twice and to notice a binding that stops existing afterwards.
+    this.announcedLive = new Set()
+    this.recoveryHelpSignature = undefined
+    this.recoveryEventCount = 0
     this.active = undefined
     this.sequence = 0
     this.tail = Promise.resolve()
@@ -640,31 +675,60 @@ class SessionKernel {
           this.durability = durabilityState()
         }
       }
-      if (skipped > 0) this.recoveryNotice = recoveryDiagnostic([], skipped)
-      // A completion the replay could not certify is not a lost binding: the
-      // replay established them, and only the recorded payload stays unproved.
-      if (this.unverifiedCompletions.length > 0) this.recoveryNotice = unverifiedCompletionDiagnostic(this.unverifiedCompletions.length)
-      // Cells installed from their recorded values never ran again, so their
-      // bindings are live while their completions stay unproved.
-      if (this.restoredFromRecord.length > 0) {
-        const names = [...new Set(this.restoredFromRecord.flatMap(item => item.bindings))]
-        this.recoveryNotice = restoredFromRecordDiagnostic(this.restoredFromRecord.length, names)
+      // One recovery event produces one notice. The four facts below describe the
+      // same event, so they are composed once instead of overwriting each other:
+      // an earlier overwrite dropped the restored-name list whenever a later fact
+      // arrived, and a repeat entry re-emitted the same sentence.
+      const restoredCount = this.restoredFromRecord.length
+      const allLive = [...new Set(this.restoredFromRecord.flatMap(item => item.bindings))]
+      // Report only what this recovery added. A later recovery that installs
+      // nothing new (same bindings, same count) would otherwise repeat a sentence
+      // the model already acted on.
+      const liveNames = allLive.filter(name => !this.announcedLive.has(name))
+      const failedNames = [...new Set(this.restoredFromRecord.flatMap(item => item.failed))]
+      const droppedNames = this.missingBindings === undefined ? [] : [...new Set(this.missingBindings)]
+      const endedNames = this.rewindEndedBindings === undefined ? [] : [...new Set(this.rewindEndedBindings)]
+      const alreadyReported = this.recoveryEventCount > 0
+      if (restoredCount > 0 && liveNames.length === 0 && failedNames.length === 0 && alreadyReported) {
+        this.restoredFromRecord = []
+      } else if (restoredCount > 0) {
+        this.recoveryEventCount += 1
+        this.recoveryNotice = restoredFromRecordDiagnostic(
+          restoredCount,
+          liveNames,
+          failedNames,
+          alreadyReported,
+        )
       }
-      // A binding the log proves but the replay never installed is a loss the
-      // model has to hear about by name, even when no cell was skipped: the
-      // restored suffix looks complete while anything older is simply absent.
-
-      if (this.missingBindings !== undefined && this.missingBindings.length > 0) {
-        const missing = [...new Set(this.missingBindings)]
-        this.recoveryNotice = recoveryDiagnostic(missing, missing.length)
+      if (droppedNames.length > 0) {
+        this.recoveryNotice = recoveryDiagnostic(droppedNames, droppedNames.length)
+      } else if (restoredCount === 0 && skipped > 0) {
+        this.recoveryNotice = recoveryDiagnostic([], skipped)
       }
       // A rewind that ended a binding is recorded, not a loss: report it only when
       // the replay installed nothing under that name anywhere (path, off-path or
       // catalog), so a correct value never carries a "dropped" notice.
-      if (this.rewindEndedBindings !== undefined && this.rewindEndedBindings.length > 0) {
-        const ended = [...new Set(this.rewindEndedBindings)]
-        this.recoveryNotice = rewindEndedDiagnostic(ended)
+      if (this.recoveryNotice === undefined && endedNames.length > 0) {
+        this.recoveryNotice = rewindEndedDiagnostic(endedNames)
       }
+      if (this.recoveryNotice === undefined && this.unverifiedCompletions.length > 0) {
+        this.recoveryNotice = unverifiedCompletionDiagnostic(this.unverifiedCompletions.length)
+      }
+      // A completion the replay could not certify is not a lost binding: the
+      // replay established them, and only the recorded payload stays unproved.
+      if (this.recoveryNotice !== undefined) {
+        // Remember what was promised as live, so a binding that disappears later
+        // is reported by name instead of surfacing as an unexplained ReferenceError.
+        for (const name of liveNames) this.announcedLive.add(name)
+        // The help pair explains the recovery once. Repeating it on every later
+        // recovery in the same session is noise the model cannot act on twice.
+        const signature = this.recoveryNotice.message
+        if (this.recoveryHelpSignature === signature) this.recoveryNotice = { ...this.recoveryNotice, help: [] }
+        else this.recoveryHelpSignature = signature
+      }
+      this.restoredFromRecord = []
+      this.missingBindings = undefined
+      this.rewindEndedBindings = undefined
     }
     const leadingDiagnostics = [
       ...(this.recoveryNotice === undefined || this.recoveryNoticeShown ? [] : [this.recoveryNotice]),
@@ -698,6 +762,14 @@ class SessionKernel {
         result.logs = [...result.logs, renderDiagnostic(hint, request.program)]
         if (request.journal !== undefined) request.journal.diagnostics.push(hint)
       }
+      // A binding announced as live by a recovery, now reported missing by the
+      // engine itself, went away outside this cell. Naming it here keeps the
+      // model from reading its own correct reference as a mistake it made.
+      const vanished = this.vanishedAnnouncedBindings(result.error, request.program)
+      if (vanished.length > 0) {
+        result.logs = [...result.logs, renderDiagnostic(vanished[0], request.program)]
+        if (request.journal !== undefined) request.journal.diagnostics.push(...vanished)
+      }
     }
     if (leadingDiagnostics.length > 0) {
       const rendered = leadingDiagnostics.map(item => renderDiagnostic(item, request.program))
@@ -705,6 +777,24 @@ class SessionKernel {
       else result.error = { ...result.error, message: [result.error.message, ...rendered].join('\n') }
     }
     return finishResult(result)
+  }
+
+  /**
+   * Bindings a recovery promised as live that the engine now reports missing.
+   *
+   * Each name is reported once: the set is drained when it is named, so a later
+   * cell repeating the same reference does not repeat the notice.
+   */
+  vanishedAnnouncedBindings(error, program) {
+    if (this.announcedLive.size === 0) return []
+    const message = String(error?.message ?? '')
+    const match = /(?:ReferenceError:\s*)?([A-Za-z_$][\w$]*) is not defined/.exec(message)
+    if (match === null) return []
+    const name = match[1]
+    if (!this.announcedLive.has(name)) return []
+    this.announcedLive.delete(name)
+    void program
+    return [vanishedBindingDiagnostic([name])]
   }
 
   async replayHistory(request, config) {

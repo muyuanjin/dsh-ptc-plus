@@ -677,10 +677,10 @@ test('restores a volatile cell from its recorded values after a cold restore', a
   // The cell reached an ambient source, so it cannot be replayed; the value it
   // produced was recorded, so the binding is installed instead of being dropped.
   const text = [
-    'warning[PTC-R004]: Restored 1 cell(s) from recorded values (shouldNeverExist); their bindings are live and their completions were not replayed.',
+    'warning[PTC-R004]: Restored 1 cell(s) from recorded values; 1 binding(s) live: shouldNeverExist. The recorded completions were not replayed.',
     'phase: recover',
     'state: unchanged',
-    'help: continue from the restored bindings',
+    'help: continue from the bindings listed as live',
     'help: do not assume the recorded cells ran again; external effects they performed were not repeated',
   ].join('\n')
   assert.deepEqual(observed.raw, { logs: [text], value: 'number' })
@@ -688,10 +688,10 @@ test('restores a volatile cell from its recorded values after a cold restore', a
     code: 'PTC-R004',
     severity: 'warning',
     phase: 'recover',
-    message: 'Restored 1 cell(s) from recorded values (shouldNeverExist); their bindings are live and their completions were not replayed.',
+    message: 'Restored 1 cell(s) from recorded values; 1 binding(s) live: shouldNeverExist. The recorded completions were not replayed.',
     stateEffect: 'unchanged',
     help: [
-      'continue from the restored bindings',
+      'continue from the bindings listed as live',
       'do not assume the recorded cells ran again; external effects they performed were not repeated',
     ],
   }])

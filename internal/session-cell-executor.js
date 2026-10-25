@@ -95,7 +95,7 @@ function parseDiagnostic(error, source, position, repair) {
         : ['this cell was not executed; correct the reported syntax and retry only this cell with run_code']
       : [
           `this cell was not executed; validated syntax repair: append ${JSON.stringify(repair.delimiter)} at the end of this cell`,
-          `when this correction matches your intent and tools.edit_run_code is available in the program SDK, use ${repair.invocation} inside a new run_code cell with its target guard; the accepted edit runs the complete corrected cell after that new cell finishes; validation proves syntax/preflight acceptance, not intended behavior; otherwise submit corrected source in run_code`,
+          `when this correction matches your intent, tools.edit_run_code can apply it to call_seq ${repair.targetCallSeq} (same anchor with ${JSON.stringify(repair.delimiter)} appended); the accepted edit reruns the corrected cell after this one, otherwise submit corrected source in run_code`,
         ],
   })
 }

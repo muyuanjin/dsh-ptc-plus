@@ -31,7 +31,7 @@ function startsInsideSurrogatePair(source, index) {
   return current >= 0xdc00 && current <= 0xdfff && previous >= 0xd800 && previous <= 0xdbff
 }
 
-function boundedUniqueSuffix(source) {
+export function boundedUniqueSuffix(source) {
   const first = Math.max(0, source.length - MAX_PARSE_REPAIR_ANCHOR_CODE_UNITS)
   for (let start = source.length - 1; start >= first; start -= 1) {
     if (startsInsideSurrogatePair(source, start)) continue
@@ -81,6 +81,11 @@ export function validatedEofClosureRepair({ source, position, prepare, targetCal
   const candidate = candidates[0]
   return Object.freeze({
     ...candidate,
+    // The diagnostic names the target cell instead of embedding the whole
+    // invocation: the JSON form is hundreds of characters the model has to copy
+    // before it can act, while the delimiter and the target are the two facts it
+    // needs.
+    targetCallSeq,
     invocation: renderInvocation(candidate.arguments),
   })
 }

@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict'
 import { mkdir, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+// Screenshots are diagnostic output; the old absolute G:\Temp paths broke CI.
+const screenshotDir = join(tmpdir(), 'dsh-ptc-plus-visual')
+await mkdir(screenshotDir, { recursive: true })
 import { build } from 'esbuild'
 import { browserConcurrency, runBrowserCases, selectBrowserCases } from './browser-case-runner.mjs'
 import { parseArgs } from 'node:util'
@@ -1028,7 +1034,7 @@ if (values.list) {
         if (width === 1920 && theme === 'light' && !native && locale === 'en') {
           await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
           await page.locator('.ptcPlusPromptTable').waitFor()
-          await page.screenshot({ path: 'G:/Temp/pane-native-view.png', fullPage: false })
+          await page.screenshot({ path: join(screenshotDir, 'pane-native-view.png'), fullPage: false })
           // The dialog is height-capped and scrolls, so an element screenshot would clip
           // every row past the fold. Expand it for the capture and restore afterwards.
           await page.evaluate(() => {
@@ -1046,7 +1052,7 @@ if (values.list) {
               if (style.overflowY === 'auto' || style.overflowY === 'scroll') expand(element)
             }
           })
-          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: 'G:/Temp/pane-native.png' })
+          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: join(screenshotDir, 'pane-native.png') })
           await page.evaluate(() => {
             for (const [element, style] of window.__paneRestore) element.setAttribute('style', style)
             delete window.__paneRestore
@@ -1066,7 +1072,7 @@ if (values.list) {
           await workbench.getByRole('tab', { name: labels['capabilities.tab.prompt'], exact: true }).click()
           await page.locator('.ptcPlusPromptText').waitFor()
           await page.locator('.ptcPlusPromptTable').scrollIntoViewIfNeeded()
-          await page.screenshot({ path: 'G:\\Temp\\pane-v6-view.png' })
+          await page.screenshot({ path: join(screenshotDir, 'pane-v6-view.png') })
           // The dialog scrolls, so expand it before the element capture or every card
           // past the fold is clipped out of the image.
           await page.evaluate(() => {
@@ -1087,7 +1093,7 @@ if (values.list) {
           // The pane lives inside a height-capped dialog, so the element itself clips
           // once the dialog is expanded; capture the dialog element instead, which then
           // contains the whole pane at its natural height.
-          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: 'G:\\Temp\\pane-v6-match.png' })
+          await page.locator('.ptcPlusSettingsDialogContent').screenshot({ path: join(screenshotDir, 'pane-v6-match.png') })
           await page.evaluate(() => {
             for (const [element, style] of window.__paneRestore) element.setAttribute('style', style)
             delete window.__paneRestore

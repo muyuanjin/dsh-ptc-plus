@@ -2738,6 +2738,12 @@ test('a v5 snapshot carrying capability context settings replays its own plan', 
     'the plan must be composed with the recorded budget')
   assert.equal(capabilityPlanTextFromMessage(state.message, agents[0].id), state.message.content[0].text,
     'a v5 snapshot with context settings must still replay')
+  // A new session changes nothing, so its plan may only describe the environment
+  // as it already is; announcing a prepared change would claim an effect that no
+  // user command requested.
+  const initialText = state.message.content[0].text
+  for (const claim of ['能力已准备', '将在下一次获准', 'Capabilities prepared', 'take effect at the next accepted'])
+    assert.equal(initialText.includes(claim), false, `the initial plan must not claim ${claim}`)
 })
 
 test('a v5 snapshot of a policy-managed plan replays its own plan', async t => {

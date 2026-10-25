@@ -123,8 +123,15 @@ function applyRecord(state, record, invalidCallSeqs) {
   // Every binding a journal names is a binding the session log proves. Recording
   // the names here lets recovery report a binding it could not install instead of
   // letting an unreplayed node take it silently.
+  // Only a volatile record proves a binding today: it cannot be replayed, so its
+  // recorded values are the entire evidence. A durable settlement records values too,
+  // for the restore path that installs nodes the replay does not reach, but its
+  // bindings are still proved by replaying it; counting them here would report a
+  // binding as dropped in every contraction whose replay is supposed to be complete.
   const recordNames = [
-    ...(result?.journal?.values ?? []).map(value => value.name),
+    ...(result?.journal?.status === 'volatile'
+      ? (result.journal.values ?? []).map(value => value.name)
+      : []),
     ...bindingNamesOfOperations(result?.journal?.operations),
   ]
   for (const name of recordNames) state.provenBindings.add(name)

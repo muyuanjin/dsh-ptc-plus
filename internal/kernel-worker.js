@@ -1321,20 +1321,28 @@ function logicalBindingName(target) {
   return match === null ? target : match[1]
 }
 
+/** Cap one recorded binding: 64 KiB of encoded wire. */
+const RECORDED_BINDING_WIRE_LIMIT = 64 * 1024
+/** Cap one settlement's recorded bindings: 1 MiB of encoded wire in total. */
+const RECORDED_CELL_WIRE_LIMIT = 1024 * 1024
+
 /**
- * Encode the values a volatile cell produced.
+ * Encode the values a settlement produced.
  *
- * A volatile cell is one whose completion cannot be replayed: it reached an
- * ambient or module source the durability analysis cannot reproduce. The
- * bindings it declared are still real values in this worker, so the record
- * keeps them as wire so recovery can restore them without running the cell
- * again. A value the codec cannot transfer is reported by name instead of
+ * Every settlement records what it declared, durable or volatile: a durable
+ * cell still needs its values when recovery cannot replay it (a rewind moved
+ * the head past it, or the log proves it but the path does not reach it), and a
+ * volatile cell cannot be replayed at all. The record keeps values as wire so
+ * recovery installs them without running the cell again. Two caps keep the
+ * journal bounded: 64 KiB per binding and 1 MiB per settlement. A value over a
+ * cap, or one the codec cannot transfer, is reported by name instead of
  * silently disappearing from the record.
  */
-function collectVolatileBindingValues(names, limits) {
+function collectBindingValues(names, limits) {
   const values = []
   const unrecorded = []
   const seen = new Set()
+  let recorded = 0
   for (const name of names) {
     const logical = logicalBindingName(name)
     if (seen.has(logical)) continue
@@ -1344,11 +1352,17 @@ function collectVolatileBindingValues(names, limits) {
       unrecorded.push(logical)
       continue
     }
+    seen.add(logical)
     try {
-      values.push({ name: logical, wire: encodeValue(local.value, limits) })
-      seen.add(logical)
+      const wire = encodeValue(local.value, limits)
+      const size = JSON.stringify(wire).length
+      if (size > RECORDED_BINDING_WIRE_LIMIT || recorded + size > RECORDED_CELL_WIRE_LIMIT) {
+        unrecorded.push(logical)
+        continue
+      }
+      recorded += size
+      values.push({ name: logical, wire })
     } catch {
-      seen.add(logical)
       unrecorded.push(logical)
     }
   }
@@ -1419,16 +1433,16 @@ async function sendCompletion(message, execution, userBindings, committedRedecla
   // after this point is background output and carries the attribution
   // diagnostic instead of being attached to a later cell.
   execution.open = false
-  const volatileBindingValues = execution.durability === 'volatile'
-    ? collectVolatileBindingValues(committedRedeclarations, execution.valueLimits)
-    : undefined
+  const bindingValues = collectBindingValues(committedRedeclarations, execution.valueLimits)
   channel.postMessage({
     type: 'done',
     id: message.id,
     outputFence: message.outputFence,
     logs: execution.logs,
     ...completionDurability(execution),
-    ...(volatileBindingValues === undefined ? {} : { volatileBindingValues }),
+    ...(bindingValues.values.length === 0 && bindingValues.unrecorded.length === 0
+      ? {}
+      : { bindingValues }),
     committedRedeclarations: setValuesArray(committedRedeclarations),
     ...(message.rootBindings === undefined ? {} : { rootBindingFacts: statefulRoots.facts() }),
     ...(perName ? { userBindingNames: normalizeUserBindingNames(mapArray(mapEntriesArray(userBindingSources), entry => ({

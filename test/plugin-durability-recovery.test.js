@@ -181,6 +181,19 @@ test('cold replay settles a recorded in-cell directory change for later relative
   assert.deepEqual(replayed.value, [{ cwd: directories[1] }, directories[1], directories[1]])
 })
 
+test('records the values a durable settlement produced so recovery can install them', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = { ...orderedSurfaceSession('records-durable-values') }
+  const settled = await state.runDurable(session.id, 'const counted = 41; const label = "x"; return counted', {}, { session })
+  assert.equal(settled.meta.dshPtcPlus.status, 'durable')
+  const values = settled.meta.dshPtcPlus.values
+  assert.ok(Array.isArray(values), 'a durable settlement records values')
+  const names = values.map(value => value.name).sort()
+  assert.deepEqual(names, ['counted', 'label'])
+  const counted = values.find(value => value.name === 'counted')
+  assert.equal(decodeValue(counted.wire), 41)
+})
 test('replaying a durable cell settles recorded host calls whose member is no longer supplied', async t => {
   const session = { ...orderedSurfaceSession('replay-missing-member'), header: { cwd: process.cwd() } }
   const state = fixture()

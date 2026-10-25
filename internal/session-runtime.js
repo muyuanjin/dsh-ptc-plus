@@ -891,7 +891,7 @@ class SessionKernel {
         const status = active.durability.status
         this.completeJournal(
           journal, status, result, active.durability.reason, active.diagnostics, active.completion,
-          active.volatileBindingValues,
+          active.bindingValues,
         )
         this.tentatives.set(journal, {
           callSeq: request.callSeq,

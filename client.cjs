@@ -2459,7 +2459,7 @@ var DEFAULT_EXPORT_BINDINGS = /* @__PURE__ */ new Set([
 ]);
 var CALL_SUCCESS_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "argsDigest", "argsBytes", "ok", "value", "settle"]);
 var CALL_ERROR_FIELDS = /* @__PURE__ */ new Set(["global", "member", "args", "argsDigest", "argsBytes", "ok", "error", "settle"]);
-var OPERATION_FIELDS = /* @__PURE__ */ new Set(["action", "name"]);
+var OPERATION_FIELDS = /* @__PURE__ */ new Set(["action", "name", "kind"]);
 var RETURN_FIELDS = /* @__PURE__ */ new Set(["kind", "hasValue", "value"]);
 var THROW_FIELDS = /* @__PURE__ */ new Set(["kind", "error"]);
 var ERROR_FIELDS = /* @__PURE__ */ new Set(["kind", "message"]);

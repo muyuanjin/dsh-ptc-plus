@@ -9175,6 +9175,7 @@ function createCapabilityCommandCard(React32) {
   const h = React32.createElement;
   return function CapabilityCommandCard({ node, t: t2 }) {
     const [showSource, setShowSource] = React32.useState(false);
+    if (typeof node.args !== "string") return null;
     const command2 = `/${node.name ?? "capabilities"}${node.args ? ` ${String(node.args).trim()}` : ""}`;
     const text = node.outcome?.text;
     const receipt = readCapabilityCommandReceipt(text);

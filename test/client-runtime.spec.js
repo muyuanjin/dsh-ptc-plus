@@ -1706,6 +1706,32 @@ test.each(['recorded', 'pending', 'unavailable', 'usage', 'saved-only', 'paused'
   expect(commandNode.outcome.text).toBe(historicalText)
 })
 
+test('a capability environment delivered without a submitted command renders no chat notice', async () => {
+  // What a new session publishes is a model-visible runtime context. A node that
+  // carries no submitted input is not a user command, so it must not announce that
+  // a change is prepared.
+  const commandNode = { commandId: 'environment', name: 'capabilities', outcome: {
+    kind: 'success', text: capabilityCommandReceipt('pending', 'fresh-session') } }
+  const { runtime } = await fixture({ bindings: false, commandNode })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusCapabilityCommandNotice')).toBeNull()
+  expect(view.container.querySelector('.ptcPlusCapabilityReceipt')).toBeNull()
+  expect(document.body.textContent).not.toContain('Capabilities prepared')
+  expect(document.body.textContent).not.toContain('能力已准备')
+})
+
+test('a submitted capability command still renders exactly one pending notice', async () => {
+  const commandNode = { commandId: 'submitted', name: 'capabilities', args: 'set session tools.probe availability full',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('pending', 'fresh-session') } }
+  const { runtime } = await fixture({ bindings: false, commandNode })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  const notices = view.container.querySelectorAll('.ptcPlusCapabilityCommandNotice')
+  expect(notices).toHaveLength(1)
+  expect(notices[0].textContent).toBe(SETTINGS_COPY.en['capabilities.card.pending'])
+})
+
 test.each(['catalog', 'malformed', 'invalid-name'])('capability command %s result stays compact and retains the exact historical source', async kind => {
   const entries = Array.from({ length: 80 }, (_, index) => ({ id: `tools.probe${index}`, name: `probe${index}`,
     description: 'A recorded capability', saved: 'automatic', temporary: 'inherit', effective: 'on-demand' }))

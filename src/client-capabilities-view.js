@@ -52,6 +52,11 @@ export function createCapabilityCommandCard(React) {
   const h = React.createElement
   return function CapabilityCommandCard({ node, t }) {
     const [showSource, setShowSource] = React.useState(false)
+    // A capability notice is the outcome of a `/capabilities` command the user
+    // submitted. What a new session publishes is a model-visible runtime context,
+    // not chat, so a node without that submitted input is not a user command and
+    // renders no notice: a fresh session has no change to announce.
+    if (typeof node.args !== 'string') return null
     const command = `/${node.name ?? 'capabilities'}${node.args ? ` ${String(node.args).trim()}` : ''}`
     const text = node.outcome?.text
     const receipt = readCapabilityCommandReceipt(text)

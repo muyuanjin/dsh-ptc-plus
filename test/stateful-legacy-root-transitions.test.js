@@ -4,6 +4,7 @@ import { SessionRuntime } from '../internal/session-runtime.js'
 import { prepareProgram } from '../internal/cell-analysis.js'
 import { BindingCatalog } from '../internal/session-state.js'
 import { JOURNAL_KEY } from '../internal/session-journal.js'
+import { restartWorker } from './runtime-observation.js'
 import {
   appendRunCodeCall,
   appendRunCodeEvents,
@@ -236,7 +237,7 @@ test('mixed logical and legacy journals replay their recorded policies and share
       { meta: { [JOURNAL_KEY]: execution.settlement.journal } })
     assert.equal(appended.callSeq, callSeq)
   }
-  await runtime.disposeSession(session.id)
+  await restartWorker(runtime, session.id)
   runtime.reconfigure({ bindingUpdates: 'protected', maxWallMs: 10_000 })
   const replayCallSeq = Math.max(...session.events.map(event => event.seq)) + 2
   const replayed = await runtime.runTentative({ id: session.id, session, persistedCallSeq: replayCallSeq },

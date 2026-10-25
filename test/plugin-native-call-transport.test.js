@@ -670,7 +670,9 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   assert.equal(checkpoint.isError, false)
   assert.equal(checkpoint.meta.revision, 2)
   assert.deepEqual(normalizeJournal(checkpoint.meta.dshPtcPlus).operations, [
-    { action: 'save', name: 'confirmed' },
+    // `repl.state({action:'save'})` names a checkpoint, and the operation says
+    // so: only `kind: 'binding'` proves a binding.
+    { action: 'save', name: 'confirmed', kind: 'checkpoint' },
   ])
 
   const generated = await executeRunCode('generated-description', {

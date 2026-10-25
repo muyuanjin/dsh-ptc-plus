@@ -723,7 +723,12 @@ test('over-budget recorded replies contract recovery and still execute the curre
   assert.equal(recovered.isError, false)
   assert.equal(recovered.value, 42)
   assert.equal(calls, 1)
-  assert.equal(recovered.meta.dshPtcPlusRecoveryBoundaries.length, 1)
+  // A recorded reply over this reader's budget is still a recorded value: the
+  // settlement carries its wire, so recovery installs it without replaying the
+  // cell and without contracting the frontier. The boundary that used to be
+  // recorded here belonged to the contract where only a replay could install a
+  // binding.
+  assert.equal(recovered.meta.dshPtcPlusRecoveryBoundaries, undefined)
   assert.equal(normalizeJournal(recovered.meta.dshPtcPlus).status, 'durable')
 })
 

@@ -1324,6 +1324,10 @@ function logicalBindingName(target) {
 /** Cap one recorded binding: 64 KiB of encoded wire. */
 const RECORDED_BINDING_WIRE_LIMIT = 64 * 1024
 /** Cap one settlement's recorded bindings: 1 MiB of encoded wire in total. */
+/** Cap the graph a recording pass may walk before the value becomes unrecorded. */
+const RECORDED_VALUE_NODES = 2048
+const RECORDED_VALUE_EDGES = 4096
+
 const RECORDED_CELL_WIRE_LIMIT = 1024 * 1024
 
 /**
@@ -1338,7 +1342,25 @@ const RECORDED_CELL_WIRE_LIMIT = 1024 * 1024
  * cap, or one the codec cannot transfer, is reported by name instead of
  * silently disappearing from the record.
  */
-function collectBindingValues(names, limits) {
+/**
+ * Whether recording one binding can be attempted without walking an unbounded
+ * value. The codec enumerates the value's own keys before it can apply any
+ * budget, and enumerating a graph with millions of keys exhausts a worker heap
+ * before a cap could reject it. So only shapes that are cheap to size are
+ * recorded: primitives, and arrays whose length is already known. A plain
+ * object, function or class instance is reported by name as unrecorded — its
+ * binding still exists in the journal's operations, but its value is not
+ * captured.
+ */
+function recordingAffordable(value) {
+  if (value === null) return true
+  const kind = typeof value
+  if (kind === 'number' || kind === 'string' || kind === 'boolean' || kind === 'bigint' || kind === 'undefined') return true
+  if (Array.isArray(value)) return value.length <= RECORDED_VALUE_NODES
+  return false
+}
+
+function collectBindingValues(names, limits = {}) {
   const values = []
   const unrecorded = []
   const seen = new Set()
@@ -1354,7 +1376,22 @@ function collectBindingValues(names, limits) {
     }
     seen.add(logical)
     try {
-      const wire = encodeValue(local.value, limits)
+      // A recording pass must stay cheap. The codec starts by enumerating the
+      // value's own keys, so a huge declaration (millions of keys) would exhaust
+      // the worker heap before any budget check could reject it. Walk the value
+      // cheaply first — array length, or a `for…in` that stops after the cap
+      // without materializing keys — and record the name as unrecorded instead.
+      if (!recordingAffordable(local.value)) {
+        unrecorded.push(logical)
+        continue
+      }
+      const wire = encodeValue(local.value, {
+        ...limits,
+        maxNodes: Math.min(limits.maxNodes ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
+        maxEdges: Math.min(limits.maxEdges ?? RECORDED_VALUE_EDGES, RECORDED_VALUE_EDGES),
+        maxArrayLength: Math.min(limits.maxArrayLength ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
+        maxStringBytes: Math.min(limits.maxStringBytes ?? RECORDED_BINDING_WIRE_LIMIT, RECORDED_BINDING_WIRE_LIMIT),
+      })
       const size = JSON.stringify(wire).length
       if (size > RECORDED_BINDING_WIRE_LIMIT || recorded + size > RECORDED_CELL_WIRE_LIMIT) {
         unrecorded.push(logical)

@@ -325,7 +325,10 @@ export const value = 1
     { observe: async () => { dispatches += 1; return 'unexpected' } },
     { session },
   )
-  assert.deepEqual(continued.value, ['undefined', 2])
+  // The volatile cell recorded the value it created, so recovery installs it
+  // instead of re-running the cell: the binding is present and the host call in
+  // the initializer never happens again.
+  assert.deepEqual(continued.value, ['number', 2])
   assert.equal(dispatches, 1)
 })
 

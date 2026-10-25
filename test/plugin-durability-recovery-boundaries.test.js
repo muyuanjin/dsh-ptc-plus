@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { Config } from '../index.js'
-import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { JOURNAL_KEY, RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
 import {
@@ -1775,4 +1775,13 @@ void await repl.state({ action: 'restore', name: 'before-ended' })
   const read = await executeRecordedFixture(recovered, session, events, 'after-rewind', 'return typeof abandoned')
   assert.equal(read.result.error, undefined, read.result.error?.message)
   assert.equal(read.result.value, 'undefined')
+  // The name reaches the model: a rewind is a recorded deletion, so the notice
+  // says which binding it ended instead of leaving the absence unexplained.
+  const notices = (read.result.logs ?? []).concat(
+    (read.result.meta?.[JOURNAL_KEY]?.diagnostics ?? []).map(item => item.message),
+  )
+  const diagnostics = read.result.meta?.[JOURNAL_KEY]?.diagnostics ?? []
+  const ended = diagnostics.find(item => item.code === 'PTC-R005')
+  assert.notEqual(ended, undefined, 'the rewind must name the binding it ended')
+  assert.match(ended.message, /\(abandoned\)/u)
 })

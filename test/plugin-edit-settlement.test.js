@@ -148,12 +148,18 @@ test('background roots after a derived edit read their own official Session obse
     event.type === 'tool/call' && event.data.callId === 'derived-background-continued'
   )).seq)
   await state.emit('session/disposed', session)
-  const recovered = await state.runDurable(session.id, 'return value', {
+  // A disposed identity starts empty by contract: the next cell sees no earlier
+  // binding, reports how many cells the disposed environment held, and never
+  // redispatches the editor.
+  const recovered = await state.runDurable(session.id, 'return typeof value', {
     edit_run_code() { assert.fail('cold recovery redispatched the editor') },
   }, { session, callId: 'derived-background-recovered' })
   assert.equal(recovered.isError, false, JSON.stringify(recovered))
-  assert.equal(recovered.value, 3)
-  assert.equal(recovered.meta[JOURNAL_KEY].diagnostics.some(item => item.code === 'PTC-R002'), false)
+  assert.equal(recovered.value, 'undefined')
+  const notices = (recovered.logs ?? []).concat(
+    (recovered.meta?.[JOURNAL_KEY]?.diagnostics ?? []).map(item => item.message),
+  )
+  assert.equal(notices.some(text => /Restored the durable head and skipped \d+ unreconstructable historical cell/u.test(text)), true)
 })
 
 test('production edit observation cannot execute after its submission is disposed', async t => {

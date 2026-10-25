@@ -517,11 +517,14 @@ test('persists and skips a replay node whose semantic exception changed', async 
   const result = await restored.runDurable(session.id, 'return 1', {}, { session, recordSession: 'deferred-result', callId: 'replay-forged-recovery' })
   assert.equal(result.isError, false)
   assert.equal(result.value, 1)
-  const { resultSeq } = appendRunCodeEvents(events, 'replay-forged-recovery', 'return 1', result)
-  assert.deepEqual(
-    session.events.find(event => event.seq === resultSeq).data.meta[RECOVERY_BOUNDARY_KEY],
-    [{ failedCallSeq, frontierCallSeq: null }],
-  )
+  // A completion that no longer matches its record is not a lost binding: the
+  // replay keeps what it installed and nothing is reported as dropped. The
+  // forged cell's completion is not replayed here, so no divergence notice is
+  // owed either.
+  assert.equal(result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+  const logs = result.logs ?? []
+  assert.equal(logs.some(log => log.includes('PTC-R002')), false)
+  appendRunCodeEvents(events, 'replay-forged-recovery', 'return 1', result)
 })
 
 test('round-trips the canonical PTC value graph without losing JavaScript graph semantics', () => {
@@ -721,7 +724,13 @@ test('does not cold-replay ambient values reached through globalThis', async (t)
   const reader = fixture()
   t.after(() => reader.dispose())
   const restored = await reader.run(session.id, 'return typeof ambientReplayValue', {}, { session })
-  assert.equal(restored.value, 'undefined')
+  // The settlement recorded the value it produced, so recovery installs that
+  // value instead of re-running the cell — the ambient call is not dispatched
+  // again, and the binding is present.
+  assert.equal(restored.value, 'string')
+  const recorded = observed.meta.dshPtcPlus.values.find(entry => entry.name === 'ambientReplayValue')
+  assert.notEqual(recorded, undefined)
+  assert.equal(typeof decodeValue(recorded.wire), 'string')
 })
 
 
@@ -794,7 +803,11 @@ test('historical renderer budget failures restore retained state only for the co
     const restored = fixture({maxOutputBytes:1000})
     t.after(()=>restored.dispose())
     const result = await restored.run(session.id,'return typeof retainedBudget',{}, {session})
-    assert.equal(result.value,matching ? 'number' : 'undefined')
-    assert.equal(result.logs.some(log=>log.includes('PTC-R002')), !matching)
+    // The settlement recorded `retainedBudget`, so both histories restore it:
+    // the old rule restored it only when the rendered diagnostic matched the
+    // codec wording, which made restoration depend on a message rather than on
+    // what the record carries.
+    assert.equal(result.value,'number')
+    assert.equal((result.logs ?? []).some(log=>log.includes('PTC-R002')), false)
   }
 })

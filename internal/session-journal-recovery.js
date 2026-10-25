@@ -130,7 +130,29 @@ function applyRecord(state, record, invalidCallSeqs) {
   }
   if (journal.status === 'volatile') {
     state.trusted = false
-    const volatileBindings = bindingNamesOfOperations(journal.operations)
+    // A volatile settlement drops its `save` operations, so the names it created
+    // survive only as the bindings the record could not transfer.
+    const volatileBindings = [...new Set([...bindingNamesOfOperations(journal.operations),
+      ...(journal.unrecordedBindings ?? [])])]
+    // A volatile cell that recorded its values keeps its place in the durable
+    // frontier: recovery installs those values instead of replaying the cell, so
+    // the completion is unverified while the bindings survive. A volatile cell
+    // whose values the codec could not transfer has nothing to install and is
+    // reported as a contraction instead of vanishing silently.
+    if (journal.values !== undefined && journal.values.length > 0) {
+      const node = Object.freeze({
+        code,
+        journal,
+        callSeq: call.seq,
+        parent: state.head,
+        restoredFromRecord: true,
+        ...(result.userBindings === undefined ? {} : { userBindings: result.userBindings }),
+      })
+      const index = state.nodes.push(node) - 1
+      state.head = index
+      applyOperations(state, journal.operations, index)
+      return
+    }
     state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason ?? 'volatile cell',
       ...(volatileBindings.length === 0 ? {} : { bindings: volatileBindings }) })
     applyOperations(state, journal.operations, undefined)

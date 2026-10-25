@@ -969,7 +969,13 @@ async function activatePerNameUserBindings(snapshot, shadowedNames, cwd, reusePo
     let evaluated
     const activation = { id: entry.id, called: false, failed: false }
     try {
-      if (entry.durability === 'volatile') markVolatile(`user binding ${jsonStringify(entry.id)}: ${entry.volatileReason ?? 'non-replayable source'}`)
+      if (entry.durability === 'volatile') {
+        // Name the binding and its first cause instead of the whole reason list:
+        // the model reads this to decide what it can no longer redo.
+        const reasons = String(entry.volatileReason ?? 'non-replayable source').split(', ')
+        const more = reasons.length > 1 ? ` (+${reasons.length - 1} more)` : ''
+        markVolatile(`user binding ${jsonStringify(entry.id)} depends on ${reasons[0]}${more}`)
+      }
       evaluated = await userBindingActivationScope.run(activation, () => evaluateUserBinding(entry, cwd, snapshot.transform))
       const namespace = evaluated.namespace
       for (let symbolIndex = 0; symbolIndex < entry.symbols.length; symbolIndex += 1) {
@@ -1303,6 +1309,19 @@ function observeBindings(names) {
 }
 
 /**
+ * The logical binding a committed root target names.
+ *
+ * A root target is `root:<sourceStart>:<name>` with an optional position suffix
+ * the compiler appends for a repeated name. Only the logical name exists on the
+ * recovery side, and it is the name the model reads, so the record keeps that
+ * instead of the compiler's internal target.
+ */
+function logicalBindingName(target) {
+  const match = /^root:\d+:([^:]+)/u.exec(target)
+  return match === null ? target : match[1]
+}
+
+/**
  * Encode the values a volatile cell produced.
  *
  * A volatile cell is one whose completion cannot be replayed: it reached an
@@ -1315,16 +1334,22 @@ function observeBindings(names) {
 function collectVolatileBindingValues(names, limits) {
   const values = []
   const unrecorded = []
+  const seen = new Set()
   for (const name of names) {
-    const local = statefulRoots.localValue(name)
+    const logical = logicalBindingName(name)
+    if (seen.has(logical)) continue
+    const local = statefulRoots.localValue(name) ?? statefulRoots.localValue(logical)
     if (local === undefined) {
-      unrecorded.push(name)
+      seen.add(logical)
+      unrecorded.push(logical)
       continue
     }
     try {
-      values.push({ name, wire: encodeValue(local.value, { limits }) })
+      values.push({ name: logical, wire: encodeValue(local.value, limits) })
+      seen.add(logical)
     } catch {
-      unrecorded.push(name)
+      seen.add(logical)
+      unrecorded.push(logical)
     }
   }
   return { values, unrecorded }

@@ -511,6 +511,22 @@ export class SessionCellExecutor {
       return result
     }
 
+    // A recorded volatile cell is restored, not replayed: the values it produced
+    // are installed and its declarations enter the binding catalog from the same
+    // source analysis a live cell used, so later cells compile against them.
+    if (request.restoreValues !== undefined) {
+      try {
+        await kernel.prepareWorker()
+        await kernel.ensureWorker(config.maxOldGenerationSizeMb)
+      } catch (error) {
+        if (error instanceof CellAdmissionBlocked) throw error
+        return earlyResult('worker-exit', messageOf(error))
+      }
+      const outcome = await this.restoreBindings(request.restoreValues, config)
+      kernel.bindingCatalog = priorBindingCatalog.advance(prepared, request.program)
+      return { logs: [], restored: outcome.restored, failed: outcome.failed }
+    }
+
     let worker
     try {
       await kernel.prepareWorker()

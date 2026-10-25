@@ -646,7 +646,7 @@ return 42
   assert.match(alias.error.message, /forbidden because it exposes kernel control/)
 })
 
-test('does not replay a volatile cell after a cold restore', async (t) => {
+test('restores a volatile cell from its recorded values after a cold restore', async (t) => {
   const events = []
   const session = orderedSurfaceSession('session-rejected', events)
   const first = fixture()
@@ -661,23 +661,25 @@ test('does not replay a volatile cell after a cold restore', async (t) => {
   const restored = fixture()
   t.after(() => restored.dispose())
   const observed = await restored.executeRun('session-rejected', 'return typeof shouldNeverExist', {}, { session })
+  // The cell reached an ambient source, so it cannot be replayed; the value it
+  // produced was recorded, so the binding is installed instead of being dropped.
   const text = [
-    'warning[PTC-R002]: Restored the durable head and skipped 1 unreconstructable historical cell(s); their source remains in the session log.',
+    'warning[PTC-R004]: Restored 1 cell(s) from recorded values (shouldNeverExist); their bindings are live and their completions were not replayed.',
     'phase: recover',
-    'state: rolled-back',
+    'state: unchanged',
     'help: continue from the restored bindings',
-    'help: do not reference values created only in the skipped suffix',
+    'help: do not assume the recorded cells ran again; external effects they performed were not repeated',
   ].join('\n')
-  assert.deepEqual(observed.raw, { logs: [text], value: 'undefined' })
+  assert.deepEqual(observed.raw, { logs: [text], value: 'number' })
   assert.deepEqual(observed.result.meta.dshPtcPlus.diagnostics, [{
-    code: 'PTC-R002',
+    code: 'PTC-R004',
     severity: 'warning',
     phase: 'recover',
-    message: 'Restored the durable head and skipped 1 unreconstructable historical cell(s); their source remains in the session log.',
-    stateEffect: 'rolled-back',
+    message: 'Restored 1 cell(s) from recorded values (shouldNeverExist); their bindings are live and their completions were not replayed.',
+    stateEffect: 'unchanged',
     help: [
       'continue from the restored bindings',
-      'do not reference values created only in the skipped suffix',
+      'do not assume the recorded cells ran again; external effects they performed were not repeated',
     ],
   }])
 })
@@ -873,10 +875,12 @@ return asyncValue
   const restored = fixture()
   t.after(() => restored.dispose())
   const result = await restored.run(session.id, 'return asyncValue', {}, { session })
-  assert.equal(result.value, undefined)
-  assert.match(result.error.message, /unreconstructable historical cell/)
-  assert.match(result.error.message, /asyncValue is not defined/)
-  assert.deepEqual(result.logs, [])
+  // The setup cell recorded the number it ended with, so recovery installs that
+  // value: the callback is not re-run, and the deadline it would have imposed on
+  // a replay never exists.
+  assert.equal(result.value, 0)
+  assert.match(result.logs.join('\n'), /PTC-R004/u)
+  assert.match(result.logs.join('\n'), /asyncValue/u)
 })
 
 test('keeps result and error conversion inside a statically classified execution', async (t) => {

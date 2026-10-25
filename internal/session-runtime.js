@@ -91,6 +91,29 @@ export function recoveryDiagnosticMessage(bindings, count) {
  * is the recorded completion payload. Saying so keeps the model from trusting a
  * recorded result while leaving the live bindings in place.
  */
+/**
+ * Notice for cells restored from their recorded values.
+ *
+ * A volatile cell cannot be replayed: running it again would redispatch the
+ * ambient source that made it volatile. Recovery installs the values it
+ * recorded instead, so the bindings are live while the recorded completions
+ * were never re-derived.
+ */
+function restoredFromRecordDiagnostic(count, bindings) {
+  const named = bindings.length === 0 ? '' : ` (${bindings.join(', ')})`
+  return diagnostic({
+    code: 'PTC-R004',
+    severity: 'warning',
+    phase: 'recover',
+    message: `Restored ${count} cell(s) from recorded values${named}; their bindings are live and their completions were not replayed.`,
+    stateEffect: 'unchanged',
+    help: [
+      'continue from the restored bindings',
+      'do not assume the recorded cells ran again; external effects they performed were not repeated',
+    ],
+  })
+}
+
 function unverifiedCompletionDiagnostic(count) {
   return diagnostic({
     code: 'PTC-R003',
@@ -220,6 +243,7 @@ class SessionKernel {
     this.unmeasuredCells = 0
     this.liveCallSeqs = new Set()
     this.unverifiedCompletions = []
+    this.restoredFromRecord = []
     this.recoveryNotice = history.volatileSuffix.length === 0
       ? undefined
       : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
@@ -573,6 +597,12 @@ class SessionKernel {
       // A completion the replay could not certify is not a lost binding: the
       // replay established them, and only the recorded payload stays unproved.
       if (this.unverifiedCompletions.length > 0) this.recoveryNotice = unverifiedCompletionDiagnostic(this.unverifiedCompletions.length)
+      // Cells installed from their recorded values never ran again, so their
+      // bindings are live while their completions stay unproved.
+      if (this.restoredFromRecord.length > 0) {
+        const names = [...new Set(this.restoredFromRecord.flatMap(item => item.bindings))]
+        this.recoveryNotice = restoredFromRecordDiagnostic(this.restoredFromRecord.length, names)
+      }
     }
     const leadingDiagnostics = this.recoveryNotice === undefined || this.recoveryNoticeShown
       ? [] : [this.recoveryNotice]
@@ -623,6 +653,29 @@ class SessionKernel {
       const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
       const bindingDescriptors = bindings === request.bindings
         ? request.bindingDescriptors : normalizeBindingDescriptors(bindings)
+      // A cell the journal recorded as volatile keeps the values it produced.
+      // Installing them is the only replay that does not redispatch the ambient
+      // source that made the cell volatile, so its completion stays unverified
+      // while its bindings stay live.
+      if (node.restoredFromRecord === true) {
+        const restored = await this.cellExecutor.executeCell(
+          {
+            ...request,
+            bindings: bindingDescriptors.namespaces,
+            bindingDescriptors,
+            program: node.code,
+            journal: undefined,
+            restoreValues: node.journal.values,
+            ...(node.userBindings === undefined ? { userBindings: undefined } : { userBindings: node.userBindings }),
+          },
+          node.journal,
+          config,
+        )
+        if (restored.error !== undefined) throw new ReplayFailure(node, new Error(restored.error.message))
+        this.restoredFromRecord.push({ callSeq: node.callSeq,
+          bindings: restored.restored ?? [], failed: restored.failed ?? [] })
+        continue
+      }
       try {
         const result = await this.cellExecutor.executeCell(
           {

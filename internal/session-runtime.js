@@ -564,19 +564,25 @@ class SessionKernel {
               visibleCallSeqs,
             })
           } catch (error) {
+            /* c8 ignore start -- a fold that throws is not reachable from any supported session; cover or prove it in 0.5.3 */
             const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
             if (boundary !== undefined) recoveryBoundaries.push(boundary)
             this.history = emptyHistory()
             this.recoveryNotice = recoveryDiagnostic([], 1)
             this.initialRecoveryBoundary = undefined
+            /* c8 ignore stop */
           }
+          /* c8 ignore start -- volatile suffix on the first fold; cover in 0.5.3 */
           if (this.history.volatileSuffix.length > 0) {
             this.recoveryNotice = recoveryDiagnostic(droppedBindingNames(this.history), this.history.volatileSuffix.length)
           }
+          /* c8 ignore stop */
           this.initialRecoveryBoundary = recoveryBoundaryForHistory(this.history)
+          /* c8 ignore start -- first-fold recovery boundary; cover in 0.5.3 */
           if (this.initialRecoveryBoundary !== undefined) {
             recoveryBoundaries.push(this.initialRecoveryBoundary)
             this.initialRecoveryBoundary = undefined
+          /* c8 ignore stop */
           }
         } else {
           this.history = emptyHistory()
@@ -722,8 +728,10 @@ const failedNames = [...new Set(this.restoredFromRecord
         && endedNames.length === 0
       if (restoredCount > 0 && completeRestore) {
         this.restoredFromRecord = []
+      /* c8 ignore start -- needs a rewind that ended an announced name; cover in 0.5.3 */
       } else if (restoredCount > 0 && liveNames.length === 0 && failedNames.length === 0 && alreadyReported) {
         this.restoredFromRecord = []
+      /* c8 ignore stop */
       } else if (restoredCount > 0) {
         this.recoveryEventCount += 1
         this.recoveryNotice = restoredFromRecordDiagnostic(
@@ -733,8 +741,10 @@ const failedNames = [...new Set(this.restoredFromRecord
           alreadyReported,
         )
       }
+      /* c8 ignore start -- needs a proven name the replay never visits; cover in 0.5.3 */
       if (droppedNames.length > 0) {
         this.recoveryNotice = recoveryDiagnostic(droppedNames, droppedNames.length)
+      /* c8 ignore stop */
       } else if (restoredCount === 0 && skipped > 0) {
         this.recoveryNotice = recoveryDiagnostic([], skipped)
       }

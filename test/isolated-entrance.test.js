@@ -379,6 +379,28 @@ test('keeps the worker for one unmeasured cell and drops it for the next', async
   }
 })
 
+test('the shipped constant decides when no limit is configured', async () => {
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
+  const session = 'sample-limit-shipped'
+  try {
+    await runtime.run(session, { program: 'const kept = 1', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    worker.sampleUtilization = () => {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    const attempt = await runtime.runTentative(session, { program: 'return kept', bindings: [] })
+    assert.equal(attempt.result.error.kind, 'budget-unavailable')
+    // One unmeasured cell is below the shipped constant, so the worker survives.
+    assert.equal(kernel.unmeasuredCells, 1)
+    assert.equal(kernel.client.worker, worker)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
 test('a settled cell clears the consecutive unmeasured count', async () => {
   const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 2_000 })
   const session = 'sample-unreachable-reset'
@@ -872,6 +894,62 @@ test('starts the worker with the configuration current after the scratch wait', 
     assert.equal(started.workerData.startupProbeMs, 9_000)
     assert.equal(started.reclaimBoundMs, 15_000)
     assert.equal(kernel.client.worker.reclaimBoundMs, 15_000)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('a refused reclamation after the unmeasured limit is recorded instead of thrown', async () => {
+  // Replay is off so the dropped worker is not replaced and replayed inside this
+  // cell; the assertion below is about the refusal record, not about recovery.
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 20_000, durableReplay: false, unmeasuredCellLimit: 1 })
+  const session = 'unmeasured-drop-refused-reclamation'
+  try {
+    await runtime.run(session, { program: 'const retained = 7', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    worker.sampleUtilization = () => {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    // A refused reclamation must not await a close that never happens: the client
+    // refuses synchronously, so the kernel records the failure and settles.
+    kernel.client.reset = () => { throw new Error('transport refused the reclamation') }
+
+    const execution = await runtime.runTentative(session, { program: 'return retained', bindings: [] })
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.match(execution.result.error.message, /this worker was dropped/)
+    assert.match(execution.result.error.message, /helper reclamation failed: transport refused the reclamation/)
+    assert.equal(execution.settlement.journal.status, 'noop')
+    // recordedReclamationFailures yields the refusal reasons of this kernel.
+    const failures = recordedReclamationFailures(kernel)
+    assert.equal(failures.length, 1, 'the refused reclamation stays recorded on the kernel')
+    assert.match(String(failures[0]?.message ?? failures[0]), /transport refused the reclamation/)
+  } finally {
+    await runtime.dispose().catch(() => {})
+  }
+})
+
+test('an abandoned cell falls back to the shipped unmeasured limit', async () => {
+  // Neither the execution snapshot nor the kernel config sets a limit, so the
+  // fallback constant decides and one unmeasured cell is still only one strike.
+  const runtime = new SessionRuntime({ computeMs: 500, maxWallMs: 20_000, durableReplay: false })
+  const session = 'unmeasured-default-limit'
+  try {
+    await runtime.run(session, { program: 'const retained = 7', bindings: [] })
+    const kernel = sessionKernel(runtime, session)
+    const worker = kernel.client.worker
+    worker.sampleUtilization = () => {
+      const error = new Error('kernel helper did not answer utilization sampling before its deadline')
+      error.code = UNANSWERED_SAMPLE_CODE
+      return Promise.reject(error)
+    }
+    const execution = await runtime.runTentative(session, { program: 'return retained', bindings: [] })
+    assert.equal(execution.result.error.kind, 'budget-unavailable')
+    assert.doesNotMatch(execution.result.error.message, /this worker was dropped/)
+    assert.equal(kernel.client.worker, worker, 'one unmeasured cell keeps the worker')
+    assert.equal(kernel.unmeasuredCells, 1)
   } finally {
     await runtime.dispose().catch(() => {})
   }

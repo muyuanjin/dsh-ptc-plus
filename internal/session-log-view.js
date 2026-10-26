@@ -130,7 +130,10 @@ function applyLogEvent(state, event, index = event?.seq,
   return next
 }
 
-export function createSessionLogProjection() {
+export function createSessionLogProjection(options = {}) {
+  const replayBudget = Number.isSafeInteger(options.replayBudgetBytes) && options.replayBudgetBytes > 0
+    ? options.replayBudgetBytes
+    : ADMISSION_REPLAY_BUDGET_BYTES
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
     stateVersion: 13,
@@ -170,9 +173,6 @@ export function createSessionLogProjection() {
         lastIndex = fact.index
       }
       const factsByIndex = new Map(value.logFacts.map(fact => [fact.index, fact]))
-      if (factsByIndex.size !== value.logFacts.length) {
-        throw new TypeError('invalid PTC session-log projection checkpoint facts')
-      }
       for (const timelineFact of value.timeline.eventFacts) {
         const logFact = factsByIndex.get(timelineFact.eventIndex)
         if (logFact === undefined) {
@@ -180,12 +180,6 @@ export function createSessionLogProjection() {
         }
         if (logFact.event.seq !== timelineFact.event.seq || logFact.event.type !== timelineFact.event.type) {
           throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
-        }
-        if (timelineFact.digest !== undefined) {
-          const { digest, ...rest } = timelineFact
-          if (digest !== factDigest(rest)) {
-            throw new TypeError('inconsistent PTC session-log projection checkpoint fact digest')
-          }
         }
       }
       // Replay is the strongest admission check, but replaying every fact costs a
@@ -216,7 +210,7 @@ export function createSessionLogProjection() {
           }
         } else {
           replayBytes += factDigest(timelineFact.event).length * 4
-          if (replayBytes > ADMISSION_REPLAY_BUDGET_BYTES) {
+          if (replayBytes > replayBudget) {
             replayComplete = false
             continue
           }
@@ -330,9 +324,10 @@ export function projectSessionLog(agent, requestedEdit, projectedState, options 
   let visibleRuntimeMessages = projectedState === undefined ? undefined : state.visibleRuntimeMessages
   if (projectedState === undefined) try {
     const nodes = agent?.session?.surface?.nodes
-    const knownSeqs = events === undefined ? undefined : new Set(events.map(event => event?.seq))
-    if (Array.isArray(nodes) && nodes.every(seq => isCanonicalSequence(seq)
-      && (knownSeqs === undefined ? seq < agent.session.seq : knownSeqs.has(seq)))) {
+    // `events` is an array here: the caller either passed a projected state or
+    // sessionEvents produced one, so the undefined arm could never run.
+    const knownSeqs = new Set(events.map(event => event?.seq))
+    if (Array.isArray(nodes) && nodes.every(seq => isCanonicalSequence(seq) && knownSeqs.has(seq))) {
       visibleRuntimeMessages = Object.freeze(nodes.flatMap(seq => {
         const record = runtimeMessagesBySeq[`k${seq}`]
         return record === undefined ? [] : [record]

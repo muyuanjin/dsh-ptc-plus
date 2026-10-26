@@ -52,12 +52,8 @@ const UNAVAILABLE_SURFACE_GENERATION = Symbol('unavailableSurfaceGeneration')
  * Only a readable surface may decide that a live binding lost its provenance.
  */
 function surfaceReadable(session) {
-  try {
-    if (!Array.isArray(session?.surface?.nodes)) return false
-    return Array.isArray(session?.events)
-  } catch {
-    return false
-  }
+  if (!Array.isArray(session?.surface?.nodes)) return false
+  return Array.isArray(session?.events)
 }
 
 function surfaceGeneration(session, provenanceRequired = true) {
@@ -268,15 +264,11 @@ function emptyHistory() {
  * executable calls and fall back to one so the notice is never silent.
  */
 function disposedHistoryCells(sessionLog, callSeq) {
-  try {
-    const visible = visibleExecutableCallSeqs(sessionLog)
-    if (!(visible instanceof Set)) return 1
-    // The submitted cell already appears in the log; it is not history.
-    const historical = [...visible].filter(seq => seq !== callSeq)
-    return historical.length > 0 ? historical.length : 1
-  } catch {
-    return 1
-  }
+  const visible = visibleExecutableCallSeqs(sessionLog)
+  if (!(visible instanceof Set)) return 1
+  // The submitted cell already appears in the log; it is not history.
+  const historical = [...visible].filter(seq => seq !== callSeq)
+  return historical.length > 0 ? historical.length : 1
 }
 
 class ReplayFailure extends Error {
@@ -337,7 +329,6 @@ class SessionKernel {
     this.liveCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
-    this.offPathRestores = 0
     this.recoveryNotice = disposedCells > 0
       // A kernel whose owning agent or session was disposed must not resurrect
       // the disposed environment: the history is gone by contract, and a later
@@ -711,7 +702,12 @@ class SessionKernel {
       // nothing new (same bindings, same count) would otherwise repeat a sentence
       // the model already acted on.
       const liveNames = allLive.filter(name => !this.announcedLive.has(name))
-      const failedNames = [...new Set(this.restoredFromRecord.flatMap(item => item.failed))]
+      // The executor reports `{ name, reason }` for a refused install; a notice that
+// printed the entry itself used to render `[object Object]` where the binding
+// name belongs.
+const failedNames = [...new Set(this.restoredFromRecord
+  .flatMap(item => item.failed.map(entry => typeof entry === 'string' ? entry : entry?.name))
+  .filter(name => typeof name === 'string'))]
       const droppedNames = this.missingBindings === undefined ? [] : [...new Set(this.missingBindings)]
       const endedNames = this.rewindEndedBindings === undefined ? [] : [...new Set(this.rewindEndedBindings)]
       const alreadyReported = this.recoveryEventCount > 0
@@ -851,40 +847,6 @@ class SessionKernel {
     // not by omission, so they are reported apart from the ones recovery failed to
     // install. Nothing else may report them as missing.
     const endedBindings = new Set(this.history.deletedBindings ?? [])
-    // A node off the path to the head never replays, so its bindings would vanish.
-    // Its recorded values are the only evidence they existed, and installing them is
-    // not a replay: no cell code runs, so no ambient effect is redispatched. Install
-    // them before the path replay so a later cell on the path still wins, and skip
-    // anything a recorded rewind ended.
-    const pathNodes = new Set(path)
-    for (const node of this.history.nodes ?? []) {
-      if (pathNodes.has(node)) continue
-      const values = (node.journal.values ?? []).filter(value => !endedBindings.has(value.name))
-      if (values.length === 0) continue
-      const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
-      const bindingDescriptors = bindings === request.bindings
-        ? request.bindingDescriptors : normalizeBindingDescriptors(bindings)
-      const installed = await this.cellExecutor.executeCell(
-        {
-          ...request,
-          bindings: bindingDescriptors.namespaces,
-          bindingDescriptors,
-          program: node.code,
-          journal: undefined,
-          restoreValues: values,
-          ...(node.userBindings === undefined ? { userBindings: undefined } : { userBindings: node.userBindings }),
-        },
-        node.journal,
-        config,
-      )
-      if (installed.error !== undefined) continue
-      // Off-path restoration is a repair of evidence the head chain cannot reach, not
-      // a replay of the session: it stays silent. The cells the path did replay own
-      // the notice, and anything this repair could not install is still named by the
-      // contraction diagnostic.
-      this.offPathRestores += 1
-      for (const value of values) replayedNames.add(value.name)
-    }
     for (const node of path) {
       const bindings = replayBindingNamespaces(request.bindings, node.journal, limits, emptyArgsWire)
       const bindingDescriptors = bindings === request.bindings
@@ -1033,11 +995,12 @@ class SessionKernel {
     this.unmeasuredCells += 1
     // The cell was submitted under its own configuration snapshot, and that
     // snapshot decides its settlement even if the setting changed while it ran.
+    // `admission.config` is the runtime configuration object itself (`beginSubmission`
+    // stores `this.config` by reference), so a second lookup on `this.config` could only
+    // repeat the first answer. The shipped constant is the real fallback.
     const limit = Number.isSafeInteger(active.config?.unmeasuredCellLimit)
       ? active.config.unmeasuredCellLimit
-      : Number.isSafeInteger(this.config?.unmeasuredCellLimit)
-        ? this.config.unmeasuredCellLimit
-        : UNMEASURED_CELL_LIMIT
+      : UNMEASURED_CELL_LIMIT
     if (this.unmeasuredCells < limit) {
       active.finish(result)
       return
@@ -1291,7 +1254,7 @@ function sessionOf(sessionContext) {
  * and contract the durable frontier. Zero-argument calls keep their recorded
  * empty-object form so the args wire still matches the journal.
  */
-function replayBindingNamespaces(namespaces, journal, limits, emptyArgsWire) {
+export function replayBindingNamespaces(namespaces, journal, limits, emptyArgsWire) {
   const calls = journal?.calls ?? []
   let changed = false
   const next = namespaces.map(namespace => {

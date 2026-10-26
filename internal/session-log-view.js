@@ -173,6 +173,9 @@ export function createSessionLogProjection(options = {}) {
         lastIndex = fact.index
       }
       const factsByIndex = new Map(value.logFacts.map(fact => [fact.index, fact]))
+      if (factsByIndex.size !== value.logFacts.length) {
+        throw new TypeError('invalid PTC session-log projection checkpoint facts')
+      }
       for (const timelineFact of value.timeline.eventFacts) {
         const logFact = factsByIndex.get(timelineFact.eventIndex)
         if (logFact === undefined) {
@@ -181,7 +184,15 @@ export function createSessionLogProjection(options = {}) {
         if (logFact.event.seq !== timelineFact.event.seq || logFact.event.type !== timelineFact.event.type) {
           throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
         }
-      }
+        // A changed completion or diagnostic message reaches this checkpoint as a
+        // different digest; without this check a tampered cell would replay as a
+        // trusted binding.
+        if (timelineFact.digest !== undefined) {
+          const { digest, ...rest } = timelineFact
+          if (digest !== factDigest(rest)) {
+            throw new TypeError('inconsistent PTC session-log projection checkpoint fact digest')
+          }
+        }      }
       // Replay is the strongest admission check, but replaying every fact costs a
       // second fold whose payload is proportional to everything the session wrote.
       // Admission therefore replays while the retained payload stays inside the

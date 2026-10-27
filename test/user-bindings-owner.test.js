@@ -2494,6 +2494,24 @@ test('adoption survives a restart because the session log owns the decision', as
   assert.deepEqual((await state.owner.snapshotForAgent(restarted())).entries, [])
 })
 
+test('adoption reports a decision the session did not record instead of claiming it', async t => {
+  const state = await adoptionFixture(t)
+  // A session surface that accepts the write and records nothing has not stored the
+  // decision, so the receipt must not claim one: adoption is proved by the log.
+  const silent = {
+    id: 'silent-agent',
+    session: {
+      id: 'silent-session',
+      snapshotEvents: () => state.agent.session.snapshotEvents(),
+      append: () => undefined,
+    },
+  }
+  const rejected = await state.run(silent, 'skip beta')
+  assert.equal(rejected.kind, 'error')
+  assert.match(rejected.text, /did not record the binding adoption decision/)
+  assert.match((await state.run(state.agent, 'status')).text, /beta \(betaHelpers\): used by this session/)
+})
+
 test('adoption requires a live session and stays off with Global User Bindings', async t => {
   const state = await adoptionFixture(t)
   const detached = { id: 'detached-agent', session: { id: 'detached-session', events: [] } }

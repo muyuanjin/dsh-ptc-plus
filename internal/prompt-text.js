@@ -408,11 +408,6 @@ export const PROMPT_TEXT_DEFAULT = JSON.stringify({ schema: PROMPT_TEXT_SCHEMA, 
 /** Slot id of one category guidance line. */
 export const planCategorySlotId = category => `plan.category.${category}`
 
-/** Anchor ids in delivery order, for panels and tests. */
-export function promptAnchorIds() {
-  return PROMPT_ANCHORS.map(anchor => anchor.id)
-}
-
 /**
  * Every file that resolves slot ids through `PROMPT_SLOT_IDS`.
  *
@@ -723,14 +718,12 @@ export function resolvePromptText(value) {
  * could deliver more than the anchor or document ceiling while every individual
  * override looked small, so a too-large override is dropped back to its default
  * and reported instead of being delivered.
+ *
+ * A per-slot ceiling needs no second check here: the loop above admits an
+ * override only when its own bytes are within the slot ceiling, so every entry
+ * this pass can see already satisfies it.
  */
 function enforceEffectiveCeilings(overrides, reported) {
-  for (const [id, text] of [...overrides]) {
-    if (byteLength(text) > PROMPT_TEXT_MAX_SLOT_BYTES) {
-      reported.push({ slotId: id, anchorId: ANCHOR_OF_SLOT.get(id), reason: 'slot-exceeds-limit' })
-      overrides.delete(id)
-    }
-  }
   for (const anchor of PROMPT_ANCHORS) {
     const overridden = anchor.slots.filter(slot => overrides.has(slot.id))
     if (overridden.length === 0) continue

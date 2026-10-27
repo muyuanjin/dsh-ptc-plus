@@ -13,6 +13,7 @@ import {
   LIVE_MODULE_SEMANTICS,
 } from './repl-rewrite-contract.js'
 import { userBindingsSnapshotFromMeta } from './user-bindings.js'
+import { digestOf } from './projection-retention.js'
 import {
   JOURNAL_KEY,
   EDIT_TARGET_KEY,
@@ -62,6 +63,7 @@ import {
   JOURNAL_VERSIONS,
   USER_BINDINGS_REUSE_POLICIES,
   RECOVERY_BOUNDARY_FIELDS,
+  DIAGNOSTIC_WORDING_KEY,
   REPL_TOOL_NAMES,
   REWRITE_FIELDS,
   REWRITE_KINDS,
@@ -74,10 +76,69 @@ export {
   DERIVED_RUN_KEY,
   REWRITES_KEY,
   RECOVERY_BOUNDARY_KEY,
+  DIAGNOSTIC_WORDING_KEY,
+  DIAGNOSTIC_WORDING_FIELDS,
   JOURNAL_VERSION,
   LIVE_USER_BINDINGS_REUSE_POLICY,
   RECOVERY_BOUNDARY_EVENT,
 } from './session-journal-schema.js'
+
+/**
+ * The facts one recorded diagnostic states about what happened, without the
+ * presentation it is rendered through.
+ *
+ * `help` and `source` are presentation: a historical record may carry an older
+ * generation's help wording, and a caret position is re-derived from the cell
+ * when the diagnostic is rendered. The facts below are the wording the model was
+ * told, and they must be the facts that were recorded.
+ */
+function diagnosticWordingFacts(diagnostic) {
+  return [
+    diagnostic.code,
+    diagnostic.severity,
+    diagnostic.phase,
+    diagnostic.message,
+    diagnostic.stateEffect,
+    diagnostic.dispatchState ?? null,
+    diagnosticWordingCause(diagnostic.cause),
+    diagnostic.collisions ?? null,
+  ]
+}
+
+function diagnosticWordingCause(cause) {
+  if (cause === undefined) return null
+  return cause.severity === undefined
+    ? [cause.code ?? null, cause.message]
+    : diagnosticWordingFacts(cause)
+}
+
+/**
+ * Digest of the diagnostic wording a journal records, or `undefined` when it
+ * records none.
+ *
+ * Recovery re-renders a recorded diagnostic to report what the cell did, and it
+ * cannot tell an edited diagnostic from the recorded one when the record is the
+ * only evidence: the completion message and the diagnostic that produced it are
+ * two copies of one settlement. The digest of the recorded wording is taken when
+ * the settlement is published, so a record whose wording was changed afterwards
+ * is no longer evidence for the bindings its cell declared.
+ */
+export function diagnosticWordingDigest(journal) {
+  const diagnostics = journal?.diagnostics
+  if (!Array.isArray(diagnostics) || diagnostics.length === 0) return undefined
+  return digestOf(diagnostics.map(diagnosticWordingFacts))
+}
+
+/** Attach the recorded wording digest beside a journal, or drop a stale one. */
+export function withDiagnosticWording(meta, journal) {
+  const digest = diagnosticWordingDigest(journal)
+  if (digest === undefined) {
+    if (!Object.hasOwn(meta, DIAGNOSTIC_WORDING_KEY)) return meta
+    const { [DIAGNOSTIC_WORDING_KEY]: _omitted, ...rest } = meta
+    return rest
+  }
+  return { ...meta, [DIAGNOSTIC_WORDING_KEY]: { digest } }
+}
 
 function cloneJson(value) {
   if (value === undefined) return undefined
@@ -1209,8 +1270,9 @@ export function reduceStateOperations({ nodes, head, checkpoints }, operations, 
 /** Merge the journal into the tool result's private metadata. */
 export function withJournal(meta, journal) {
   const base = isRecord(meta) ? { ...meta } : meta === undefined ? {} : { value: cloneJson(meta) }
-  base[JOURNAL_KEY] = normalizeJournal(journal)
-  return base
+  const normalized = normalizeJournal(journal)
+  base[JOURNAL_KEY] = normalized
+  return withDiagnosticWording(base, normalized)
 }
 
 /** Validate and detach one rewrite record emitted by the runtime. */

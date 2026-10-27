@@ -225,6 +225,8 @@ surface replacement 是否删除状态取决于模型失去了什么，而不取
 
 基础设施失败会终止当前 worker，并把 log-only recovery boundary 放入当前已结算 `tool/result` 的私有 metadata。kernel 从失败 node 的 parent 重新重放；若该 frontier 仍失败则继续向 parent 收缩，直到最大可验证 frontier 或空 REPL。触发恢复的当前 `run_code` 在候选 frontier 验证成功前不执行，验证后在同一次请求中继续。boundary 的失败身份可为顶层 call，或已经由共享 timeline 证明两组 dispatch pairs 和根最终关联的真实派生 start 序号；原始 nested start 不足以证明该身份。收缩保留失败 node 的已证明 parent，之后独立的有效 carrier 仍可进入新 ancestry。boundary 无效或历史本身无法完整折叠时，相关记录和可能依赖它的状态不得进入 frontier；这类历史 PTC metadata 损坏本身不返回永久 recovery error，而是继续收缩，最差用空 worker 执行当前 cell，并在其最终 result 持久表达新 ancestry。已经写入旧版自定义 boundary event 的日志必须先通过显式、非破坏迁移转换为 DSH 可加载的 metadata；迁移失败时不得覆盖原始日志。
 
+记录的 diagnostics 与 completion 是同一 settlement 的两份表述：`completion.error.message` 由第一条 diagnostic 渲染得到，因此两者一致只证明这份记录内部自洽，不能证明文字未被改写（编辑 diagnostic 后重新渲染 completion 仍一致）。发布 `tool/result` 私有 metadata 时，runtime 同时写入这些 diagnostic 所述事实的摘要 `dshPtcPlusDiagnosticWording.digest`，覆盖 `message` 以及 code、severity、phase、stateEffect、dispatchState、cause、collisions；`help` 与 `source` 属于呈现（历史记录的 help 措辞和 caret 位置可来自更早 generation），不进入摘要。恢复折叠在把该记录当作证据前重算并比较摘要：摘要缺失表示记录发布于该字段引入之前，仍按旧证据规则处理；摘要存在而不再匹配时，该 cell 不能证明自己的 binding，与其它损坏 metadata 一样建立收缩点。该摘要证明记录未被部分改写，不是不可伪造的边界。
+
 ## State Operations
 
 ```ts

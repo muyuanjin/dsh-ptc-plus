@@ -12,6 +12,7 @@ import {
   normalizeRecoveryBoundaries,
   normalizeRewrites,
   validatedRewrites,
+  withDiagnosticWording,
 } from './session-journal.js'
 import {
   EXPECTED_TARGET_CALL_SEQ,
@@ -190,9 +191,12 @@ export function createEditTransportOwner(ctx, {
           derived.draftCapability,
           presentationGeneration,
         )
+    // The derived settlement records its own diagnostic wording, so a replay reads
+    // the same pairing the root path publishes.
+    const withWording = withDiagnosticWording(withDraft, withDraft[JOURNAL_KEY])
     return derived.replMemory === undefined
-      ? withDraft
-      : withReplMemorySnapshot(withDraft, derived.replMemory, presentationGeneration)
+      ? withWording
+      : withReplMemorySnapshot(withWording, derived.replMemory, presentationGeneration)
   }
   definition.output = {
     schema: {

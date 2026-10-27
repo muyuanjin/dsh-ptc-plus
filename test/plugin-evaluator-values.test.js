@@ -4,7 +4,7 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
-import { RECOVERY_BOUNDARY_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { RECOVERY_BOUNDARY_KEY, DIAGNOSTIC_WORDING_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { renderDiagnostic } from '../internal/diagnostic.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
@@ -507,6 +507,10 @@ test('persists and skips a replay node whose semantic exception changed', async 
   })
   const forged = structuredClone(actual)
   const journal = forged.meta.dshPtcPlus
+  // A record published before the wording digest existed carries no digest, so its
+  // wording is all the recovery has: the replay is what decides whether it still
+  // describes the cell.
+  delete forged.meta[DIAGNOSTIC_WORDING_KEY]
   journal.diagnostics[0].message = 'uncaught TypeError: forged failure'
   journal.completion.error.message = journal.completion.error.message.replaceAll('actual failure', 'forged failure')
   const { callSeq: failedCallSeq } = appendRunCodeEvents(events, 'replay-forged-throw', code, forged)
@@ -517,11 +521,12 @@ test('persists and skips a replay node whose semantic exception changed', async 
   const result = await restored.runDurable(session.id, 'return 1', {}, { session, recordSession: 'deferred-result', callId: 'replay-forged-recovery' })
   assert.equal(result.isError, false)
   assert.equal(result.value, 1)
-  // A completion that no longer matches its record is not a lost binding: the
-  // replay keeps what it installed and nothing is reported as dropped. The
-  // forged cell's completion is not replayed here, so no divergence notice is
-  // owed either.
-  assert.equal(result.meta[RECOVERY_BOUNDARY_KEY], undefined)
+  // The recorded completion no longer renders from the diagnostic it carries, so the
+  // forged cell is not evidence for its own bindings: the frontier contracts at that
+  // cell instead of replaying it, and the following cell still computes. The forged
+  // cell declared no binding, so the contraction drops nothing and owes no notice.
+  assert.deepEqual(result.meta[RECOVERY_BOUNDARY_KEY],
+    [{ failedCallSeq, frontierCallSeq: null }])
   const logs = result.logs ?? []
   assert.equal(logs.some(log => log.includes('PTC-R002')), false)
   appendRunCodeEvents(events, 'replay-forged-recovery', 'return 1', result)
@@ -765,6 +770,9 @@ test('codec-proved historical refusal messages preserve cold replay without retr
     const recorded = JSON.parse(JSON.stringify(await first.runDurable(session.id,source,bindings,{session,recordSession:'deferred-result',callId:'old-refusal'})))
     const journal = recorded.meta.dshPtcPlus
     assert.equal(journal.status,'durable')
+    // The wording below belongs to an earlier version's rendering, which is what a
+    // record published before the wording digest existed carries.
+    delete recorded.meta[DIAGNOSTIC_WORDING_KEY]
     const diagnostic = journal.diagnostics.find(item=>item.code === (parameter ? 'PTC-X001' : 'PTC-O001'))
     diagnostic.message = parameter
       ? 'uncaught TypeError: value at $ is not PTC Value V1: non-plain object'
@@ -792,6 +800,9 @@ test('historical renderer budget failures restore retained state only for the co
       {session,recordSession:'deferred-result',callId:'old-budget'})))
     const journal = recorded.meta.dshPtcPlus
     assert.equal(journal.status,'durable')
+    // A record published before the wording digest existed: both wordings below are
+    // historical renditions the retained settlement, not the text, has to survive.
+    delete recorded.meta[DIAGNOSTIC_WORDING_KEY]
     const diagnostic = journal.diagnostics.find(item=>item.code === 'PTC-O001')
     diagnostic.message = 'cell result could not cross the PTC Value V1 boundary: '
       + (matching ? 'rendered PTC value exceeds 1000 bytes' : 'unrelated old encoding failure')

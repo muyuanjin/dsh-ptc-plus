@@ -7,6 +7,8 @@ import {
   JOURNAL_KEY,
   RECOVERY_BOUNDARY_KEY,
   RECOVERY_BOUNDARY_EVENT,
+  DIAGNOSTIC_WORDING_KEY,
+  DIAGNOSTIC_WORDING_FIELDS,
   LEGACY_JOURNAL_VERSION,
   REPL_TOOL_NAMES,
   REWRITES_KEY,
@@ -15,6 +17,7 @@ import {
   POST_EDIT_KEY,
 } from './session-journal-schema.js'
 import {
+  diagnosticWordingDigest,
   isCanonicalSequence,
   normalizeDeferredEditSettlement,
   normalizeJournal,
@@ -1450,6 +1453,28 @@ function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit,
     ...(rewrites === undefined ? {} : { rewrites }) }
 }
 
+/**
+ * A published journal records the digest of the wording its diagnostics state.
+ *
+ * Recovery reports a failed cell by re-rendering its recorded diagnostic, and the
+ * completion message and that diagnostic are two copies of one settlement, so a
+ * record whose diagnostic text was edited can re-derive both consistently. The
+ * digest is taken when the settlement is published, before either copy can change.
+ * A record that carries no digest predates it and keeps the older evidence; one
+ * whose diagnostics no longer hash to it is not evidence for its cell's bindings.
+ */
+function requireRecordedDiagnosticWording(meta, journal) {
+  if (!isRecord(meta) || !Object.hasOwn(meta, DIAGNOSTIC_WORDING_KEY)) return
+  const recorded = meta[DIAGNOSTIC_WORDING_KEY]
+  if (!isRecord(recorded) || Reflect.ownKeys(recorded).length !== DIAGNOSTIC_WORDING_FIELDS.size
+    || Reflect.ownKeys(recorded).some(key => !DIAGNOSTIC_WORDING_FIELDS.has(key))) {
+    throw new Error('invalid recorded diagnostic wording')
+  }
+  if (recorded.digest !== diagnosticWordingDigest(journal)) {
+    throw new Error('journal diagnostic wording does not match its recorded digest')
+  }
+}
+
 function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, retainedCalls) {
   const nested = inputEvent?.type === 'tool/ptc-dispatch-start'
     || inputEvent?.type === 'tool/ptc-dispatch'
@@ -1699,6 +1724,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
               derived,
               ...(derived.userBindings === undefined ? {} : { userBindings: derived.userBindings }),
             }
+            requireRecordedDiagnosticWording(meta, derived.journal)
           } else if (call.data.name === 'run_code') {
             const rawJournal = meta[JOURNAL_KEY]
             const resolveLegacyConfirm = rawJournal?.version === LEGACY_JOURNAL_VERSION
@@ -1731,6 +1757,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
               journal,
               ...(userBindings === undefined ? {} : { userBindings }),
             }
+            requireRecordedDiagnosticWording(meta, journal)
             let postEdit
             try {
               postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized, undefined, state.executableCalls)

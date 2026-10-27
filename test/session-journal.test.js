@@ -4,12 +4,14 @@ import test from 'node:test'
 import { RELEASED_V0_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v0-to-v1'
 import {
   JOURNAL_KEY,
+  DIAGNOSTIC_WORDING_KEY,
   RECOVERY_BOUNDARY_EVENT,
   RECOVERY_BOUNDARY_KEY,
   REWRITES_KEY,
   assertStateName,
   createJournal,
   derivedEditResultsEqual,
+  diagnosticWordingDigest,
   journalsEqual,
   liveToolCallSeq,
   migrateRecoveryBoundaryEvents,
@@ -21,6 +23,7 @@ import {
   recoveryBoundariesEqual,
   reduceStateOperations,
   userBindingsForJournal,
+  withDiagnosticWording,
   withJournal,
   withRecoveryBoundaries,
   withRewrites,
@@ -748,6 +751,29 @@ test('creates journals, compares semantics, validates names, and merges metadata
   assert.deepEqual(withJournal(undefined, value)[JOURNAL_KEY], normalizeJournal(value))
   assert.deepEqual(withJournal({ existing: true }, value).existing, true)
   assert.equal(withJournal('legacy', value).value, 'legacy')
+
+  // The wording a journal records is published with the digest recovery verifies:
+  // help and source are presentation and stay out of it, the stated facts do not.
+  const wording = {
+    code: 'PTC-X001',
+    severity: 'error',
+    phase: 'execute',
+    message: 'uncaught Error: failure',
+    stateEffect: 'partially-applied',
+    help: ['current help'],
+    source: { cell: 'current', start: { line: 1, column: 1 } },
+  }
+  const failing = journal({ status: 'durable', diagnostics: [wording] })
+  const stamped = withJournal(undefined, failing)
+  assert.deepEqual(Object.keys(stamped[DIAGNOSTIC_WORDING_KEY]), ['digest'])
+  assert.equal(stamped[DIAGNOSTIC_WORDING_KEY].digest, diagnosticWordingDigest(failing))
+  const historical = { ...stamped, [DIAGNOSTIC_WORDING_KEY]: stamped[DIAGNOSTIC_WORDING_KEY] }
+  historical.diagnostics = [{ ...wording, help: ['legacy help'] }]
+  assert.equal(diagnosticWordingDigest(historical), stamped[DIAGNOSTIC_WORDING_KEY].digest)
+  historical.diagnostics = [{ ...wording, message: 'uncaught Error: edited' }]
+  assert.notEqual(diagnosticWordingDigest(historical), stamped[DIAGNOSTIC_WORDING_KEY].digest)
+  assert.equal(diagnosticWordingDigest(journal()), undefined)
+  assert.equal(withDiagnosticWording(stamped, journal())[DIAGNOSTIC_WORDING_KEY], undefined)
 
   const rewrites = () => [
     { kind: 'import', description: 'converted static import of node:path', source: 'node:path' },

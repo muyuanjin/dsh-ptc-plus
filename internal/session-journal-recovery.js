@@ -918,14 +918,14 @@ function retentionSummaryFromEvents(events, toSeq) {
  * still bound by its own digest in the call entry, so excluding it hides nothing.
  */
 function eventDigest(event) {
-  if (isRecord(event) && isRecord(event.data) && typeof event.data.callId === 'string') {
-    const identity = { seq: event.seq, type: event.type,
-      data: { callId: event.data.callId, name: event.data.name ?? null } }
-    return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
-  }
-  return createHash('sha256').update(JSON.stringify(event, (_key, value) => (
-    isRecord(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]])) : value
-  ))).digest('hex')
+  // Identity only, and only the fields every call keeps: a payload the window
+  // digested must hash the same before and after pruning, which is why the source
+  // text and the result are not part of it. A call always carries its `callId`
+  // (executable calls are admitted with one), so no second shape exists to hash.
+  const data = isRecord(event?.data) ? event.data : {}
+  const identity = { seq: event?.seq, type: event?.type,
+    data: { callId: data.callId, name: data.name ?? null } }
+  return createHash('sha256').update(JSON.stringify(identity)).digest('hex')
 }
 
 function resultIdentity(data) {
@@ -1956,7 +1956,7 @@ function digestSettlementCallCopies(tables) {
  * and replaces each call's argument wire with its digest. Byte-for-byte equality
  * of argument text is what the window gives up; identity is not.
  */
-function digestJournalArguments(journal) {
+export function digestJournalArguments(journal) {
   if (process.env.DIGEST_SKIP_JOURNAL === '1') return journal
   if (!isRecord(journal) || !Array.isArray(journal.calls)) return journal
   return { ...journal, calls: journal.calls.map(call => {

@@ -8,9 +8,10 @@ process.env.DSH_PTC_RETENTION_BYTES = '1048576'
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
 const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
-  verifyRetentionSummaryAgainstEvents, refoldEditableSettlement, validateSessionTimelineState, withFullRetention } =
+  verifyRetentionSummaryAgainstEvents, refoldEditableSettlement, digestJournalArguments,
+  validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
-const { configureRetention } = await import('../internal/projection-retention.js')
+const { configureRetention, digestOf } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION } = await import('../internal/session-journal-schema.js')
@@ -232,6 +233,62 @@ test('a checkpoint stays below a small multiple of the payload budget', () => {
     `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
   assert.equal(state.hotCellDropped, false,
     'the newest cell fits the budget, so its payload is retained and no notice is due')
+})
+
+test('a digested dispatch and its digested target stop naming a source the window removed', () => {
+  // Two payloads the window cannot hold: the cell an accepted edit captured, and a
+  // cell after it. The dispatch fact keeps the call identity it was recorded with,
+  // so the fold has to rewrite it: leaving the old target would keep a payload the
+  // window dropped, and the round-trip check compares the fact with its own
+  // re-derivation. A dispatch whose own arguments were digested keeps the digest
+  // pair for the same reason.
+  const padding = 'z'.repeat(600 * 1024)
+  const events = [
+    call(`/* ${padding} */\nlet captured = 1`, 'digest-target'),
+    result('digest-target'),
+    { seq: next(), type: 'tool/ptc-dispatch-start', data: {
+      rootCallId: 'digest-target', parentCallId: 'digest-target', subCallId: 'digest-target:ptc:1',
+      name: 'edit_run_code', argumentsDigest: 'f'.repeat(64), argumentsBytes: 2048,
+    } },
+    call(`/* ${padding} */\nconst after = 2`, 'digest-after'),
+    result('digest-after'),
+  ]
+  const state = fold(events)
+  const dispatchFact = state.eventFacts.find(fact => fact.event.type === 'tool/ptc-dispatch-start'
+    && fact.event.data?.subCallId === 'digest-target:ptc:1')
+  assert.ok(dispatchFact !== undefined, 'the dispatch keeps a fact')
+  assert.equal(dispatchFact.selectedTarget, null,
+    'the captured cell lost its payload, so the fact names no target')
+  assert.equal(dispatchFact.event.data.arguments, undefined)
+  assert.equal(dispatchFact.event.data.argumentsDigest, 'f'.repeat(64),
+    'a digested dispatch keeps the digest pair instead of the text')
+  assert.match(dispatchFact.digest, /^[a-f0-9]{64}$/u)
+  // The window digested both payloads; the dispatch was not folded away with them.
+  const digested = settlementList(state)
+    .filter(settlement => typeof settlement.call?.data?.argumentsDigest === 'string')
+  assert.equal(digested.length, 2, JSON.stringify(digested.map(settlement => settlement.call?.seq)))
+})
+
+test('a digested cluster keeps each claimed call as an identity instead of its wire', () => {
+  // The window replaces the argument wire of every call a digested journal names.
+  // Identity survives: the same `global`/`member`/`ok`/`settle` with a digest of the
+  // text and its byte length, so recovery can still match the call it recorded.
+  const digested = digestJournalArguments(journal({ calls: [
+    { global: 'tools', member: 'probe', args: '{"question":42}', ok: true, value: 'answer', settle: 0 },
+    { global: 'code', member: 'log', ok: true, value: null, settle: 1 },
+  ] }))
+  assert.equal(digested.calls.length, 2)
+  assert.deepEqual(digested.calls[0], {
+    global: 'tools', member: 'probe', ok: true, value: 'answer', settle: 0,
+    argsDigest: digestOf('{"question":42}'), argsBytes: 15,
+  })
+  assert.deepEqual(digested.calls[1], {
+    global: 'code', member: 'log', ok: true, value: null, settle: 1,
+  }, 'a call that carries no wire keeps the record it has')
+  // A journal without calls and a value that is not a journal stay untouched.
+  assert.deepEqual(digestJournalArguments(journal()).calls, [])
+  assert.equal(digestJournalArguments(undefined), undefined)
+  assert.deepEqual(digestJournalArguments({ status: 'noop' }), { status: 'noop' })
 })
 
 test('a compaction summary is refused when any part of it cannot be proved', () => {

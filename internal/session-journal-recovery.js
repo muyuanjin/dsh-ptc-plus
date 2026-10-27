@@ -1241,8 +1241,7 @@ export function validateSessionTimelineState(value, logFacts) {
     validateRetentionSummary(value, summary, logFacts)
   } else if (replayComplete) {
     // Non-compacted states keep the full replay equality.
-    if (summary === undefined) requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
-    else validateRetentionSummary(value, summary, logFacts)
+    requireFact(deepEqualJson(withoutFactDigests(reconstructed), withoutFactDigests(value)))
   }
   // Semantic checks run first so their diagnostics stay specific; the digest is
   // the last line of defence and rejects a payload edit without replaying it.
@@ -1967,17 +1966,6 @@ function digestJournalArguments(journal) {
   }) }
 }
 
-/**
- * A derived run keeps the shape recovery validates (target, description, rewrites)
- * and replaces the cell source with its digest. The source is the payload the
- * window bounds; the edit path refolds it from the log when the text is needed.
- */
-function digestDerivedCode(derived) {
-  if (!isRecord(derived) || typeof derived.code !== 'string') return derived
-  const { code, ...rest } = derived
-  return { ...rest, codeDigest: digestOf(code), codeBytes: byteLength(code) }
-}
-
 function pruneRetention(state, tables) {
   if (fullRetentionDepth > 0) return
   const entries = Object.entries(tables.settled.table)
@@ -2178,13 +2166,6 @@ function pruneRetention(state, tables) {
     })
     if (rewritten) state.eventFacts = state.eventFacts.map(fact => timelineJson(fact))
   }
-}
-
-function findResultSeq(table, settlement) {
-  for (const [key, candidate] of Object.entries(table.table)) {
-    if (candidate === settlement) return candidate[0]
-  }
-  return undefined
 }
 
 export function sessionTimelineValue(checkpoint) {

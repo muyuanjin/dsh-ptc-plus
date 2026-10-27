@@ -12,6 +12,20 @@ Interpret source against the selected PTC language contract, rather than the for
 
 This responsibility does not erase selected `protected` restrictions, historical language semantics, DSH decisions, or real execution failures. Preserve the native syntax targets of explicit `eval` and `Function` and the results of independently created external engines as specified by the language contract. A plugin-owned entry that omits required adaptation remains an implementation gap; relabeling it as external does not discharge that responsibility.
 
+## Conceptual Design
+
+Design starts from what a thing **is**, not from what it can reuse. Before writing code, a change must answer in one sentence: which layer it belongs to, what question it answers, and who owns it. When that sentence cannot be written, the problem is not in the implementation.
+
+**Separate concepts before considering reuse.** A mechanism is reusable only when two objects answer the same question, are owned by the same maintainer of that relationship, and share a lifecycle. A shared table, a shared component, or a shared word is not evidence of a shared concept. Borrowing an existing term requires checking its meaning: `automatic` means "the host derives this", not "inherit the default value"; calling the latter by the former makes every later reader pay for the difference.
+
+**Four layers may not answer for each other**: supply (what the product declares exists), adoption (what a session chooses to use), materialization (what the runtime actually installed), and proof (what can be verified). A global switch cannot stand in for a session choice, a session choice cannot stand in for an install result, and "saved" cannot stand in for "usable". Report the layer that actually holds.
+
+**Illegal states should be unrepresentable.** A design that needs an extra rule to forbid a state — "an override must not revive a deleted entry" — has placed its layers wrongly. That state should not exist in the concept at all. When such a patch appears, re-derive the layering instead of writing the patch into the specification. Rules that keep accumulating exceptions are evidence about the concept, not about the cases.
+
+**Concepts land as vocabulary, then as types.** A new concept enters the data shape, the diagnostic wording, and the documentation together; when they disagree, the concept decides, and the shape and wording change to match.
+
+**A design states what it does not change.** Without a non-goal, scope creep is undetectable. Before reusing something, ask what the two objects would look like if they were built separately; if the answer is "different questions", stop reusing.
+
 ## Authority And Sources
 
 PTC Plus supplies the continuous computation environment through DSH's top-level `run_code`. DSH retains authority and native tool policy. The plugin does not add a second permission system, sandbox, scheduler, approval layer, session coordinator, name-dispatch registry, or cross-plugin Work Map.

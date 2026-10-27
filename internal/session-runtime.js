@@ -1295,10 +1295,15 @@ export class SessionRuntime {
   constructor(config = {}, options = {}) {
     this.config = resolvedRuntimeConfig(config)
     this.kernels = new Map()
-    // Identities whose owning agent or session was disposed. Their environment is
-    // gone by contract, so a later cell in the same identity must start empty
-    // instead of replaying bindings the disposed owner once held.
+    // Identities whose owning session was disposed. Their environment is gone by
+    // contract, so a later cell in the same identity must start empty instead of
+    // replaying bindings the disposed owner once held.
     this.disposedSessions = new Set()
+    // Identities whose Agent was disposed. An Agent owns the live environment,
+    // not the session's durable journal: releasing it ends the worker and every
+    // live-only (volatile) value it observed, while the durable computation the
+    // log proves still replays for the identity that continues the session.
+    this.releasedAgents = new Set()
     this.pendingNoops = new Map()
     this.settlements = new WeakSet()
     this.preparingCells = new Set()
@@ -1447,25 +1452,32 @@ export class SessionRuntime {
     }
     let kernel = this.kernels.get(sessionId)
     if (kernel === undefined) {
-      // A disposed agent or session loses its live environment by contract: the
-      // next cell in that identity starts empty and is told how many historical
-      // cells the disposed environment held. Replaying them would hand the
-      // disposed owner's bindings to whoever runs next in the same identity.
+      // A disposed session loses its environment by contract: the next cell in
+      // that identity starts empty and is told how many historical cells the
+      // disposed environment held. Replaying them would hand the disposed
+      // owner's bindings to whoever runs next in the same identity.
       const disposedCells = this.disposedSessions.has(sessionId)
         ? disposedHistoryCells(sessionLog, callSeq)
         : 0
+      // A released Agent owns only the live environment, so the durable journal
+      // still replays; the live-only values that environment observed do not.
+      const liveOnlyLost = this.releasedAgents.has(sessionId)
       let history
       try {
         history = disposedCells > 0 || !cellConfig.durableReplay
           ? emptyHistory()
           : recoverJournal(sessionLog, callSeq, {
             visibleCallSeqs: visibleExecutableCallSeqs(sessionLog),
+            ...(liveOnlyLost ? { liveOnlyLost: true } : {}),
           })
       } catch (error) {
         // Malformed PTC metadata is contracted by the ordered recovery owner.
         // Failure to read DSH's session source cannot prove a reset boundary.
         return completed({ logs: [], error: { kind: 'recovery', message: `cannot reconstruct REPL from session log: ${messageOf(error)}` } })
       }
+      // One release is one fact about the environment that held it: the
+      // environment built below owns its own live values again.
+      if (liveOnlyLost) this.releasedAgents.delete(sessionId)
       kernel = new SessionKernel({
         // The kernel owns the worker and the sessions it serves, so it takes the
         // configuration current when the session starts; this cell's own budgets
@@ -1546,9 +1558,27 @@ export class SessionRuntime {
 
   async disposeSession(sessionId) {
     const id = String(sessionId)
-    // Recorded before the early return: an identity whose owner was disposed has
-    // no environment to resume, whether or not a kernel still existed here.
+    // Recorded before the early return: an identity whose owning session was
+    // disposed has no environment to resume, whether or not a kernel still
+    // existed here.
     this.disposedSessions.add(id)
+    return this.#releaseKernel(id)
+  }
+
+  /**
+   * End the live environment of one Agent while keeping the session's journal.
+   *
+   * The Agent, not the session, owns the worker: a replaced Agent in the same
+   * session continues the computation the log proves, and loses only the
+   * live-only values its predecessor observed.
+   */
+  async disposeAgent(sessionId) {
+    const id = String(sessionId)
+    this.releasedAgents.add(id)
+    return this.#releaseKernel(id)
+  }
+
+  async #releaseKernel(id) {
     for (const admission of this.preparingCells) {
       if (admission.sessionId === id) {
         admission.cancelled = true

@@ -831,7 +831,7 @@ export function createRuntimeBridgeOwner({
         && deepEqualJson(meta?.[POST_EDIT_KEY], current.postEdit.provenance))
     },
     disposeAgent(agent) {
-      return sessions.disposeSession(sessionId(agent) ?? String(agent.id))
+      return sessions.disposeAgent(sessionId(agent) ?? String(agent.id))
     },
     disposeSession(session) {
       return sessions.disposeSession(String(session.id))

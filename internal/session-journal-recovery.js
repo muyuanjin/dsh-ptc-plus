@@ -174,8 +174,10 @@ function applyRecord(state, record, invalidCallSeqs) {
   // for the restore path that installs nodes the replay does not reach, but its
   // bindings are still proved by replaying it; counting them here would report a
   // binding as dropped in every contraction whose replay is supposed to be complete.
+  // A released live environment proves nothing durable either: its live-only values
+  // are contracted below instead of being reported as a binding recovery owed.
   const recordNames = [
-    ...(result?.journal?.status === 'volatile'
+    ...(result?.journal?.status === 'volatile' && state.liveOnlyLost !== true
       ? (result.journal.values ?? []).map(value => value.name)
       : []),
     ...bindingNamesOfOperations(result?.journal?.operations),
@@ -204,7 +206,12 @@ function applyRecord(state, record, invalidCallSeqs) {
     // the completion is unverified while the bindings survive. A volatile cell
     // whose values the codec could not transfer has nothing to install and is
     // reported as a contraction instead of vanishing silently.
-    if (journal.values !== undefined && journal.values.length > 0) {
+    //
+    // Those values are the live environment's own observation, so a fold that
+    // knows the environment was released (`liveOnlyLost`) cannot install them:
+    // the owner that read `Date.now()` or `process.pid` is gone, and the next
+    // environment inherits the durable computation, not the live cache.
+    if (!state.liveOnlyLost && journal.values !== undefined && journal.values.length > 0) {
       const node = Object.freeze({
         code,
         journal,
@@ -218,8 +225,17 @@ function applyRecord(state, record, invalidCallSeqs) {
       applyOperations(state, journal.operations, index)
       return
     }
-    state.volatileSuffix.push({ seq: call.seq, code, reason: journal.volatileReason ?? 'volatile cell',
-      ...(volatileBindings.length === 0 ? {} : { bindings: volatileBindings }) })
+    // A released live environment is reported as a contracted cell: the model
+    // loses whatever the live cache held, and naming those bindings would claim
+    // they were proved by the durable frontier when they never were.
+    state.volatileSuffix.push({
+      seq: call.seq,
+      code,
+      reason: state.liveOnlyLost === true
+        ? 'the live environment that observed this cell was released'
+        : journal.volatileReason ?? 'volatile cell',
+      ...(volatileBindings.length === 0 || state.liveOnlyLost === true ? {} : { bindings: volatileBindings }),
+    })
     applyOperations(state, journal.operations, undefined)
     return
   }
@@ -263,6 +279,7 @@ function foldRecords(records, invalidCallSeqs, options = {}) {
     deletedBindings: new Set(),
     trusted: true,
     surfaceContracted: options.surfaceContracted === true,
+    liveOnlyLost: options.liveOnlyLost === true,
   }
   for (const record of records) {
     applyRecord(state, record, invalidCallSeqs)
@@ -2272,7 +2289,11 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   const records = []
   const orderedRecords = []
   const contractedCallRanges = []
-  let state = foldRecords(records, invalidCallSeqs)
+  // A live environment that was released cannot lend its recorded live-only
+  // values to the environment that replaces it. The flag belongs to the fold, so
+  // every re-fold below carries it.
+  const foldOptions = { liveOnlyLost: options?.liveOnlyLost === true }
+  let state = foldRecords(records, invalidCallSeqs, foldOptions)
   let boundaryIndex = 0
   const carrierCallSeqForBoundary = boundary => boundary.carrierCallSeq
   const isContractedCallSeq = (callSeq) => contractedCallRanges.some(range => (
@@ -2293,6 +2314,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
       if (record.call.seq >= contractionSeq) invalidCallSeqs.add(record.call.seq)
     }
     state = foldRecords(records, invalidCallSeqs, {
+      ...foldOptions,
       surfaceContracted: state.surfaceContracted,
     })
     registerUnavailable({ seq: carrierCallSeq ?? boundary.failedCallSeq, reason }, state)
@@ -2352,6 +2374,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
         }
       }
       state = foldRecords(records, invalidCallSeqs, {
+        ...foldOptions,
         surfaceContracted: resolvesUnavailable ? false : state.surfaceContracted,
       })
       if (resolvesUnavailable) {

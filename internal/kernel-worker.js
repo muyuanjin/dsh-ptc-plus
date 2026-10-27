@@ -42,7 +42,7 @@ import { installProgramAmbientResolver } from './dynamic-environment-runtime.js'
 const { Object, Map, Set, Proxy, Error,
   mapGet, mapSet, mapHas, mapDelete, mapClear, mapSize, mapForEach,
   setHas, setAdd, setDelete, setClear, setForEach,
-  everyArray, someArray, appendArray, copyArray, join, sliceString, endsWith,
+  everyArray, someArray, isArray, min, appendArray, copyArray, join, sliceString, endsWith,
   bufferConcat, bufferIsBuffer, bufferToString,
   Reflect: privateReflect, promiseResolve, promiseReject } = moduleRuntimeIntrinsics
 const PublicPromise = globalThis.Promise
@@ -1359,7 +1359,7 @@ function recordingAffordable(value) {
   if (value === null) return true
   const kind = typeof value
   if (kind === 'number' || kind === 'string' || kind === 'boolean' || kind === 'bigint' || kind === 'undefined') return true
-  if (Array.isArray(value)) return value.length <= RECORDED_VALUE_NODES
+  if (isArray(value)) return value.length <= RECORDED_VALUE_NODES
   return false
 }
 
@@ -1370,14 +1370,14 @@ function collectBindingValues(names, limits = {}) {
   let recorded = 0
   for (const name of names) {
     const logical = logicalBindingName(name)
-    if (seen.has(logical)) continue
+    if (setHas(seen, logical)) continue
     const local = statefulRoots.localValue(name) ?? statefulRoots.localValue(logical)
     if (local === undefined) {
-      seen.add(logical)
+      setAdd(seen, logical)
       unrecorded.push(logical)
       continue
     }
-    seen.add(logical)
+    setAdd(seen, logical)
     try {
       // A recording pass must stay cheap. The codec starts by enumerating the
       // value's own keys, so a huge declaration (millions of keys) would exhaust
@@ -1390,12 +1390,12 @@ function collectBindingValues(names, limits = {}) {
       }
       const wire = encodeValue(local.value, {
         ...limits,
-        maxNodes: Math.min(limits.maxNodes ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
-        maxEdges: Math.min(limits.maxEdges ?? RECORDED_VALUE_EDGES, RECORDED_VALUE_EDGES),
-        maxArrayLength: Math.min(limits.maxArrayLength ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
-        maxStringBytes: Math.min(limits.maxStringBytes ?? RECORDED_BINDING_WIRE_LIMIT, RECORDED_BINDING_WIRE_LIMIT),
+        maxNodes: min(limits.maxNodes ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
+        maxEdges: min(limits.maxEdges ?? RECORDED_VALUE_EDGES, RECORDED_VALUE_EDGES),
+        maxArrayLength: min(limits.maxArrayLength ?? RECORDED_VALUE_NODES, RECORDED_VALUE_NODES),
+        maxStringBytes: min(limits.maxStringBytes ?? RECORDED_BINDING_WIRE_LIMIT, RECORDED_BINDING_WIRE_LIMIT),
       })
-      const size = JSON.stringify(wire).length
+      const size = jsonStringify(wire).length
       if (size > RECORDED_BINDING_WIRE_LIMIT || recorded + size > RECORDED_CELL_WIRE_LIMIT) {
         unrecorded.push(logical)
         continue

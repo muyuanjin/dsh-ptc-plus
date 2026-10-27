@@ -13019,7 +13019,9 @@ function createReplView(React32, deps) {
       memory,
       (value) => setObserved({ sessionId, source: memory, value })
     ) : void 0, [active, observeRepl, sessionId, memory, elementRef]);
-    return observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory;
+    if (observed?.sessionId !== sessionId) return memory;
+    if (!memory.available && observed.value?.available === true) return observed.value;
+    return observed.source === memory ? observed.value : memory;
   }
   function ReplBindingInspector({ entry, preview, t: t2 }) {
     const readable = preview?.status === "readable";

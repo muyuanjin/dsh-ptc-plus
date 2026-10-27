@@ -25,7 +25,12 @@ export function createReplView(React, deps) {
       ? observeRepl(sessionId, elementRef.current, memory,
         value => setObserved({ sessionId, source: memory, value }))
       : undefined, [active, observeRepl, sessionId, memory, elementRef])
-    return observed?.sessionId === sessionId && observed.source === memory ? observed.value : memory
+    if (observed?.sessionId !== sessionId) return memory
+    // The projection can drop its REPL memory while a live observation still holds
+    // the last confirmed inventory; falling back to the empty snapshot there would
+    // flip a populated panel to "state cannot be confirmed" for no visible reason.
+    if (!memory.available && observed.value?.available === true) return observed.value
+    return observed.source === memory ? observed.value : memory
   }
 
   function ReplBindingInspector({ entry, preview, t }) {

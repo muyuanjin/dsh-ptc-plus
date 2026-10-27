@@ -9,7 +9,7 @@ const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
 const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
   verifyRetentionSummaryAgainstEvents, refoldEditableSettlement, digestJournalArguments,
-  validateSessionTimelineState, withFullRetention } =
+  validateSessionTimelineState, withFullRetention, factDigest } =
   await import('../internal/session-journal-recovery.js')
 const { configureRetention, digestOf } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
@@ -268,6 +268,50 @@ test('a digested dispatch and its digested target stop naming a source the windo
   const digested = settlementList(state)
     .filter(settlement => typeof settlement.call?.data?.argumentsDigest === 'string')
   assert.equal(digested.length, 2, JSON.stringify(digested.map(settlement => settlement.call?.seq)))
+})
+
+test('a dispatch fact drops the capture target the window digested', () => {
+  // An edit target is captured while the call still carries its text, so the fact
+  // records the source the edit would rewrite. Once the payload budget digests that
+  // call, the fold can no longer derive it: admission re-derives every fact from the
+  // retained tables, so a fact that still named the source would both keep a second
+  // copy of the payload and fail its own round trip.
+  const padding = 'z'.repeat(300 * 1024)
+  const captured = call(`/* ${padding} */\nlet captured = 1`, 'captured')
+  const dispatch = { seq: next(), type: 'tool/ptc-dispatch-start', data: {
+    rootCallId: 'captured', parentCallId: 'captured', subCallId: 'captured:ptc:1',
+    name: 'edit_run_code', argumentsDigest: 'f'.repeat(64), argumentsBytes: 2048,
+  } }
+  const events = [
+    captured,
+    result('captured'),
+    dispatch,
+    call(`/* ${padding} */\nconst after = 2`, 'after'),
+    result('after'),
+  ]
+  // While the payload is retained, the fact names exactly the cell an edit captures.
+  const live = fold(events.slice(0, 3))
+  const liveTarget = live.eventFacts.find(fact => fact.event.type === 'tool/ptc-dispatch-start').selectedTarget
+  assert.equal(liveTarget?.callSeq, captured.seq)
+  assert.equal(liveTarget?.source, JSON.parse(captured.data.arguments).code)
+
+  const state = fold(events)
+  const stored = JSON.parse(JSON.stringify(state))
+  const fact = stored.eventFacts.find(entry => entry.event.type === 'tool/ptc-dispatch-start')
+  assert.equal(fact.selectedTarget, null, 'the digested call leaves nothing an edit could capture')
+  assert.ok(JSON.stringify(fact).length < 4096,
+    'the fact keeps its identity and digests instead of the source it dropped')
+  assert.equal(stored.compacted, false, 'digesting a payload is not compaction')
+  // This is the only shape that survives admission's own re-derivation of the fact.
+  assert.equal(validateSessionTimelineState(stored), stored)
+  // Keeping the old target — with the fact's digest recomputed for it — is a state
+  // admission must refuse: the source it names is not in the checkpoint.
+  const forged = JSON.parse(JSON.stringify(stored))
+  const forgedFact = forged.eventFacts.find(entry => entry.event.type === 'tool/ptc-dispatch-start')
+  forgedFact.selectedTarget = liveTarget
+  const { digest: _digest, ...rest } = forgedFact
+  forgedFact.digest = factDigest(rest)
+  assert.throws(() => validateSessionTimelineState(forged), /nested edit target fact/u)
 })
 
 test('a digested cluster keeps each claimed call as an identity instead of its wire', () => {

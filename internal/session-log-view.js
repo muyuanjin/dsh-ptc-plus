@@ -1,6 +1,6 @@
 import {
   advanceSessionTimeline, createSessionTimelineState, factDigest, replaySessionTimelineFact, withFullRetention,
-  retentionSummaryOf, validateRetentionSummary, validateSessionTimelineState,
+  retentionSummaryOf, validateRetentionSummary, validateSessionTimelineState, admissionReplayBudget,
 } from './session-journal-recovery.js'
 import { isCanonicalSequence } from './session-journal.js'
 import { advanceSessionSurface, readSessionLog, sessionEvents } from './session-events.js'
@@ -39,7 +39,6 @@ function isContextStep(event) {
     || (event?.type === 'user/message' && event.data?.source?.kind === 'user')
 }
 
-export const ADMISSION_REPLAY_BUDGET_BYTES = 4 * 1024 * 1024
 const SESSION_LOG_PROJECTION_KEY = 'ptcPlusSessionLog'
 
 function emptyLogState() {
@@ -131,9 +130,7 @@ function applyLogEvent(state, event, index = event?.seq,
 }
 
 export function createSessionLogProjection(options = {}) {
-  const replayBudget = Number.isSafeInteger(options.replayBudgetBytes) && options.replayBudgetBytes > 0
-    ? options.replayBudgetBytes
-    : ADMISSION_REPLAY_BUDGET_BYTES
+  const replayBudget = admissionReplayBudget(options.replayBudgetBytes)
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
     stateVersion: 13,
@@ -153,7 +150,7 @@ export function createSessionLogProjection(options = {}) {
         throw new TypeError('invalid PTC session-log projection checkpoint')
       }
       if (!Array.isArray(value.logFacts)) throw new TypeError('invalid PTC session-log projection checkpoint facts')
-      validateSessionTimelineState(value.timeline, value.logFacts)
+      validateSessionTimelineState(value.timeline, value.logFacts, { replayBudgetBytes: replayBudget })
       // Admission proves digest-bound continuity and frontier agreement, not a
       // byte-for-byte replay equality of argument text. Replaying the whole log
       // here would cost the host a second fold of every event (and the retained

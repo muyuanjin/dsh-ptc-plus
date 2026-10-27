@@ -88,6 +88,36 @@ test('a transport that refuses the restore reports every binding instead of reje
   assert.deepEqual(outcome.failed, [{ name: 'lost', reason: 'transport refused the frame' }])
 })
 
+test('a name a running cell overlays keeps its overlay instead of a recorded value', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  let started
+  const running = new Promise(resolve => { started = resolve })
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const execution = runtime.runTentative('restore-overlay', {
+    program: 'return tools.wait()',
+    bindings: [{ global: 'tools', functions: { wait: async () => { started(); await gate; return 'ran' } } }],
+  })
+  await running
+  // The suspended cell still owns its request namespace, so the name is a hard
+  // overlay: a recorded value cannot take it over and must be reported instead of
+  // silently winning or silently disappearing.
+  const executor = sessionCellExecutor(runtime, 'restore-overlay')
+  const outcome = await executor.restoreBindings(
+    [{ name: 'tools', wire: encodeValue({ recorded: true }, LIMITS) }],
+    { ...runtime.config },
+  )
+  // Release before asserting: a suspended cell holds its program bindings
+  // installed, so an expectation that fails here must not leave the kernel running
+  // a program the test never finishes.
+  release()
+  const settled = await execution
+  assert.deepEqual(outcome.restored, [])
+  assert.deepEqual(outcome.failed, [{ name: 'tools', reason: 'the store cannot publish a session identity for this name' }])
+  assert.equal(settled.result.value, 'ran')
+})
+
 test('a restore-only cell whose worker cannot start fails as a worker exit', async t => {
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())

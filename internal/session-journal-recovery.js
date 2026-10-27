@@ -936,7 +936,22 @@ function resultIdentity(data) {
   ))).digest('hex')
 }
 
+/**
+ * How many bytes of retained payload admission may replay.
+ *
+ * A stored checkpoint is proved two ways: replaying its facts reproduces it
+ * byte-for-byte, or — because that replay costs a second fold of everything the
+ * session wrote — its per-fact digests and identity chain prove continuity. This
+ * budget decides which claim a given checkpoint gets, and both replays read it
+ * through `admissionReplayBudget`, so the timeline replay here and the
+ * log-identity replay in the session-log projection cannot disagree about it.
+ */
 const ADMISSION_REPLAY_BUDGET_BYTES = 4 * 1024 * 1024
+
+/** Resolve a caller's replay budget, falling back to the shipped one. */
+export function admissionReplayBudget(bytes) {
+  return Number.isSafeInteger(bytes) && bytes > 0 ? bytes : ADMISSION_REPLAY_BUDGET_BYTES
+}
 
 export function createSessionTimelineState() {
   return {
@@ -974,7 +989,18 @@ export function createSessionTimelineState() {
   }
 }
 
-export function validateSessionTimelineState(value, logFacts) {
+/**
+ * Prove a stored timeline checkpoint, given the session log's own facts when the
+ * caller holds them.
+ *
+ * `replayBudgetBytes` is the caller's replay budget: a checkpoint above it is
+ * admitted on its per-fact digests and identity chain instead of a replay, and a
+ * caller that lowers the budget (a test, or a host with a cheaper fold) must
+ * lower this same claim, not a second copy of it.
+ */
+export function validateSessionTimelineState(value, logFacts, options = {}) {
+  const replayBudget = admissionReplayBudget(options.replayBudgetBytes)
+
   const requireFact = condition => {
     if (!condition) throw new TypeError('invalid PTC session-log projection timeline checkpoint')
   }
@@ -1220,7 +1246,7 @@ export function validateSessionTimelineState(value, logFacts) {
     // while that payload stays inside the budget and falls back to the per-fact
     // digests plus the shape/identity checks above beyond it.
     replayBytes += factDigest(observation.event).length * 4
-    if (replayBytes > ADMISSION_REPLAY_BUDGET_BYTES) {
+    if (replayBytes > replayBudget) {
       replayComplete = false
       continue
     }

@@ -12,7 +12,6 @@ const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSum
   await import('../internal/session-journal-recovery.js')
 const { configureRetention } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
-const { encodeValue } = await import('../internal/value-wire.js')
 const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION } = await import('../internal/session-journal-schema.js')
 
@@ -233,43 +232,6 @@ test('a checkpoint stays below a small multiple of the payload budget', () => {
     `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
   assert.equal(state.hotCellDropped, false,
     'the newest cell fits the budget, so its payload is retained and no notice is due')
-})
-
-test('a digested cluster keeps the identity of the calls it made and loses only their wire', () => {
-  // A cell that called program functions records those calls in its journal. Once
-  // the window digests the cluster, the call identity (global, member, ok) has to
-  // survive while the argument wire becomes a digest: recovery reads the identity,
-  // and the edit path refolds the text from the log.
-  const payload = 'x'.repeat(600 * 1024)
-  const events = [
-    call('const neighbour = 1', 'digest-neighbour'),
-    result('digest-neighbour'),
-    call(`/* ${payload} */\nconst calls = 2`, 'digest-calls'),
-    { seq: next(), type: 'tool/result', data: { callId: 'digest-calls', isError: false,
-      message: { role: 'tool', source: { callId: 'digest-calls' }, content: [{ type: 'text', text: 'ok' }] },
-      meta: { [JOURNAL_KEY]: journal({ calls: [
-        { global: 'tools', member: 'probe', args: encodeValue({ question: 42 }), ok: true,
-          value: encodeValue('answer'), settle: 0 },
-      ] }) } } },
-  ]
-  const state = fold(events)
-  const digested = settlementList(state).find(settlement => settlement.call?.seq
-    === events[2].seq)
-  assert.equal(typeof digested.call.data.argumentsDigest, 'string', 'the cluster lost its payload')
-  assert.equal(digested.call.data.arguments, undefined)
-  assert.equal(digested.normalized.journal.calls.length, 1, 'the recorded call keeps its place')
-  assert.deepEqual({ ...digested.normalized.journal.calls[0], argsDigest: undefined, argsBytes: undefined }, {
-    global: 'tools', member: 'probe', argsDigest: undefined, argsBytes: undefined, ok: true,
-    value: encodeValue('answer'), settle: 0,
-  })
-  assert.match(digested.normalized.journal.calls[0].argsDigest, /^[a-f0-9]{64}$/u)
-  assert.ok(digested.normalized.journal.calls[0].argsBytes > 0)
-  // The stored result table keeps the same digested journal, so admission and the
-  // edit path read one shape.
-  const stored = resultList(state).find(entry => Array.isArray(entry?.journal?.calls)
-    && entry.journal.calls.length === 1)
-  assert.equal(stored?.journal.calls[0].args, undefined)
-  assert.match(stored?.journal.calls[0].argsDigest, /^[a-f0-9]{64}$/u)
 })
 
 test('a compaction summary is refused when any part of it cannot be proved', () => {

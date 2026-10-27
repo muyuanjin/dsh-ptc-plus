@@ -518,6 +518,7 @@ test('exports a Cordis config schema with validated runtime defaults', async () 
       autoStripExports: true,
       autoSplitRedeclarations: true,
       durableReplay: true,
+      editRewritesHistory: false,
       promptText: JSON.stringify({ schema: 'ptc-prompt-text/v1', overrides: {} }),
       unmeasuredCellLimit: 2,
       officialReplPriority: false,

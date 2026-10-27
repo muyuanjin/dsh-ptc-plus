@@ -1,7 +1,7 @@
 import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
 /** One session-owned capability view for presentation, discovery and preparation. */
 import { createHash } from 'node:crypto'
-import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from '@deepseek-ai/dsh-tools'
+import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from './host-tool-sdk.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { isModelInvocable, isUserInvocable } from '@deepseek-ai/dsh-skill'
 import { createScope } from '@deepseek-ai/dsh-scope'

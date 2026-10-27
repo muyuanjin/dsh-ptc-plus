@@ -248,11 +248,24 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
   const cancelCordisActivation = () => pendingCordisActivation?.cancel()
   const registerProjection = (projection, label) => {
     try {
-      const unregister = projectionService?.register?.(projection)
-      if (typeof unregister !== 'function') {
-        throw new Error('ptc-plus: sessionProjections.register did not return a disposer')
+      const registration = projectionService?.register?.(projection)
+      // A newer host returns a ProjectionHandle (`stateOf`/`readerFor`/`dispose`,
+      // possibly async); earlier hosts returned a disposer. Accept either shape so
+      // the projection is not silently dropped on the newer contract.
+      const dispose = typeof registration === 'function'
+        ? registration
+        : typeof registration?.dispose === 'function' ? () => registration.dispose() : undefined
+      if (dispose === undefined) {
+        throw new Error('ptc-plus: sessionProjections.register returned neither a disposer nor a handle')
       }
-      return unregister
+      // A handle may dispose asynchronously; a rejection there must not surface as
+      // an unhandled rejection during plugin teardown.
+      return () => {
+        try {
+          const pending = dispose()
+          if (typeof pending?.catch === 'function') pending.catch(() => {})
+        } catch {}
+      }
     } catch (error) {
       ctx.logger?.warn?.(`ptc-plus: ${label} projection unavailable`, error)
       return undefined

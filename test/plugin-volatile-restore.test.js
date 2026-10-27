@@ -69,4 +69,16 @@ test('a transferable value whose wire passes the binding cap is reported by name
   const journal = session.events.at(-1).data.meta.dshPtcPlus
   assert.deepEqual(journal.values, [], 'the encoded value is larger than the per-binding cap')
   assert.deepEqual(journal.unrecordedBindings, ['oversized'])
+  // The same cap bounds one settlement: bindings that each fit the per-binding cap
+  // still stop being recorded once the settlement reaches 1 MiB of wire, and the
+  // ones that no longer fit are named.
+  const declarations = Array.from({ length: 19 },
+    (_, index) => `const parcel${index} = Array.from({ length: 15 }, () => "y".repeat(4000))`).join('\n')
+  const counted = await run(declarations)
+  const settlement = session.events.at(-1).data.meta.dshPtcPlus
+  assert.equal(counted.error, undefined)
+  assert.ok(settlement.values.length > 0 && settlement.values.length < 19,
+    `the settlement keeps only what fits: ${settlement.values.length}`)
+  assert.ok(settlement.unrecordedBindings.includes('parcel18'),
+    JSON.stringify(settlement.unrecordedBindings))
 })

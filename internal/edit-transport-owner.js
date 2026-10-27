@@ -91,10 +91,18 @@ function nestedEditStart(sessionLog, exec) {
     target = refolded.run
     // The summary is the checkpoint's only record of a dropped cluster; the log is
     // the authority. When the two disagree the edit must not proceed on either.
+    //
+    // This call site cannot produce that disagreement: the summary and the refold
+    // come from the same fold of the same event slice, and the run the refold reads
+    // is the one the pruned fold pins, so `refoldEditableSettlement` never finds a
+    // summary record for it. The comparison stays for the exported contract, which
+    // covers both outcomes in test/projection-retention.test.js.
+    /* c8 ignore start -- same-fold determinism: the call site cannot disagree with itself (see above) */
     if (refolded.mismatch) {
       return { startSeq: event.seq, rootCallSeq, target: undefined, retentionSummary: view.retentionSummary,
         summaryMismatch: true }
     }
+    /* c8 ignore stop */
   }
   // The summary travels with the target so an unavailable edit can say why it is
   // unavailable: the cell fell outside the retention window instead of never
@@ -223,10 +231,12 @@ export function createEditTransportOwner(ctx, {
       throw new Error('ptc-plus: edit_run_code requires a unique persisted PTC sub-call start')
     }
     const target = start.target
+    /* c8 ignore start -- reachable only through `nestedEditStart`'s mismatch, which cannot disagree with itself (see there) */
     if (start.summaryMismatch === true) {
       return { accepted: false, scheduled: false,
         reason: `${PRUNED_SUMMARY_MISMATCH} / ${PRUNED_SUMMARY_MISMATCH_EN}` }
     }
+    /* c8 ignore stop */
     if (target?.source === undefined || target.callSeq === undefined) {
       return { accepted: false, scheduled: false,
         reason: start.retentionSummary === undefined

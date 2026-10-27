@@ -273,6 +273,16 @@ test('admission proves digest-bound continuity: it rejects a tampered fact diges
   const legacy = JSON.parse(JSON.stringify(checkpoint))
   for (const fact of legacy.timeline.eventFacts) delete fact.digest
   assert.deepEqual(projection.stateSchema.parse(legacy), JSON.parse(JSON.stringify(legacy)))
+  // `compacted` and the summary describe one decision, so a checkpoint that claims
+  // one without the other cannot be read: the flag alone would hide dropped
+  // clusters, and a summary without the flag would describe a fold that never ran.
+  const dropped = JSON.parse(JSON.stringify(checkpoint))
+  dropped.timeline.compacted = true
+  assert.throws(() => projection.stateSchema.parse(dropped), /retention summary|PTC session-log projection/u)
+  const unexpected = JSON.parse(JSON.stringify(checkpoint))
+  unexpected.timeline.compacted = false
+  unexpected.timeline.retentionSummary = { fromSeq: 1, toSeq: 1, count: 1, chainDigest: 'a'.repeat(64), entries: [] }
+  assert.throws(() => projection.stateSchema.parse(unexpected), /retention summary|PTC session-log projection/u)
 })
 
 test('public restore rejects malformed nested timeline evidence before advancing a valid suffix', () => {

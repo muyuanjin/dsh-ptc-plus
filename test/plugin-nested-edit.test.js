@@ -764,8 +764,8 @@ test('an edit refolds the hot cell the retention budget dropped from the checkpo
   )
   await state.runDurable(session.id, 'const retainedNeighbour = 1', {}, { session, callId: 'hot-cell-neighbour' })
   const padding = 'x'.repeat(600 * 1024)
-  const targetSource = `/* ${padding} */\nlet hotCellValue = 2`
-  await state.runDurable(session.id, targetSource, {}, { session, callId: 'hot-cell-target' })
+  const targetSource = `/* ${padding} */\nlet hotCellValue = 2; await probe()`
+  await state.runDurable(session.id, targetSource, { probe: async () => 1 }, { session, callId: 'hot-cell-target' })
   const dropped = projectSessionLog({ session })
   assert.equal(dropped.hotCellDropped, true, 'the newest cell no longer carries its payload')
   assert.equal(dropped.editableRun, undefined, 'the checkpoint offers no edit target')

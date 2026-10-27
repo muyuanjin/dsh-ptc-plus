@@ -112,7 +112,7 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
     ['exception', 'throw new Error("same failure")', ['inspect existing bindings and retry only the failing expression']],
     ['encoding', 'return ["x".repeat(600)]', ['return a PTC Value V1 value or keep the live value in a REPL binding', 'reduce the returned graph when it exceeds the configured value budget']],
   ]) {
-    for (const mismatch of ['none', 'completion', 'transcript', 'diagnostic', 'malformed-wording']) {
+    for (const mismatch of ['none', 'completion', 'transcript', 'diagnostic', 'malformed-wording', 'wording-shape']) {
       const session = orderedSurfaceSession(`${id}-${mismatch}`)
       const first = fixture({ maxOutputBytes: 512 })
       let calls = 0
@@ -136,6 +136,12 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
       // diagnostic wording it claims to prove is unavailable, not trusted.
       if (mismatch === 'malformed-wording') {
         historical.meta[DIAGNOSTIC_WORDING_KEY] = { digest: 'not-a-digest' }
+      }
+      // The record is a closed one-field adjunct: a field this generation never wrote
+      // could describe a proof the reader does not understand, so it is refused
+      // instead of being read as a digest it is not.
+      if (mismatch === 'wording-shape') {
+        historical.meta[DIAGNOSTIC_WORDING_KEY] = { ...historical.meta[DIAGNOSTIC_WORDING_KEY], extra: true }
       }
       appendRunCodeEvents(session.events, 'historical-failure', source, historical)
       await first.dispose()

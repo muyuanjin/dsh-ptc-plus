@@ -1663,12 +1663,6 @@ function resolvePromptText(value) {
   return freezeResolved(overrides2, reported);
 }
 function enforceEffectiveCeilings(overrides2, reported) {
-  for (const [id2, text] of [...overrides2]) {
-    if (byteLength(text) > PROMPT_TEXT_MAX_SLOT_BYTES) {
-      reported.push({ slotId: id2, anchorId: ANCHOR_OF_SLOT.get(id2), reason: "slot-exceeds-limit" });
-      overrides2.delete(id2);
-    }
-  }
   for (const anchor of PROMPT_ANCHORS) {
     const overridden = anchor.slots.filter((slot) => overrides2.has(slot.id));
     if (overridden.length === 0) continue;

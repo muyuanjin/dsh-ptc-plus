@@ -1740,9 +1740,16 @@ try {
   await Promise.race([
     verifyEvaluation(),
     new Promise((_, reject) => {
+      /* c8 ignore start -- the probe settles in microtasks, so the timer cannot win */
+      // `verifyEvaluation` dispatches its fixed sources through this realm's own
+      // evaluator, and every await it takes settles in a microtask (`throw`,
+      // `await Promise.reject`, a syntax rejection). A `setTimeout` is a macrotask,
+      // so it cannot run before those microtasks drain: the rejection below is
+      // unreachable for any input, and a bound of 1 ms still starts the worker.
       startupTimer = setTimeout(() => reject(new Error(
         `REPL settlement probe timed out after ${startupProbeMs}ms`,
       )), startupProbeMs)
+      /* c8 ignore stop */
     }),
   ])
   replModuleRealm = (await evaluate('({Promise,stringify:value=>`${value}`,importModule:(source,options)=>import(source,options)})')).value

@@ -596,7 +596,7 @@ class SessionKernel {
               editRewritesHistory: config.editRewritesHistory === true,
             })
           } catch (error) {
-            /* c8 ignore start -- a fold that throws is not reachable from any supported session; cover or prove it in 0.5.3 */
+            /* c8 ignore start -- the fold reports damaged history as data, so no supported session reaches this catch */
             const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
             if (boundary !== undefined) recoveryBoundaries.push(boundary)
             this.history = emptyHistory()
@@ -604,13 +604,13 @@ class SessionKernel {
             this.initialRecoveryBoundary = undefined
             /* c8 ignore stop */
           }
-          /* c8 ignore start -- volatile suffix on the first fold; cover in 0.5.3 */
+          /* c8 ignore start -- volatile suffix on the first fold; no case settles a volatile suffix before the first replay */
           if (this.history.volatileSuffix.length > 0) {
             this.recoveryNotice = recoveryDiagnostic(droppedBindingNames(this.history), this.history.volatileSuffix.length)
           }
           /* c8 ignore stop */
           this.initialRecoveryBoundary = recoveryBoundaryForHistory(this.history)
-          /* c8 ignore start -- first-fold recovery boundary; cover in 0.5.3 */
+          /* c8 ignore start -- first-fold recovery boundary; no case makes the first replay record one */
           if (this.initialRecoveryBoundary !== undefined) {
             recoveryBoundaries.push(this.initialRecoveryBoundary)
             this.initialRecoveryBoundary = undefined
@@ -764,7 +764,7 @@ const failedNames = [...new Set(this.restoredFromRecord
         && supersededNames.length === 0
       if (restoredCount > 0 && completeRestore) {
         this.restoredFromRecord = []
-      /* c8 ignore start -- needs a rewind that ended an announced name; cover in 0.5.3 */
+      /* c8 ignore start -- needs a rewind that ended an announced name after a reported recovery; no case does */
       } else if (restoredCount > 0 && liveNames.length === 0 && failedNames.length === 0 && alreadyReported) {
         this.restoredFromRecord = []
       /* c8 ignore stop */
@@ -777,7 +777,7 @@ const failedNames = [...new Set(this.restoredFromRecord
           alreadyReported,
         )
       }
-      /* c8 ignore start -- needs a proven name the replay never visits; cover in 0.5.3 */
+      /* c8 ignore start -- needs a proven name the replay never visits; no case records one */
       if (droppedNames.length > 0) {
         this.recoveryNotice = recoveryDiagnostic(droppedNames, droppedNames.length)
       /* c8 ignore stop */

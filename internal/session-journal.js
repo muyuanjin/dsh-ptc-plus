@@ -135,17 +135,6 @@ export function diagnosticWordingDigest(journal) {
   return digestOf(diagnostics.map(diagnosticWordingFacts))
 }
 
-/** Attach the recorded wording digest beside a journal, or drop a stale one. */
-export function withDiagnosticWording(meta, journal) {
-  const digest = diagnosticWordingDigest(journal)
-  if (digest === undefined) {
-    if (!Object.hasOwn(meta, DIAGNOSTIC_WORDING_KEY)) return meta
-    const { [DIAGNOSTIC_WORDING_KEY]: _omitted, ...rest } = meta
-    return rest
-  }
-  return { ...meta, [DIAGNOSTIC_WORDING_KEY]: { digest } }
-}
-
 /**
  * Digest of the one settlement a journal states: the status of its cell, its
  * completion, and the wording of its diagnostics.

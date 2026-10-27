@@ -112,6 +112,20 @@ test('an edited settlement is not evidence for the bindings its cell declared', 
       delete meta[SETTLEMENT_PROOF_KEY]
       return meta
     }, undefined],
+    // The proof is a closed record: a field this generation never wrote, or a
+    // version whose semantics it does not know, describes a proof it cannot read,
+    // so it is refused instead of being read as one it understands.
+    ['malformed proof', meta => {
+      meta[SETTLEMENT_PROOF_KEY] = { ...meta[SETTLEMENT_PROOF_KEY], extra: true }
+      return meta
+    }, /invalid recorded settlement proof/u],
+    ['unknown proof version', meta => {
+      meta[SETTLEMENT_PROOF_KEY] = {
+        ...meta[SETTLEMENT_PROOF_KEY],
+        version: SETTLEMENT_PROOF_VERSION + 1,
+      }
+      return meta
+    }, /invalid recorded settlement proof/u],
   ]
   for (const [label, edit, reason] of variants) {
     const events = []

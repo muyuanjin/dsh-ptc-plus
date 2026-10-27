@@ -26,7 +26,6 @@ import {
   reduceStateOperations,
   settlementProofDigest,
   userBindingsForJournal,
-  withDiagnosticWording,
   withJournal,
   withRecoveryBoundaries,
   withRewrites,
@@ -797,9 +796,9 @@ test('creates journals, compares semantics, validates names, and merges metadata
   assert.equal(stamped[SETTLEMENT_PROOF_KEY].version, SETTLEMENT_PROOF_VERSION)
   assert.equal(stamped[SETTLEMENT_PROOF_KEY].recordedMessage, settlementProofDigest(failing))
   assert.notEqual(settlementProofDigest({ ...failing, status: 'noop' }), settlementProofDigest(failing))
-  // The diagnostic wording digest is the older record's evidence; it is still
-  // attached on request and still read from a record that carries one.
-  const worded = withDiagnosticWording(stamped, failing)
+  // The diagnostic wording digest is the older record's evidence: 0.5.2 published
+  // it, and the fold still reads it from a record that carries one.
+  const worded = { ...stamped, [DIAGNOSTIC_WORDING_KEY]: { digest: diagnosticWordingDigest(failing) } }
   assert.deepEqual(Object.keys(worded[DIAGNOSTIC_WORDING_KEY]), ['digest'])
   assert.equal(worded[DIAGNOSTIC_WORDING_KEY].digest, diagnosticWordingDigest(failing))
   const historical = { ...worded, [DIAGNOSTIC_WORDING_KEY]: worded[DIAGNOSTIC_WORDING_KEY] }
@@ -808,7 +807,7 @@ test('creates journals, compares semantics, validates names, and merges metadata
   historical.diagnostics = [{ ...wording, message: 'uncaught Error: edited' }]
   assert.notEqual(diagnosticWordingDigest(historical), worded[DIAGNOSTIC_WORDING_KEY].digest)
   assert.equal(diagnosticWordingDigest(journal()), undefined)
-  assert.equal(withDiagnosticWording(stamped, journal())[DIAGNOSTIC_WORDING_KEY], undefined)
+  assert.equal(stamped[DIAGNOSTIC_WORDING_KEY], undefined)
 
   const rewrites = () => [
     { kind: 'import', description: 'converted static import of node:path', source: 'node:path' },

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderDiagnostic } from '../internal/diagnostic.js'
+import { DIAGNOSTIC_WORDING_KEY } from '../internal/session-journal.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 
@@ -111,7 +112,7 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
     ['exception', 'throw new Error("same failure")', ['inspect existing bindings and retry only the failing expression']],
     ['encoding', 'return ["x".repeat(600)]', ['return a PTC Value V1 value or keep the live value in a REPL binding', 'reduce the returned graph when it exceeds the configured value budget']],
   ]) {
-    for (const mismatch of ['none', 'completion', 'transcript', 'diagnostic']) {
+    for (const mismatch of ['none', 'completion', 'transcript', 'diagnostic', 'malformed-wording']) {
       const session = orderedSurfaceSession(`${id}-${mismatch}`)
       const first = fixture({ maxOutputBytes: 512 })
       let calls = 0
@@ -130,6 +131,11 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
       if (mismatch === 'diagnostic') {
         journal.diagnostics[0].message += ' changed failure'
         journal.completion.error.message = renderDiagnostic(journal.diagnostics[0], source)
+      }
+      // A wording record whose shape recovery cannot read is damage on its own: the
+      // diagnostic wording it claims to prove is unavailable, not trusted.
+      if (mismatch === 'malformed-wording') {
+        historical.meta[DIAGNOSTIC_WORDING_KEY] = { digest: 'not-a-digest' }
       }
       appendRunCodeEvents(session.events, 'historical-failure', source, historical)
       await first.dispose()

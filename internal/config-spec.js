@@ -217,6 +217,15 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Rebuilds recoverable REPL state from the session journal after a worker restart.',
   },
   {
+    key: 'editRewritesHistory',
+    type: 'boolean',
+    default: false,
+    label: '编辑改写目标单元格',
+    labelEn: 'Rewrite the edited cell',
+    description: '开启后，已接受的 edit_run_code 修订取代目标单元格：目标仍留在日志里，但不再参与环境重建，修订不再声明的名字以"被取代"报告而不是"丢失"。关闭时保持追加语义，旧单元格继续参与环境。',
+    descriptionEn: 'When on, an accepted edit_run_code revision supersedes its target cell: the target stays in the log but no longer builds the environment, and names the revision no longer declares are reported as superseded rather than lost. Off keeps append semantics, where the old cell keeps contributing.',
+  },
+  {
     key: 'retentionPayloadRuns',
     type: 'integer',
     default: 8,
@@ -483,7 +492,7 @@ export const CONFIG_GROUPS = Object.freeze([
     key: 'recovery',
     label: '状态与恢复',
     labelEn: 'State and recovery',
-    fields: Object.freeze(['durableReplay', 'unmeasuredCellLimit', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures']),
+    fields: Object.freeze(['durableReplay', 'editRewritesHistory', 'unmeasuredCellLimit', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures']),
   },
   {
     key: 'extensions',

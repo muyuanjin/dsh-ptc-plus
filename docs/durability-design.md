@@ -193,7 +193,8 @@ pre-execute -> tools/execute -> post-execute
 9. durable node 保存 parent link，命名状态保存 node index；
 10. `meta.dshPtcPlusRecoveryBoundaries` 在 `tool/result` event sequence 参与排序前完成规范化；损坏 boundary 被拒绝为状态证据并建立保守收缩点，合法 boundary 通过失败 call seq 选择 node，并要求记录的 frontier 恰好是该 node 的 parent；
 11. 折叠器剪除不可证明的 node、binding 与依赖后代，按剩余记录重算 checkpoints；runtime 重置 worker 并验证候选 frontier，逐级收缩到最大可重放 frontier，必要时到空 REPL；
-12. 当前 cell 只在 worker 实际拥有该 frontier 后执行，成为它的新 child 或空 REPL 的新 root；当前结果持久记录本次收缩并投影一次恢复诊断。
+12. 当前 cell 只在 worker 实际拥有该 frontier 后执行，成为它的新 child 或空 REPL 的新 root；当前结果持久记录本次收缩并投影一次恢复诊断；
+13. `editRewritesHistory` 打开时，派生 cell 仍按实际派生 start 序号折叠，同时折叠器应用它记录的取代关系：被取代的 node 保留在记录里但离开 head 的 parent 路径，它的后继改接它的 parent，因此除该单元格外的环境不变。关系与日志能证明的被撤销名字随恢复结果给出（`supersessions` / `supersededBindings`），不改变 `§history` 的可枚举形状。开关关闭时折叠保持追加语义，见 [ADR 0048](adr/0048-supersede-a-rewritten-cell.md)。
 
 当前 journal 没有完整的逐 binding 读写与传递依赖图。源码存在、重放未抛错或 completion 相同，都不足以证明闭包捕获、属性 mutation、动态名称访问或运行时值与原执行一致。因此恢复不能任意挑选 unknown boundary 后看似独立的 binding；缺少机械证明时以 cell 为原子并丢弃受影响后缀。将来若要保留更细粒度状态，必须通过版本化、owner-owned 的依赖证据扩展契约，不能从名称或成功重放猜测。
 
@@ -279,6 +280,8 @@ help: ...
 成功 cell 的恢复通知进入 logs；失败 cell 的恢复说明追加到主错误之后，不混入捕获的控制台输出；其他既有诊断提示仍按各自规则呈现。发出的结构化诊断进入当前 journal，可从 session log 重建。连续收缩期间只显示一次完整通知；一个无收缩的 cell 结束提示周期，之后再次收缩会显示新的完整通知。每次实际收缩的边界仍随当前 result 持久化，后续 cold start 从新分支恢复，不重复撞击同一损坏历史。
 
 live kernel 首次进入 volatile 只更新 journal 的 `status` / `volatileReason` 和 `repl.state(list)`，不向模型投影 warning/note。该转换不要求当前任务采取行动；只有 cold recovery 已实际跳过 volatile、unknown 或 replay-abandoned 历史时才发送 `PTC-R002`。worker 在首次观察到直接 Node/OS 边界时立即通知主线程，因此后续 hard abort、timeout 或 worker exit 仍能把原因写入 discarded journal。
+
+记录中的 rewind 与取代关系是另外两种“按记录结束”，各自有自己的诊断：`PTC-R005` 说明 rewind 结束了哪些 binding，`PTC-R007` 说明哪一格取代了哪一格，并在日志能证明时点名修订不再提供、重放也没有重新装上的名字。两者都不是恢复失败，也不把 live 缓存说成已被清空；取代关系在每个 runtime 内报告一次。
 
 ## 失败状态语义
 

@@ -243,20 +243,53 @@ function applyRecord(state, record, invalidCallSeqs) {
     state.trusted = true
     state.volatileSuffix.length = 0
   }
+  // A record may declare that it is the revision of an earlier cell. Adoption of
+  // that relation belongs to the fold, because only the fold knows the path that
+  // builds the environment: the superseded cell keeps its place in the record and
+  // leaves the path, and the cells that followed it continue from its parent.
+  const superseded = state.editRewritesHistory && record.supersedes !== undefined
+    ? state.nodes.findIndex(node => node.callSeq === record.supersedes) : -1
+  const previousHead = state.head
+  const supersededBindings = new Set(state.supersededBindings)
+  const supersessions = state.supersessions.length
+  const repaired = []
+  if (superseded >= 0) {
+    const parent = state.nodes[superseded].parent
+    for (let child = 0; child < state.nodes.length; child += 1) {
+      if (state.nodes[child].parent !== superseded) continue
+      state.nodes[child] = Object.freeze({ ...state.nodes[child], parent })
+      repaired.push(child)
+    }
+  }
   const node = Object.freeze({
     code,
     journal,
     callSeq: call.seq,
-    parent: state.head,
+    parent: previousHead,
     ...(result.userBindings === undefined ? {} : { userBindings: result.userBindings }),
   })
   const index = state.nodes.push(node) - 1
   state.head = index
+  if (superseded >= 0) {
+    // Only names the record proves count. A durable declaration that the replay
+    // re-establishes is not evidence about the superseded cell, and claiming it
+    // would report a binding this fold cannot see.
+    const supplied = new Set(recordedBindingNames(node))
+    for (const name of recordedBindingNames(state.nodes[superseded])) {
+      if (!supplied.has(name)) state.supersededBindings.add(name)
+    }
+    state.supersessions.push(Object.freeze({
+      supersededCallSeq: record.supersedes,
+      supersedingCallSeq: record.call.seq,
+    }))
+  }
   try {
     applyOperations(state, journal.operations, index)
   } catch (error) {
     state.nodes.pop()
-    state.head = node.parent
+    state.head = previousHead
+    state.supersededBindings = supersededBindings
+    state.supersessions.length = supersessions
     throw error
   }
 }
@@ -277,9 +310,15 @@ function foldRecords(records, invalidCallSeqs, options = {}) {
     volatileSuffix: [],
     provenBindings: new Set(),
     deletedBindings: new Set(),
+    // One recorded revision replaced the cell it edited. The relation, not a
+    // deletion, is what the log proves: the superseded cell stays in the record
+    // and off the path to the head.
+    supersessions: [],
+    supersededBindings: new Set(),
     trusted: true,
     surfaceContracted: options.surfaceContracted === true,
     liveOnlyLost: options.liveOnlyLost === true,
+    editRewritesHistory: options.editRewritesHistory === true,
   }
   for (const record of records) {
     applyRecord(state, record, invalidCallSeqs)
@@ -2299,7 +2338,8 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   // A live environment that was released cannot lend its recorded live-only
   // values to the environment that replaces it. The flag belongs to the fold, so
   // every re-fold below carries it.
-  const foldOptions = { liveOnlyLost: options?.liveOnlyLost === true }
+  const foldOptions = { liveOnlyLost: options?.liveOnlyLost === true,
+    editRewritesHistory: options?.editRewritesHistory === true }
   let state = foldRecords(records, invalidCallSeqs, foldOptions)
   let boundaryIndex = 0
   const carrierCallSeqForBoundary = boundary => boundary.carrierCallSeq
@@ -2415,6 +2455,9 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
           code: postEdit.derived.code,
           result: { eventSeq: result.eventSeq, journal: postEdit.derived.journal,
             derived: postEdit.derived, userBindings: postEdit.derived.userBindings },
+          // The revision names the cell it edits. Whether that relation replaces
+          // the target or appends to it is the fold's decision, not the log's.
+          supersedes: postEdit.targetCallSeq,
           hidden: visibleCalls instanceof Set && (!visibleCalls.has(call.seq)
             || !visibleCalls.has(postEdit.targetCallSeq)),
         })
@@ -2479,6 +2522,19 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   // contract other readers compare against, so the deletion set stays off it.
   Object.defineProperty(history, 'deletedBindings', {
     value: [...state.deletedBindings],
+    enumerable: false,
+    configurable: true,
+  })
+  // The supersession relation is recovery evidence of the same kind: which cell
+  // each revision replaced, and which proved names the path no longer supplies
+  // because of it. Both stay off the enumerable shape for the same reason.
+  Object.defineProperty(history, 'supersessions', {
+    value: [...state.supersessions],
+    enumerable: false,
+    configurable: true,
+  })
+  Object.defineProperty(history, 'supersededBindings', {
+    value: [...state.supersededBindings],
     enumerable: false,
     configurable: true,
   })

@@ -2071,6 +2071,15 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
+    key: "editRewritesHistory",
+    type: "boolean",
+    default: false,
+    label: "\u7F16\u8F91\u6539\u5199\u76EE\u6807\u5355\u5143\u683C",
+    labelEn: "Rewrite the edited cell",
+    description: '\u5F00\u542F\u540E\uFF0C\u5DF2\u63A5\u53D7\u7684 edit_run_code \u4FEE\u8BA2\u53D6\u4EE3\u76EE\u6807\u5355\u5143\u683C\uFF1A\u76EE\u6807\u4ECD\u7559\u5728\u65E5\u5FD7\u91CC\uFF0C\u4F46\u4E0D\u518D\u53C2\u4E0E\u73AF\u5883\u91CD\u5EFA\uFF0C\u4FEE\u8BA2\u4E0D\u518D\u58F0\u660E\u7684\u540D\u5B57\u4EE5"\u88AB\u53D6\u4EE3"\u62A5\u544A\u800C\u4E0D\u662F"\u4E22\u5931"\u3002\u5173\u95ED\u65F6\u4FDD\u6301\u8FFD\u52A0\u8BED\u4E49\uFF0C\u65E7\u5355\u5143\u683C\u7EE7\u7EED\u53C2\u4E0E\u73AF\u5883\u3002',
+    descriptionEn: "When on, an accepted edit_run_code revision supersedes its target cell: the target stays in the log but no longer builds the environment, and names the revision no longer declares are reported as superseded rather than lost. Off keeps append semantics, where the old cell keeps contributing."
+  },
+  {
     key: "retentionPayloadRuns",
     type: "integer",
     default: 8,
@@ -2335,7 +2344,7 @@ var CONFIG_GROUPS = Object.freeze([
     key: "recovery",
     label: "\u72B6\u6001\u4E0E\u6062\u590D",
     labelEn: "State and recovery",
-    fields: Object.freeze(["durableReplay", "unmeasuredCellLimit", "officialReplPriority", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
+    fields: Object.freeze(["durableReplay", "editRewritesHistory", "unmeasuredCellLimit", "officialReplPriority", "tipsEnabled", "tipCooldownMessages", "tipEscalationFailures"])
   },
   {
     key: "extensions",

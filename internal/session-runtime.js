@@ -180,6 +180,34 @@ export function vanishedBindingDiagnostic(names) {
   })
 }
 
+/**
+ * Notice for bindings a recorded revision superseded.
+ *
+ * A revision that rewrites its target puts the target off the recorded path, so
+ * the target's declarations stop building the environment. They are not missing:
+ * the log says which revision replaced them, and reporting that relation keeps
+ * the model from reading a later `x is not defined` as its own mistake.
+ */
+export function supersededDiagnostic(bindings, supersessions = []) {
+  const names = bindings.length === 0 ? '' : ` (${bindings.join(', ')})`
+  const relations = supersessions.map(item =>
+    `cell ${item.supersededCallSeq} by cell ${item.supersedingCallSeq}`).join('; ')
+  return diagnostic({
+    code: 'PTC-R007',
+    severity: 'warning',
+    phase: 'recover',
+    message: (bindings.length === 0
+      ? 'A recorded revision replaced the cell it edited'
+      : `Superseded ${bindings.length} binding(s)${names} because a recorded revision replaced the cell that declared them`)
+      + `${relations === '' ? '' : ` (${relations})`}. The replaced cell stays in the session log but no longer builds this environment.`,
+    stateEffect: 'rolled-back',
+    help: [
+      'this is not a recovery failure: an accepted edit rewrote the cell that declared these bindings, and the revision does not declare them',
+      'redeclare a superseded name in a new cell before using it again',
+    ],
+  })
+}
+
 function unverifiedCompletionDiagnostic(count) {
   return diagnostic({
     code: 'PTC-R003',
@@ -342,6 +370,9 @@ class SessionKernel {
     // explained a recovery. Both exist to keep one event from being reported
     // twice and to notice a binding that stops existing afterwards.
     this.announcedLive = new Set()
+    // A recorded supersession is a durable fact; announcing it once per runtime
+    // keeps later folds from repeating a relation the model already read.
+    this.announcedSupersessions = new Set()
     this.recoveryHelpSignature = undefined
     this.recoveryEventCount = 0
     this.active = undefined
@@ -562,6 +593,7 @@ class SessionKernel {
           try {
             this.history = recoverJournal(observedSession, request.callSeq, {
               visibleCallSeqs,
+              editRewritesHistory: config.editRewritesHistory === true,
             })
           } catch (error) {
             /* c8 ignore start -- a fold that throws is not reachable from any supported session; cover or prove it in 0.5.3 */
@@ -680,6 +712,7 @@ class SessionKernel {
             const recovered = recoverJournal(observedSession, request.callSeq, {
               extraBoundaries: [boundary],
               visibleCallSeqs: visibleExecutableCallSeqs(observedSession),
+              editRewritesHistory: config.editRewritesHistory === true,
             })
             const nextPathLength = pathToHead(recovered).length
             if (nextPathLength >= previousPathLength) throw new Error('recovery did not contract the historical frontier')
@@ -716,6 +749,8 @@ const failedNames = [...new Set(this.restoredFromRecord
   .filter(name => typeof name === 'string'))]
       const droppedNames = this.missingBindings === undefined ? [] : [...new Set(this.missingBindings)]
       const endedNames = this.rewindEndedBindings === undefined ? [] : [...new Set(this.rewindEndedBindings)]
+      const supersededNames = this.supersededEndedBindings === undefined
+        ? [] : [...new Set(this.supersededEndedBindings)]
       const alreadyReported = this.recoveryEventCount > 0
       // A complete restore is invisible to the model. Every recorded binding was
       // installed, nothing was dropped or ended, and the next cell behaves exactly
@@ -726,6 +761,7 @@ const failedNames = [...new Set(this.restoredFromRecord
       const completeRestore = failedNames.length === 0
         && droppedNames.length === 0
         && endedNames.length === 0
+        && supersededNames.length === 0
       if (restoredCount > 0 && completeRestore) {
         this.restoredFromRecord = []
       /* c8 ignore start -- needs a rewind that ended an announced name; cover in 0.5.3 */
@@ -750,7 +786,16 @@ const failedNames = [...new Set(this.restoredFromRecord
       }
       // A rewind that ended a binding is recorded, not a loss: report it only when
       // the replay installed nothing under that name anywhere (path, off-path or
-      // catalog), so a correct value never carries a "dropped" notice.
+      // catalog), so a correct value never carries a "dropped" notice. A revision
+      // that superseded a cell is the other recorded ending: the environment it
+      // built differs from the cells the log still lists, so the relation is
+      // reported once per runtime instead of on every later fold.
+      const freshSupersessions = (this.supersessions ?? [])
+        .filter(item => !this.announcedSupersessions.has(item.supersedingCallSeq))
+      if (this.recoveryNotice === undefined && (freshSupersessions.length > 0 || supersededNames.length > 0)) {
+        this.recoveryNotice = supersededDiagnostic(supersededNames, freshSupersessions)
+        for (const item of freshSupersessions) this.announcedSupersessions.add(item.supersedingCallSeq)
+      }
       if (this.recoveryNotice === undefined && endedNames.length > 0) {
         this.recoveryNotice = rewindEndedDiagnostic(endedNames)
       }
@@ -772,6 +817,8 @@ const failedNames = [...new Set(this.restoredFromRecord
       this.restoredFromRecord = []
       this.missingBindings = undefined
       this.rewindEndedBindings = undefined
+      this.supersededEndedBindings = undefined
+      this.supersessions = undefined
     }
     const leadingDiagnostics = [
       ...(this.recoveryNotice === undefined || this.recoveryNoticeShown ? [] : [this.recoveryNotice]),
@@ -938,9 +985,17 @@ const failedNames = [...new Set(this.restoredFromRecord
     // correct.
     const installed = new Set(replayedNames)
     for (const name of this.bindingCatalog.inputs().knownBindings) installed.add(name)
-    this.rewindEndedBindings = [...endedBindings].filter(name => !installed.has(name))
+    // A superseded name is ended by the record that replaced its cell, so it is
+    // reported apart from a rewind and never as a binding recovery failed to
+    // install: the log says which revision replaced it.
+    const supersededEnded = new Set((this.history.supersededBindings ?? [])
+      .filter(name => !installed.has(name)))
+    this.rewindEndedBindings = [...endedBindings]
+      .filter(name => !installed.has(name) && !supersededEnded.has(name))
+    this.supersededEndedBindings = [...supersededEnded]
+    this.supersessions = this.history.supersessions ?? []
     this.missingBindings = (this.history.provenBindings ?? [])
-      .filter(name => !installed.has(name) && !endedBindings.has(name))
+      .filter(name => !installed.has(name) && !endedBindings.has(name) && !supersededEnded.has(name))
   }
 
   completeJournal(journal, status, result, volatileReason, diagnostics = [], completion = undefined, values = undefined) {
@@ -1372,7 +1427,8 @@ export class SessionRuntime {
         kernel.surfaceGeneration = surfaceGeneration(session)
       } else {
         const timeline = foldSessionTimeline(observed.events)
-        const history = recoverJournal(observed, undefined, { visibleCallSeqs: visible })
+        const history = recoverJournal(observed, undefined, { visibleCallSeqs: visible,
+          editRewritesHistory: this.config.editRewritesHistory === true })
         const head = history.nodes[history.head]
         if (head === undefined) return unavailableReplMemorySnapshot()
         // A cold inventory can describe a proved recorded frontier without
@@ -1468,6 +1524,7 @@ export class SessionRuntime {
           ? emptyHistory()
           : recoverJournal(sessionLog, callSeq, {
             visibleCallSeqs: visibleExecutableCallSeqs(sessionLog),
+            editRewritesHistory: cellConfig.editRewritesHistory === true,
             ...(liveOnlyLost ? { liveOnlyLost: true } : {}),
           })
       } catch (error) {

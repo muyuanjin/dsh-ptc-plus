@@ -2076,6 +2076,7 @@ test('config schema defaults expose the settings switches', async () => {
     'autoStripExports',
     'autoSplitRedeclarations',
     'durableReplay',
+    'editRewritesHistory',
     'retentionPayloadRuns',
     'retentionPayloadBytes',
     'retentionClusters',
@@ -2128,7 +2129,7 @@ test('config schema defaults expose the settings switches', async () => {
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'recovery').fields,
-    ['durableReplay', 'unmeasuredCellLimit', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures'],
+    ['durableReplay', 'editRewritesHistory', 'unmeasuredCellLimit', 'officialReplPriority', 'tipsEnabled', 'tipCooldownMessages', 'tipEscalationFailures'],
   )
   assert.deepEqual(
     CONFIG_GROUPS.find(group => group.key === 'extensions').fields,

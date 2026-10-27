@@ -114,6 +114,8 @@ An `accepted: true, scheduled: true` receipt means the edit is scheduled: the en
 
 When an accepted edit cannot obtain a compute baseline before it runs, the receipt stays a receipt: the revision does not execute, publishes no new binding, and the outer cell keeps its own result, so a restart does not lose what that cell already saved as a durable checkpoint.
 
+The `editRewritesHistory` setting (off by default) decides how a rebuilt environment reads that edit. Off keeps append semantics: the edited cell and its revision both stay in the environment, and the revision only overwrites the names it declares again. On leaves the edited cell in the session log but stops it from building the environment, replaced by the revision; names the revision no longer declares are reported as superseded (`PTC-R007`) rather than lost. The names the log can prove are named; where it cannot, only the relation is stated.
+
 The first two behaviors are on by default and can be disabled in settings. Syntax suggestions never execute on their own, and they say nothing about whether the code matches the task's intent. A volatile state cannot be saved as a durable checkpoint, but a rejected save leaves the current variables usable; restore does not undo external effects or change global binding configuration.
 
 ## Project files and tool capabilities

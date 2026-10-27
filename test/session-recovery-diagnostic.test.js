@@ -62,3 +62,20 @@ test('a recorded rewind reports the bindings it ended, apart from a loss', async
   // them, and it names them instead of only counting.
   assert.doesNotMatch(diagnostic.message, /unreconstructable|no recorded value proves/u)
 })
+
+test('a recorded supersession names the cells it relates and the bindings it ended', async () => {
+  const { supersededDiagnostic } = await import('../internal/session-runtime.js')
+  const named = supersededDiagnostic(['withdrawn'], [{ supersededCallSeq: 2, supersedingCallSeq: 8 }])
+  assert.equal(named.code, 'PTC-R007')
+  assert.equal(named.severity, 'warning')
+  assert.equal(named.phase, 'recover')
+  assert.match(named.message, /Superseded 1 binding\(s\) \(withdrawn\) because a recorded revision replaced the cell that declared them \(cell 2 by cell 8\)/u)
+  assert.match(named.message, /stays in the session log but no longer builds this environment/u)
+  // Without proven names the relation is still the fact: the notice must not
+  // claim a binding it cannot see, and must not read as a recovery failure.
+  const relationOnly = supersededDiagnostic([], [{ supersededCallSeq: 2, supersedingCallSeq: 8 }])
+  assert.match(relationOnly.message, /^A recorded revision replaced the cell it edited \(cell 2 by cell 8\)/u)
+  assert.doesNotMatch(relationOnly.message, /0 binding/u)
+  assert.equal(relationOnly.stateEffect, 'rolled-back')
+  assert.match(relationOnly.help[0], /not a recovery failure/u)
+})

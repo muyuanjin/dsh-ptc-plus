@@ -141,4 +141,10 @@ test('replay uses the recorded directory budget, not the current default literal
     schema: 'ptc-capability-environment/v1' }, session.id)
   assert.throws(() => capabilityPlanTextFromMessage(historicalWithRecord, session.id),
     /damaged|inconsistent capability plan text generation|inconsistent session capability plan/u)
+  // The navigation sentence is one of the plan words the record carries. A snapshot
+  // that delivers different navigation text than it recorded describes two different
+  // plans, so it is damaged evidence instead of a replayable one.
+  const otherNavigation = capabilityPlanMessage({ ...snapshot,
+    navigationText: `${snapshot.navigationText} Ask again before concluding.` }, session.id)
+  assert.throws(() => capabilityPlanTextFromMessage(otherNavigation, session.id), /damaged capability plan text/u)
 })

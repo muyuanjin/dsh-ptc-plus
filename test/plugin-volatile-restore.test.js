@@ -54,3 +54,19 @@ test('a volatile cell whose values cannot be recorded is named in the contractio
   assert.equal(read.value, 'undefined')
   assert.match(String(read.logs.join('\n')), /readClock/u)
 })
+
+test('a transferable value whose wire passes the binding cap is reported by name', async t => {
+  // The codec can transfer this array, but the settlement keeps at most 64 KiB of
+  // wire per binding. Reporting the name is what lets recovery name the binding it
+  // loses instead of dropping it silently.
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const session = orderedSurfaceSession('volatile-oversized')
+  let sequence = 0
+  const run = program => runRecordedCell(runtime, session, `oversized-${++sequence}`, { program, bindings: [] })
+
+  await run('const oversized = Array.from({ length: 200 }, () => "x".repeat(400))')
+  const journal = session.events.at(-1).data.meta.dshPtcPlus
+  assert.deepEqual(journal.values, [], 'the encoded value is larger than the per-binding cap')
+  assert.deepEqual(journal.unrecordedBindings, ['oversized'])
+})

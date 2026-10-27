@@ -744,6 +744,44 @@ test('nested edit can revise a live volatile cell through the session projection
   assert.ok(continued.meta.dshPtcPlus.diagnostics.every(item => item.code !== 'PTC-R002'))
 })
 
+test('an edit refolds the hot cell the retention budget dropped from the checkpoint', async t => {
+  // The payload budget can remove the newest cell from the checkpoint, which also
+  // removes the run an edit would capture. The log still holds it, so the edit path
+  // refolds that slice: without the refold the cell would be reported as ineligible
+  // even though the user is looking at it.
+  const session = appendOnlySession('nested-edit-hot-cell')
+  session.append('turn/start', { turn: 0 })
+  // One retained cluster means the older cell folds into the interval summary, and a
+  // source the payload budget cannot hold makes the newest cell the dropped one. The
+  // source stays under the edited-source budget, so the refolded target is editable.
+  const state = fixture({ retentionClusters: 1, retentionPayloadRuns: 8, retentionPayloadBytes: 1048576 })
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  await state.runDurable(session.id, 'const retainedNeighbour = 1', {}, { session, callId: 'hot-cell-neighbour' })
+  const padding = 'x'.repeat(600 * 1024)
+  const targetSource = `/* ${padding} */\nlet hotCellValue = 2`
+  await state.runDurable(session.id, targetSource, {}, { session, callId: 'hot-cell-target' })
+  const dropped = projectSessionLog({ session })
+  assert.equal(dropped.hotCellDropped, true, 'the newest cell no longer carries its payload')
+  assert.equal(dropped.editableRun, undefined, 'the checkpoint offers no edit target')
+  assert.equal(dropped.retentionSummary?.count, 1, 'the older cell folded into the summary')
+
+  const root = await runNestedEditCell(state, {
+    session, agent, signal, callId: 'hot-cell-edit-root',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "hotCellValue = 2", new_string: "hotCellValue = 3" }] })',
+  })
+  assert.equal(root.receipt.accepted, true, JSON.stringify(root.raw.logs))
+  assert.equal(root.receipt.target_call_seq, session.events.find(event => event.type === 'tool/call'
+    && event.data?.callId === 'hot-cell-target').seq)
+  const continued = await state.runDurable(session.id, 'return hotCellValue', {}, { session, callId: 'hot-cell-continued' })
+  assert.equal(continued.value, 3, 'the revised cell ran and published its value')
+})
+
 test('accepted nested edit executes after a root throw while the root result stays failed', async t => {
   const session = appendOnlySession('nested-edit-root-throw')
   session.append('turn/start', { turn: 0 })

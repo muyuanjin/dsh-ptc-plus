@@ -8,7 +8,7 @@ process.env.DSH_PTC_RETENTION_BYTES = '1048576'
 const { test } = await import('node:test')
 const assert = (await import('node:assert/strict')).default
 const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSummary,
-  verifyRetentionSummaryAgainstEvents, validateSessionTimelineState, withFullRetention } =
+  verifyRetentionSummaryAgainstEvents, refoldEditableSettlement, validateSessionTimelineState, withFullRetention } =
   await import('../internal/session-journal-recovery.js')
 const { configureRetention } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
@@ -232,4 +232,75 @@ test('a checkpoint stays below a small multiple of the payload budget', () => {
     `checkpoint ${total} B must stay under 3x the ${budget} B budget plus ${allowance} B of cluster metadata`)
   assert.equal(state.hotCellDropped, false,
     'the newest cell fits the budget, so its payload is retained and no notice is due')
+})
+
+test('a caller holding the log proves the recorded summary chain instead of trusting it', () => {
+  // Admission receives no session log, so it can only check that a compacted
+  // checkpoint's summary is internally consistent. A caller that does hold the log
+  // recomputes the chain of the dropped range: a summary that certifies itself is
+  // exactly what an earlier version let through.
+  const events = []
+  const payload = 'x'.repeat(2048)
+  for (let index = 0; index < 12; index += 1) {
+    const id = `verify-${index}`
+    events.push(call(`return '${payload}'`, id), result(id))
+  }
+  const state = fold(events)
+  const summary = state.retentionSummary
+  assert.equal(summary.count, 4, 'the fixture folds four clusters into the summary')
+  assert.deepEqual(verifyRetentionSummaryAgainstEvents(summary, lastHistory), summary)
+  // Without the log there is nothing to verify, which is a refusal rather than an
+  // acceptance: a caller that cannot read the events must not report a proved chain.
+  assert.throws(() => verifyRetentionSummaryAgainstEvents(summary, undefined),
+    /unverifiable PTC session-log projection retention summary/u)
+  // A summary whose range no longer matches the log cannot be proved either.
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, chainDigest: 'b'.repeat(64) }, lastHistory),
+    /inconsistent PTC session-log projection retention summary/u)
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, count: summary.count + 1 }, lastHistory),
+    /inconsistent PTC session-log projection retention summary/u)
+  // The same check refuses a range the log never dropped, so an empty claim is not
+  // proved by vacuous agreement.
+  assert.throws(() => verifyRetentionSummaryAgainstEvents({ ...summary, fromSeq: 0, toSeq: 0 }, lastHistory),
+    /inconsistent PTC session-log projection retention summary/u)
+})
+
+test('an edit refolds the settlement its summary describes and refuses a disagreement', () => {
+  // The checkpoint's summary and the log meet here: the log is folded again with
+  // pruning disabled, the settlement behind the editable run is turned into a summary
+  // record, and the recorded record must equal it.
+  const events = []
+  const payload = 'x'.repeat(2048)
+  for (let index = 0; index < 12; index += 1) {
+    const id = `refold-edit-${index}`
+    events.push(call(`return '${payload}'`, id), result(id))
+  }
+  const state = fold(events)
+  const summary = state.retentionSummary
+  // The newest cluster is pinned, so a full refold of the whole log finds the run
+  // outside the summary range and has nothing to compare.
+  const newest = refoldEditableSettlement(lastHistory, summary)
+  assert.equal(newest.run?.callSeq, state.editableRun.callSeq)
+  assert.equal(newest.mismatch, false)
+  // A log that ends inside the dropped range puts the editable run in the summary,
+  // which is the only place both sides describe the same cluster. The recorded
+  // record matches, so the edit may proceed on it.
+  const cutoff = summary.toSeq
+  const truncated = lastHistory.filter(event => event.seq <= cutoff)
+  const matching = refoldEditableSettlement(truncated, summary)
+  assert.ok(matching.run !== undefined, 'the refold reads the cell from the log')
+  assert.equal(matching.mismatch, false, 'the summary describes the cluster the log holds')
+  // The same cluster with a record that names different bytes is not the one the log
+  // holds: neither side may be used, so the caller is told they disagree.
+  const damaged = { ...summary, entries: summary.entries.map((entry, index) => index === summary.entries.length - 1
+    ? { ...entry, argumentsDigest: 'c'.repeat(64) } : entry) }
+  const mismatched = refoldEditableSettlement(truncated, damaged)
+  assert.equal(mismatched.run?.callSeq, matching.run.callSeq)
+  assert.equal(mismatched.mismatch, true)
+  // A summary that does not name the cluster at all yields the run alone: there is
+  // nothing to disagree with.
+  const unnamed = refoldEditableSettlement(truncated, { ...summary, entries: summary.entries.slice(0, -1) })
+  assert.equal(unnamed.run?.callSeq, matching.run.callSeq)
+  assert.equal(unnamed.mismatch, false)
+  // A caller without events gets no run and no disagreement claim.
+  assert.deepEqual(refoldEditableSettlement(undefined, summary), { run: undefined, mismatch: false })
 })

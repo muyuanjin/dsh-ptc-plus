@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { encodeValue } from '../internal/value-wire.js'
-import { interceptWorkerPosts, sessionCellExecutor, workerOf } from './runtime-observation.js'
+import { interceptWorkerPosts, sessionCellExecutor, workerOf, failScratchDirectory } from './runtime-observation.js'
 
 const LIMITS = { maxNodes: 100000, maxEdges: 1000000, maxArrayLength: 1000000, maxBigIntDigits: 100000, maxStringBytes: 65536 }
 
@@ -68,6 +68,44 @@ test('a missing worker reports every binding instead of throwing', async t => {
   const outcome = await executor.restoreBindings([{ name: 'lost', wire: { kind: 'undefined' } }], {})
   assert.deepEqual(outcome.restored, [])
   assert.deepEqual(outcome.failed.map(entry => entry.name), ['lost'])
+})
+
+test('a transport that refuses the restore reports every binding instead of rejecting', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  await runtime.run('restore-refused', { program: 'let seeded = 1', bindings: [] })
+  const executor = sessionCellExecutor(runtime, 'restore-refused')
+  // A worker can disappear between the liveness check and the frame, so the post
+  // itself may throw. The caller still has to name every binding it could not
+  // install: a rejection here would replace the model's recovery report with a
+  // cell failure.
+  interceptWorkerPosts(runtime, 'restore-refused', () => { throw new Error('transport refused the frame') })
+  const outcome = await executor.restoreBindings(
+    [{ name: 'lost', wire: encodeValue(1, LIMITS) }],
+    { ...runtime.config },
+  )
+  assert.deepEqual(outcome.restored, [])
+  assert.deepEqual(outcome.failed, [{ name: 'lost', reason: 'transport refused the frame' }])
+})
+
+test('a restore-only cell whose worker cannot start fails as a worker exit', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  await runtime.run('restore-no-start', { program: 'let seeded = 1', bindings: [] })
+  const worker = workerOf(runtime, 'restore-no-start')
+  await worker.terminate()
+  failScratchDirectory(runtime, 'restore-no-start', new Error('scratch unavailable'))
+  const executor = sessionCellExecutor(runtime, 'restore-no-start')
+  const outcome = await executor.executeCell({
+    program: 'return 1',
+    restoreValues: [{ name: 'early', wire: encodeValue(7, LIMITS) }],
+  })
+  // Nothing ran and nothing was installed: the cell reports the infrastructure
+  // failure instead of claiming the bindings came back.
+  assert.deepEqual(outcome.logs, [])
+  assert.equal(outcome.error.kind, 'worker-exit')
+  assert.match(outcome.error.message, /scratch unavailable/u)
+  assert.equal(outcome.restored, undefined)
 })
 
 /**

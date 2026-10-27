@@ -1026,6 +1026,24 @@ test('bounded rewrite feedback and exhausted notice ordinals cannot block a late
   assert.equal(latestRecoveryTip(view, { enabled: true, cooldownMessages: 1, escalationFailures: 2 }), undefined)
 })
 
+test('a dropped hot cell is reported instead of reading as a session with nothing to advise', () => {
+  // The retention budget can remove the newest cell from the checkpoint. With no
+  // run left to read, silence would be indistinguishable from a healthy session,
+  // so the continuation feedback has to say the evidence was dropped and that the
+  // tool result is where the cell still exists.
+  const view = { hotCellDropped: true, systemPromptSnapshots: [], contextStep: 0, ptcMessages: [] }
+  const contexts = sessionRuntimeContexts({}, { enabled: false }, { sessionLogView: () => view }).contexts
+  assert.equal(contexts.length, 1)
+  assert.match(contexts[0].text, /最新单元格超出保留预算，已从检查点移除/u)
+  assert.match(contexts[0].text, /exceeded the retention budget and was removed from the checkpoint/u)
+  assert.match(contexts[0].text, /Inspect the tool result of the dropped cell/u)
+  assert.doesNotMatch(contexts[0].text, /Inspect the tool result and live bindings/u,
+    'a dropped cell has no live binding to inspect; that sentence belongs to an unjournaled rewrite')
+  // A session that kept its hot cell has no rewrite feedback either.
+  assert.deepEqual(sessionRuntimeContexts({}, { enabled: false },
+    { sessionLogView: () => ({ hotCellDropped: false, systemPromptSnapshots: [], contextStep: 0, ptcMessages: [] }) }).contexts, [])
+})
+
 test('mixed tip sources count each committed ordinal once and reset escalation after success', () => {
   const current = { systemPromptSnapshots: [{ index: 1, contextStep: 1, sections: [tip(1)] }],
     contextStep: 10, ptcMessages: [

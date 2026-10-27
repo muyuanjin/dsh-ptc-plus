@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { once } from 'node:events'
+import { existsSync } from 'node:fs'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { normalizeWorkerEnvironment, WorkerClient } from '../internal/worker-client.js'
@@ -178,6 +182,36 @@ test('releases worker reservations after root, scratch, disposal, and constructo
   constructorFailure.scratchReady = Promise.resolve('/tmp/dsh-ptc-plus-constructor-test')
   await assert.rejects(constructorFailure.ensure(64), /filename|URL|string/i)
   assert.equal(constructorFailure.workerLimit, undefined)
+})
+
+test('creates the temporary root a host configured but never created', async t => {
+  // A host can point the temporary directory at a path it has not created (macOS
+  // CI does). `mkdtemp` then fails with ENOENT: creating the root once and retrying
+  // keeps the cell runnable instead of failing it with a worker-exit error.
+  const parent = await mkdtemp(join(tmpdir(), 'ptc-missing-root-'))
+  const root = join(parent, 'not-created-yet')
+  const environment = {
+    TMPDIR: process.env.TMPDIR,
+    TEMP: process.env.TEMP,
+    TMP: process.env.TMP,
+  }
+  t.after(async () => {
+    for (const [name, value] of Object.entries(environment)) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+    await rm(parent, { recursive: true, force: true })
+  })
+  process.env.TMPDIR = root
+  process.env.TEMP = root
+  process.env.TMP = root
+  assert.equal(existsSync(root), false)
+  // The client under test carries no worker entry point, so it stops right after
+  // the scratch directory: the point of the case is the retry, not a worker start.
+  const client = workerClient()
+  await assert.rejects(client.ensure(64), /filename|URL|string/i)
+  assert.equal(existsSync(root), true, 'the retry created the root the host configured')
+  assert.equal(client.workerLimit, undefined)
 })
 
 test('a refused startup reset stays owned without an unhandled rejection', () => {

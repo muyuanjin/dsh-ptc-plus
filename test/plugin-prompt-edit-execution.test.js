@@ -13,7 +13,7 @@ import { POST_EDIT_KEY } from '../internal/session-journal-schema.js'
 import { recoverJournal, visibleExecutableCallSeqs } from '../internal/session-journal-recovery.js'
 import { projectSessionLog } from '../internal/session-log-view.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
-import { REWRITES_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { REWRITES_KEY, SETTLEMENT_PROOF_KEY, normalizeJournal } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import {
   USER_BINDINGS_META_KEY,
@@ -816,7 +816,7 @@ test('fails nested edit execution at each owned boundary without claiming revise
   assert.equal(primitiveMeta[USER_BINDING_DRAFT_META_KEY].capability, draftCapability)
   assert.equal(Object.hasOwn(primitiveMeta, 'foreignOwnerFact'), false)
   assert.deepEqual(Object.keys(primitiveMeta).sort(), [
-    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit',
+    'dshPtcPlus', 'dshPtcPlusDerivedRun', 'dshPtcPlusEdit', SETTLEMENT_PROOF_KEY,
     REPL_MEMORY_META_KEY, REWRITES_KEY, USER_BINDINGS_META_KEY, USER_BINDING_DRAFT_META_KEY,
   ].sort())
   state.ctx.tools.execute = originalExecute

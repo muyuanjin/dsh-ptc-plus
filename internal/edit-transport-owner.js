@@ -12,7 +12,7 @@ import {
   normalizeRecoveryBoundaries,
   normalizeRewrites,
   validatedRewrites,
-  withDiagnosticWording,
+  withSettlementProof,
 } from './session-journal.js'
 import {
   EXPECTED_TARGET_CALL_SEQ,
@@ -199,9 +199,9 @@ export function createEditTransportOwner(ctx, {
           derived.draftCapability,
           presentationGeneration,
         )
-    // The derived settlement records its own diagnostic wording, so a replay reads
-    // the same pairing the root path publishes.
-    const withWording = withDiagnosticWording(withDraft, withDraft[JOURNAL_KEY])
+    // The derived settlement proves its own facts, so a replay reads the same
+    // settlement the root path publishes.
+    const withWording = withSettlementProof(withDraft, withDraft[JOURNAL_KEY])
     return derived.replMemory === undefined
       ? withWording
       : withReplMemorySnapshot(withWording, derived.replMemory, presentationGeneration)

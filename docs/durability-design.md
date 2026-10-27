@@ -230,6 +230,8 @@ surface replacement 是否删除状态取决于模型失去了什么，而不取
 
 记录的 diagnostics 与 completion 是同一 settlement 的两份表述：`completion.error.message` 由第一条 diagnostic 渲染得到，因此两者一致只证明这份记录内部自洽，不能证明文字未被改写（编辑 diagnostic 后重新渲染 completion 仍一致）。发布 `tool/result` 私有 metadata 时，runtime 同时写入这些 diagnostic 所述事实的摘要 `dshPtcPlusDiagnosticWording.digest`，覆盖 `message` 以及 code、severity、phase、stateEffect、dispatchState、cause、collisions；`help` 与 `source` 属于呈现（历史记录的 help 措辞和 caret 位置可来自更早 generation），不进入摘要。恢复折叠在把该记录当作证据前重算并比较摘要：摘要缺失表示记录发布于该字段引入之前，仍按旧证据规则处理；摘要存在而不再匹配时，该 cell 不能证明自己的 binding，与其它损坏 metadata 一样建立收缩点。该摘要证明记录未被部分改写，不是不可伪造的边界。
 
+0.5.3 起，发布的不是只覆盖 diagnostics 的摘要，而是一条 settlement 对自己陈述的完整证明：`dshPtcPlusSettlementProof = { version, recordedMessage }` 覆盖 status、completion（kind、`hasValue`、value 摘要、error kind 与 message）与 diagnostics 所述事实，`help`/`source` 仍属呈现。折叠重算并比较它，不一致即在该 cell 上收缩（`PTC-R002`）；字段缺失表示记录发布于该证明之前，按 0.5.2 的互校规则处理，因此日志不需要迁移，两个 adjunct 可以共存于同一份历史。Host 对同一 `tool/result` 记录的 `isError` 是插件不能重算的第二份副本，折叠在它存在时要求它等于 `status === "discarded" || completion.kind === "throw"`：即使改写者按新摘要重算证明，也仍要与 Host 记下的事实一致。见 [ADR 0049](adr/0049-prove-a-settlement-against-its-published-record.md)。
+
 ## State Operations
 
 ```ts

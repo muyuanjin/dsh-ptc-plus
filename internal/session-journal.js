@@ -64,6 +64,9 @@ import {
   USER_BINDINGS_REUSE_POLICIES,
   RECOVERY_BOUNDARY_FIELDS,
   DIAGNOSTIC_WORDING_KEY,
+  SETTLEMENT_PROOF_KEY,
+  SETTLEMENT_PROOF_FIELDS,
+  SETTLEMENT_PROOF_VERSION,
   REPL_TOOL_NAMES,
   REWRITE_FIELDS,
   REWRITE_KINDS,
@@ -78,6 +81,9 @@ export {
   RECOVERY_BOUNDARY_KEY,
   DIAGNOSTIC_WORDING_KEY,
   DIAGNOSTIC_WORDING_FIELDS,
+  SETTLEMENT_PROOF_KEY,
+  SETTLEMENT_PROOF_FIELDS,
+  SETTLEMENT_PROOF_VERSION,
   JOURNAL_VERSION,
   LIVE_USER_BINDINGS_REUSE_POLICY,
   RECOVERY_BOUNDARY_EVENT,
@@ -138,6 +144,48 @@ export function withDiagnosticWording(meta, journal) {
     return rest
   }
   return { ...meta, [DIAGNOSTIC_WORDING_KEY]: { digest } }
+}
+
+/**
+ * Digest of the one settlement a journal states: the status of its cell, its
+ * completion, and the wording of its diagnostics.
+ *
+ * A published record is the only account of its own cell, so a record edited
+ * afterwards stays self-consistent: the completion is checkable against a
+ * diagnostic, and the diagnostic against the wording digest, but all three are
+ * the same settlement. The proof is taken at publication, from the facts the
+ * settlement was published with, and every fact is represented here exactly once,
+ * so a record whose status, completion or diagnostic wording changed no longer
+ * reproduces it.
+ */
+export function settlementProofDigest(journal) {
+  const completion = journal?.completion
+  const completionFacts = completion === undefined ? null
+    : completion.kind === 'return'
+      ? [completion.kind, completion.hasValue,
+        completion.hasValue ? digestOf(completion.value) : null]
+      : [completion.kind, completion.error.kind, completion.error.message]
+  return digestOf([
+    journal?.status ?? null,
+    completionFacts,
+    diagnosticWordingDigest(journal) ?? null,
+  ])
+}
+
+/**
+ * Attach the published settlement's proof beside a journal.
+ *
+ * Every settlement states a status, so every publication carries one; a record
+ * that carries none predates this proof and keeps the older evidence.
+ */
+export function withSettlementProof(meta, journal) {
+  return {
+    ...meta,
+    [SETTLEMENT_PROOF_KEY]: {
+      version: SETTLEMENT_PROOF_VERSION,
+      recordedMessage: settlementProofDigest(journal),
+    },
+  }
 }
 
 function cloneJson(value) {
@@ -1272,7 +1320,7 @@ export function withJournal(meta, journal) {
   const base = isRecord(meta) ? { ...meta } : meta === undefined ? {} : { value: cloneJson(meta) }
   const normalized = normalizeJournal(journal)
   base[JOURNAL_KEY] = normalized
-  return withDiagnosticWording(base, normalized)
+  return withSettlementProof(base, normalized)
 }
 
 /** Validate and detach one rewrite record emitted by the runtime. */

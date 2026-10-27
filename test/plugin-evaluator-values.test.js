@@ -4,7 +4,8 @@ import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
 import { Config } from '../index.js'
-import { RECOVERY_BOUNDARY_KEY, DIAGNOSTIC_WORDING_KEY, normalizeJournal } from '../internal/session-journal.js'
+import { RECOVERY_BOUNDARY_KEY, DIAGNOSTIC_WORDING_KEY, SETTLEMENT_PROOF_KEY, normalizeJournal,
+  withSettlementProof } from '../internal/session-journal.js'
 import { SessionRuntime } from '../internal/session-runtime.js'
 import { renderDiagnostic } from '../internal/diagnostic.js'
 import { decodeValue, encodeValue, renderValueWire } from '../internal/value-wire.js'
@@ -483,6 +484,9 @@ test('replays a durable runtime exception with historical help from its persiste
   const historical = structuredClone(thrown)
   historical.meta.dshPtcPlus.diagnostics[0].help[1] = 'completed declarations and actual assignments remain available; correct the failed initializer and continue with the same binding names'
   historical.meta.dshPtcPlus.completion.error.message = renderDiagnostic(historical.meta.dshPtcPlus.diagnostics[0], throwCode)
+  // The record states the settlement it was published with: the older help wording
+  // is part of what it published, so its proof is taken over that settlement.
+  Object.assign(historical.meta, withSettlementProof({}, historical.meta.dshPtcPlus))
   appendRunCodeEvents(events, 'replay-throw', throwCode, historical)
   await first.dispose()
 
@@ -771,8 +775,10 @@ test('codec-proved historical refusal messages preserve cold replay without retr
     const journal = recorded.meta.dshPtcPlus
     assert.equal(journal.status,'durable')
     // The wording below belongs to an earlier version's rendering, which is what a
-    // record published before the wording digest existed carries.
+    // record published before these adjuncts existed carries: neither the settlement
+    // proof nor the diagnostic wording digest is part of it.
     delete recorded.meta[DIAGNOSTIC_WORDING_KEY]
+    delete recorded.meta[SETTLEMENT_PROOF_KEY]
     const diagnostic = journal.diagnostics.find(item=>item.code === (parameter ? 'PTC-X001' : 'PTC-O001'))
     diagnostic.message = parameter
       ? 'uncaught TypeError: value at $ is not PTC Value V1: non-plain object'
@@ -800,9 +806,10 @@ test('historical renderer budget failures restore retained state only for the co
       {session,recordSession:'deferred-result',callId:'old-budget'})))
     const journal = recorded.meta.dshPtcPlus
     assert.equal(journal.status,'durable')
-    // A record published before the wording digest existed: both wordings below are
+    // A record published before these adjuncts existed: both wordings below are
     // historical renditions the retained settlement, not the text, has to survive.
     delete recorded.meta[DIAGNOSTIC_WORDING_KEY]
+    delete recorded.meta[SETTLEMENT_PROOF_KEY]
     const diagnostic = journal.diagnostics.find(item=>item.code === 'PTC-O001')
     diagnostic.message = 'cell result could not cross the PTC Value V1 boundary: '
       + (matching ? 'rendered PTC value exceeds 1000 bytes' : 'unrelated old encoding failure')

@@ -5,6 +5,8 @@ import { RELEASED_V0_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v0-to-v
 import {
   JOURNAL_KEY,
   DIAGNOSTIC_WORDING_KEY,
+  SETTLEMENT_PROOF_KEY,
+  SETTLEMENT_PROOF_VERSION,
   RECOVERY_BOUNDARY_EVENT,
   RECOVERY_BOUNDARY_KEY,
   REWRITES_KEY,
@@ -22,6 +24,7 @@ import {
   normalizeRewrites,
   recoveryBoundariesEqual,
   reduceStateOperations,
+  settlementProofDigest,
   userBindingsForJournal,
   withDiagnosticWording,
   withJournal,
@@ -788,13 +791,22 @@ test('creates journals, compares semantics, validates names, and merges metadata
   }
   const failing = journal({ status: 'durable', diagnostics: [wording] })
   const stamped = withJournal(undefined, failing)
-  assert.deepEqual(Object.keys(stamped[DIAGNOSTIC_WORDING_KEY]), ['digest'])
-  assert.equal(stamped[DIAGNOSTIC_WORDING_KEY].digest, diagnosticWordingDigest(failing))
-  const historical = { ...stamped, [DIAGNOSTIC_WORDING_KEY]: stamped[DIAGNOSTIC_WORDING_KEY] }
+  // Publication records the settlement proof: the versioned digest of the status,
+  // the completion and the wording its diagnostics state.
+  assert.deepEqual(Object.keys(stamped[SETTLEMENT_PROOF_KEY]), ['version', 'recordedMessage'])
+  assert.equal(stamped[SETTLEMENT_PROOF_KEY].version, SETTLEMENT_PROOF_VERSION)
+  assert.equal(stamped[SETTLEMENT_PROOF_KEY].recordedMessage, settlementProofDigest(failing))
+  assert.notEqual(settlementProofDigest({ ...failing, status: 'noop' }), settlementProofDigest(failing))
+  // The diagnostic wording digest is the older record's evidence; it is still
+  // attached on request and still read from a record that carries one.
+  const worded = withDiagnosticWording(stamped, failing)
+  assert.deepEqual(Object.keys(worded[DIAGNOSTIC_WORDING_KEY]), ['digest'])
+  assert.equal(worded[DIAGNOSTIC_WORDING_KEY].digest, diagnosticWordingDigest(failing))
+  const historical = { ...worded, [DIAGNOSTIC_WORDING_KEY]: worded[DIAGNOSTIC_WORDING_KEY] }
   historical.diagnostics = [{ ...wording, help: ['legacy help'] }]
-  assert.equal(diagnosticWordingDigest(historical), stamped[DIAGNOSTIC_WORDING_KEY].digest)
+  assert.equal(diagnosticWordingDigest(historical), worded[DIAGNOSTIC_WORDING_KEY].digest)
   historical.diagnostics = [{ ...wording, message: 'uncaught Error: edited' }]
-  assert.notEqual(diagnosticWordingDigest(historical), stamped[DIAGNOSTIC_WORDING_KEY].digest)
+  assert.notEqual(diagnosticWordingDigest(historical), worded[DIAGNOSTIC_WORDING_KEY].digest)
   assert.equal(diagnosticWordingDigest(journal()), undefined)
   assert.equal(withDiagnosticWording(stamped, journal())[DIAGNOSTIC_WORDING_KEY], undefined)
 

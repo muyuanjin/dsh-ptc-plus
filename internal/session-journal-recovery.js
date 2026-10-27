@@ -9,6 +9,9 @@ import {
   RECOVERY_BOUNDARY_EVENT,
   DIAGNOSTIC_WORDING_KEY,
   DIAGNOSTIC_WORDING_FIELDS,
+  SETTLEMENT_PROOF_KEY,
+  SETTLEMENT_PROOF_FIELDS,
+  SETTLEMENT_PROOF_VERSION,
   LEGACY_JOURNAL_VERSION,
   REPL_TOOL_NAMES,
   REWRITES_KEY,
@@ -23,6 +26,7 @@ import {
   normalizeJournal,
   normalizeRecoveryBoundaries,
   reduceStateOperations,
+  settlementProofDigest,
   userBindingsForJournal,
   validatedRewrites,
 } from './session-journal.js'
@@ -1556,6 +1560,40 @@ function requireRecordedDiagnosticWording(meta, journal) {
   }
 }
 
+/**
+ * A published settlement proves its own facts, and the Host's copy of its outcome
+ * must still agree with them.
+ *
+ * Recovery reads a record as evidence for the bindings its cell declared, and the
+ * record is the only account of its cell: editing the status, the completion or a
+ * diagnostic leaves the record self-consistent, because the completion is rendered
+ * from the same diagnostic that was edited. The proof recorded at publication is
+ * one digest over exactly those facts, so an edited record no longer reproduces it.
+ * A record that carries no proof predates it and keeps the older evidence.
+ *
+ * The retained `isError` is the Host's copy of the same outcome and not a fact this
+ * plugin can recompute, so an edit that also rewrites the proof still has to agree
+ * with it. That relation is the one a deferred edit already proves before it is
+ * published.
+ */
+function requireRecordedSettlementProof(meta, journal, isError = undefined) {
+  if (isError !== undefined && isError !== (journal.status === 'discarded'
+    || journal.completion?.kind === 'throw')) {
+    throw new Error('journal settlement does not agree with the tool result it settled')
+  }
+  if (!isRecord(meta) || !Object.hasOwn(meta, SETTLEMENT_PROOF_KEY)) return
+  const recorded = meta[SETTLEMENT_PROOF_KEY]
+  if (!isRecord(recorded) || Reflect.ownKeys(recorded).length !== SETTLEMENT_PROOF_FIELDS.size
+    || Reflect.ownKeys(recorded).some(key => !SETTLEMENT_PROOF_FIELDS.has(key))
+    || recorded.version !== SETTLEMENT_PROOF_VERSION
+    || typeof recorded.recordedMessage !== 'string') {
+    throw new Error('invalid recorded settlement proof')
+  }
+  if (recorded.recordedMessage !== settlementProofDigest(journal)) {
+    throw new Error('journal facts do not match their recorded settlement proof')
+  }
+}
+
 function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, retainedCalls) {
   const nested = inputEvent?.type === 'tool/ptc-dispatch-start'
     || inputEvent?.type === 'tool/ptc-dispatch'
@@ -1806,6 +1844,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
               ...(derived.userBindings === undefined ? {} : { userBindings: derived.userBindings }),
             }
             requireRecordedDiagnosticWording(meta, derived.journal)
+            requireRecordedSettlementProof(meta, derived.journal)
           } else if (call.data.name === 'run_code') {
             const rawJournal = meta[JOURNAL_KEY]
             const resolveLegacyConfirm = rawJournal?.version === LEGACY_JOURNAL_VERSION
@@ -1839,6 +1878,10 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
               ...(userBindings === undefined ? {} : { userBindings }),
             }
             requireRecordedDiagnosticWording(meta, journal)
+            // The Host states the outcome of the cell it settled; a record whose
+            // completion or status contradicts it was edited after publication.
+            requireRecordedSettlementProof(meta, journal, typeof event.data?.isError === 'boolean'
+              ? event.data.isError : undefined)
             let postEdit
             try {
               postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized, undefined, state.executableCalls)

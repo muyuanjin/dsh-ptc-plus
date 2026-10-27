@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { renderDiagnostic } from '../internal/diagnostic.js'
-import { DIAGNOSTIC_WORDING_KEY } from '../internal/session-journal.js'
+import { DIAGNOSTIC_WORDING_KEY, withSettlementProof } from '../internal/session-journal.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
 
@@ -126,6 +126,10 @@ test('recorded diagnostic wording preserves failed-cell bindings and never redis
       const journal = historical.meta.dshPtcPlus
       journal.diagnostics[0].help = legacyHelp
       journal.completion.error.message = renderDiagnostic(journal.diagnostics[0], source)
+      // The record states the settlement it was published with, so the proof is
+      // taken once the older generation's help wording is in place. Every edit
+      // below then damages a record that was consistent when it was published.
+      Object.assign(historical.meta, withSettlementProof({}, journal))
       if (mismatch === 'completion') journal.completion.error.message += '\nchanged completion'
       if (mismatch === 'transcript') journal.calls[0].member = 'other'
       if (mismatch === 'diagnostic') {

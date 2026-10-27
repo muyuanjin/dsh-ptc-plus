@@ -13,6 +13,7 @@ const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSum
   await import('../internal/session-journal-recovery.js')
 const { configureRetention, digestOf } = await import('../internal/projection-retention.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
+const { LEGACY_USER_BINDING_TRANSFORM } = await import('../internal/module-transform-contract.js')
 const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
   PER_NAME_USER_BINDINGS_JOURNAL_VERSION } = await import('../internal/session-journal-schema.js')
 
@@ -23,7 +24,7 @@ function journal(overrides = {}) {
   return {
     version: JOURNAL_VERSION,
     languageSemantics: 'legacy-v1',
-    moduleTransform: 'none',
+    moduleTransform: LEGACY_USER_BINDING_TRANSFORM,
     executionCwd: null,
     bindingPolicy: { variableRedeclarations: true, functionClassRedeclarations: false },
     rewritePolicy: { autoRewriteImports: true, autoStripExports: true, autoSplitRedeclarations: true },

@@ -7,7 +7,7 @@ import { isHostComponent, isHostIconComponent } from './client-host-compat.js'
  */
 export function createReplView(React, deps) {
   const {
-    CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot,
+    CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot, normalizeReplMemoryView,
     unavailableReplMemorySnapshot, useSessionPreset, sessionUsesPtcPreset,
     useWorkbenchController, UserBindingsWorkbench,
     icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
@@ -16,21 +16,37 @@ export function createReplView(React, deps) {
 
   function ReplComposer() { return null }
 
+  /**
+   * The projection's own observation, marked with the runtime that produced it.
+   *
+   * Freshness and provenance are different questions. A projection refresh inside
+   * one runtime can drop the memory while the observation still describes that
+   * runtime's environment, and falling back to the empty snapshot there would flip
+   * a populated panel to "cannot be confirmed" for no visible reason. A snapshot
+   * carrying a different runtime is the opposite case: the environment it describes
+   * no longer exists, so the panel must say that instead of showing it as current.
+   */
   function useObservedReplMemory({ sessionId, projected, active, elementRef, observeRepl }) {
-    const memory = React.useMemo(() => {
-      try { return normalizeReplMemorySnapshot(projected) } catch { return unavailableReplMemorySnapshot() }
+    const view = React.useMemo(() => {
+      try { return normalizeReplMemoryView(projected) } catch { return undefined }
     }, [projected])
+    const memory = view?.memory ?? unavailableReplMemorySnapshot()
     const [observed, setObserved] = React.useState(null)
     React.useEffect(() => active && typeof observeRepl === 'function'
       ? observeRepl(sessionId, elementRef.current, memory,
-        value => setObserved({ sessionId, source: memory, value }))
-      : undefined, [active, observeRepl, sessionId, memory, elementRef])
-    if (observed?.sessionId !== sessionId) return memory
-    // The projection can drop its REPL memory while a live observation still holds
-    // the last confirmed inventory; falling back to the empty snapshot there would
-    // flip a populated panel to "state cannot be confirmed" for no visible reason.
-    if (!memory.available && observed.value?.available === true) return observed.value
-    return observed.source === memory ? observed.value : memory
+        value => setObserved({ sessionId, runtime: view?.runtime, source: memory, value }))
+      : undefined, [active, observeRepl, sessionId, memory, view, elementRef])
+    if (observed?.sessionId !== sessionId) return { memory, provenance: 'current' }
+    if (view !== undefined && observed.runtime !== view.runtime
+      && !(observed.runtime === undefined && view.runtime === undefined)) {
+      return { memory, provenance: 'previous-runtime' }
+    }
+    // Same runtime: the observation is a fresher reading of the same environment,
+    // so it outlives a projection refresh that lost the inventory.
+    if (observed.runtime === view?.runtime && !memory.available && observed.value?.available === true) {
+      return { memory: observed.value, provenance: 'refreshed' }
+    }
+    return { memory: observed.source === memory ? observed.value : memory, provenance: 'current' }
   }
 
   function ReplBindingInspector({ entry, preview, t }) {
@@ -50,7 +66,7 @@ export function createReplView(React, deps) {
         : h('p', { className: 'ptcPlusObservationUnavailable' }, t(preview === undefined ? 'console.unobservedValue' : 'console.unreadable')))
   }
 
-  function ReplSessionBindings({ memory, t }) {
+  function ReplSessionBindings({ memory, provenance, t }) {
     const [query, setQuery] = React.useState('')
     const [kind, setKind] = React.useState('all')
     const [selectedName, setSelectedName] = React.useState(null)
@@ -70,7 +86,8 @@ export function createReplView(React, deps) {
         h('span', { className: 'ptcPlusObservationTime' }, observation === undefined
           ? t('console.unobserved') : t('console.observed', { time: new Date(observation.at).toLocaleString() }))),
       memory.entries.length === 0 ? h('div', { className: 'ptcPlusSessionEmpty' },
-        t(memory.available ? 'memory.empty' : 'memory.unavailable'))
+        t(!memory.available ? provenance === 'previous-runtime' ? 'memory.previousRuntime' : 'memory.unavailable'
+          : 'memory.empty'))
         : h('div', { className: 'ptcPlusObservationGrid', 'data-empty': selected === undefined },
         h('div', { className: 'ptcPlusObservationCatalog' },
           h('div', { className: 'ptcPlusObservationFilters' },
@@ -115,13 +132,13 @@ export function createReplView(React, deps) {
     const workbench = useWorkbenchController({ enabled: globalEnabled, active: true, callUserBindings })
     const eligible = featureEnabled(settings, 'replView') && sessionUsesPtcPreset(preset)
     const observationRegion = React.useRef(null)
-    const memory = useObservedReplMemory({ sessionId, projected, active: eligible,
+    const { memory, provenance } = useObservedReplMemory({ sessionId, projected, active: eligible,
       elementRef: observationRegion, observeRepl })
     React.useEffect(() => eligible ? hideComposer(sessionId) : undefined, [eligible, hideComposer, sessionId])
     if (!eligible) return null
     return h('div', { className: 'ptcPlusConsole', 'data-conversation-composer-overlay': '' },
       h('div', { className: 'ptcPlusConsoleSection', ref: observationRegion }, h(ReplSessionBindings, {
-        key: sessionId, memory, t })),
+        key: sessionId, memory, provenance, t })),
       globalEnabled ? h('div', { className: 'ptcPlusConsoleSection ptcPlusBindingsSurface' },
         h(UserBindingsWorkbench, { controller: workbench, t, headingLabel: t('console.global') })) : null)
   }
@@ -161,6 +178,7 @@ export function createReplView(React, deps) {
 
   function ReplMemoryCard({
     memory,
+    provenance,
     globalEnabled,
     globalBindings,
     loadGlobalBinding,
@@ -246,7 +264,8 @@ export function createReplView(React, deps) {
                 )))
           )
         : !memory.available
-        ? h('span', { className: 'ptcPlusReplEmpty' }, t('memory.unavailable'))
+        ? h('span', { className: 'ptcPlusReplEmpty' }, t(provenance === 'previous-runtime'
+          ? 'memory.previousRuntime' : 'memory.unavailable'))
         : memory.entries.length === 0
           ? h('span', { className: 'ptcPlusReplEmpty' }, t('memory.empty'))
           : h('ul', { className: 'ptcPlusReplList' }, memory.entries.map((binding, index) => {

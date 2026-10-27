@@ -30,6 +30,9 @@ import { createFallbackModal, createSelect } from '../src/client-primitives.js'
 import { capabilityReceiptVisible, createCapabilityCommandCard, createSessionCapabilityControlsView, firstHumanMessageSeq } from '../src/client-capabilities-view.js'
 import { cycleCapabilitySort, sortCapabilityEntries } from '../src/client-capability-sort.js'
 
+const replProjection = (runtime, memory, runtimeId = 'client-test-runtime') => (
+  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', { runtime: runtimeId, memory })
+)
 const sessionCatalog = (entries, management = 'managed', savedSettings = undefined) => (
   { schema: 'ptc-capability-session-catalog/v1', management, entries,
     ...(savedSettings === undefined ? {} : { savedSettings }) })
@@ -458,7 +461,7 @@ test('opening the visible REPL obtains missing values and rejects stale or misma
   const memory = { available: true, total: 1, omitted: 0, entries: [{ name: 'answer', kind: 'variable',
     definition: { source: 'const answer = await Promise.resolve(42)', line: 1, column: 1 } }] }
   const projection = runtime.sessions.behavior('client-session').projections
-  projection.set('ptcPlusRepl', memory)
+  replProjection(runtime, memory)
   const view = runtime.renderRoot()
   await runtime.flush()
   expect(view.container.querySelector('.ptcPlusObservationValue').textContent).toBe('Not observed yet')
@@ -480,7 +483,7 @@ test('opening the visible REPL obtains missing values and rejects stale or misma
   visibility([{ isIntersecting: true }])
   await runtime.flush()
   expect(requests).toHaveLength(2)
-  projection.set('ptcPlusRepl', { ...memory, entries: [{ ...memory.entries[0], definition: { ...memory.entries[0].definition, source: 'const answer = 43' } }] })
+  replProjection(runtime, { ...memory, entries: [{ ...memory.entries[0], definition: { ...memory.entries[0].definition, source: 'const answer = 43' } }] })
   await runtime.flush()
   expect(requests[1].signal.aborted).toBe(true)
   requests[1].resolve({ ok: true, value: value(999) })
@@ -513,7 +516,7 @@ test('a public source change withdraws previously observed inventory from the co
     },
     observeRpc: () => ({ ok: true, value: hidden ? unknown : null }),
   })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 1, omitted: 0, entries: [{ name: 'retained', kind: 'variable',
       definition: { source: 'const retained = 41', line: 1, column: 1 } }],
     observation: { at: 1788650000000, entries: [{ name: 'retained', status: 'readable', text: '41', truncated: false }] },
@@ -531,6 +534,33 @@ test('a public source change withdraws previously observed inventory from the co
   expect(view.container.querySelector('.ptcPlusReplPopover').textContent).not.toContain('retained')
 })
 
+test('a snapshot from a previous runtime reads as unconfirmed while a same-runtime refresh keeps it', async () => {
+  const unknown = { available: false, total: 0, omitted: 0, reuseTotal: 0, entries: [] }
+  const carried = { available: true, total: 1, omitted: 0,
+    entries: [{ name: 'carried', kind: 'variable', definition: { source: 'const previous = 1', line: 1, column: 1 } }],
+    observation: { at: 1788650000000, entries: [{ name: 'carried', status: 'readable', text: '1', truncated: false }] } }
+  const { runtime } = await fixture({ repl: true, bindings: false,
+    observeRpc: () => ({ ok: true, value: carried }) })
+  replProjection(runtime, carried, 'runtime-one')
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusActive'))
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusReplPopover').textContent).toContain('carried')
+  // A refresh inside the same runtime loses the inventory in the projection while
+  // the observation still describes that runtime: the inventory stays.
+  replProjection(runtime, unknown, 'runtime-one')
+  await runtime.flush()
+  expect(view.container.querySelector('.ptcPlusReplPopover').textContent).toContain('carried')
+  // A different runtime owns a different environment, so the same observation can
+  // no longer be shown as current; the panel says where it came from instead.
+  replProjection(runtime, unknown, 'runtime-two')
+  await runtime.flush()
+  const card = view.container.querySelector('.ptcPlusReplPopover')
+  expect(card.textContent).not.toContain('carried')
+  expect(card.textContent).toContain(String(SETTINGS_COPY.en['memory.previousRuntime']))
+})
+
 test('failed or unavailable observation remains unobserved and never blocks the REPL', async () => {
   let visibility
   vi.stubGlobal('IntersectionObserver', class {
@@ -546,7 +576,7 @@ test('failed or unavailable observation remains unobserved and never blocks the 
     if (outcome instanceof Error) throw outcome
     return outcome
   } })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 1, omitted: 0, entries: [{ name: 'answer', kind: 'variable',
       definition: { source: 'const answer = 42', line: 1, column: 1 } }],
   })
@@ -1214,7 +1244,7 @@ test('REPL observations and shared workbench remain separate from session execut
     if (endpoint === 'save') { revision++; return { ok: true, value: { revision, entries: [entry] } } }
     throw new Error(endpoint)
   } })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 58, omitted: 0,
     entries: ['aVeryLongSessionBindingNameForNarrowLayouts', 'object', 'getter',
       ...Array.from({ length: 55 }, (_, index) => `result${index}`)].map(name => ({
@@ -1339,7 +1369,7 @@ test('REPL observations and shared workbench remain separate from session execut
   const projection = runtime.sessions.behavior('client-session').projections
   for (const available of [false, true]) {
     setLocale(available ? 'zh' : 'en')
-    projection.set('ptcPlusRepl', { available, entries: [], total: 0, omitted: 0 })
+    replProjection(runtime, { available, entries: [], total: 0, omitted: 0 })
     await runtime.flush()
     expect(consolePane().querySelector('.ptcPlusSessionEmpty')).not.toBeNull()
     expect(consolePane().querySelector('.ptcPlusObservationGrid')).toBeNull()
@@ -1570,14 +1600,14 @@ test('saved cards retain exact source across remount and locale changes; catalog
   const summary = view.container.querySelector('.ptcPlusReplSummary')
   for (const locale of ['en', 'zh']) {
     setLocale(locale)
-    projection.set('ptcPlusRepl', { available: false, entries: [], total: 0, omitted: 0 })
+    replProjection(runtime, { available: false, entries: [], total: 0, omitted: 0 })
     fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[0])
     await runtime.flush()
     expect(view.container.querySelector('.ptcPlusReplSummary')).toBe(summary)
     expect(summary.textContent).toBe('')
     expect(summary.getAttribute('aria-hidden')).toBe('true')
     await snapshot(`popover-unavailable-${locale}`)
-    projection.set('ptcPlusRepl', { available: true, total: 1, omitted: 0,
+    replProjection(runtime, { available: true, total: 1, omitted: 0,
       entries: [{ name: 'value', kind: 'variable', definition: { source: 'const value = 42', line: 1, column: 1 } }] })
     await runtime.flush()
     expect(summary.textContent).toBe(locale === 'en'
@@ -1590,7 +1620,7 @@ test('saved cards retain exact source across remount and locale changes; catalog
     expect(summary.textContent).toBe(locale === 'en' ? '2 global entries' : '2 个全局条目')
     await snapshot(`popover-global-${locale}`)
     if (process.env.PTC_BINDING_UI_FIXTURE) {
-      projection.set('ptcPlusRepl', { available: true, total: 4, omitted: 0,
+      replProjection(runtime, { available: true, total: 4, omitted: 0,
         entries: ['variable', 'function', 'class', 'import'].map(kind => ({ name: `${kind}Value`, kind,
           definition: { source: 'const value = 42', line: 1, column: 1 } })) })
       fireEvent.click(view.container.querySelectorAll('.ptcPlusReplTab')[0])
@@ -2853,7 +2883,7 @@ test('renderer follows current Session projections and cleans settings subscript
   const view = runtime.renderRoot()
   const subscriptions = settings.listenerCount()
   const projection = runtime.sessions.behavior('client-session').projections
-  projection.set('ptcPlusRepl', { available: true, total: 1, omitted: 0, entries: [{
+  replProjection(runtime, { available: true, total: 1, omitted: 0, entries: [{
     name: 'visibleValue', kind: 'variable', definition: { source: 'let visibleValue = 1', line: 1, column: 1 },
   }] })
   await runtime.flush()
@@ -6230,7 +6260,7 @@ test('missing optional primitives fall back to native controls and text labels',
     commands: { list: async () => ({ ok: true, value: [{ name: 'binding' }] }) },
     rpc: async endpoint => ({ ok: true,
       value: endpoint === 'load' ? { revision: 1, entry } : { revision: 1, entries: [entry] } }) })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 1, omitted: 0, reuseTotal: 1, entries: [
       { name: 'answer', kind: 'variable',
         definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 1 },
@@ -6281,7 +6311,7 @@ test('missing optional primitives fall back to native controls and text labels',
 
 test('the REPL tab reports per-binding and total reuse counts', async () => {
   const { runtime } = await fixture({ repl: true, bindings: false })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 2, omitted: 0, reuseTotal: 5, entries: [
       { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 4 },
       { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 2, column: 1 }, reuseCount: 1 },
@@ -6308,7 +6338,7 @@ test('memory card expands session definitions and the composer menu revises a gl
       throw new Error(endpoint)
     },
   })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 4, omitted: 2, reuseTotal: 3, entries: [
       { name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 }, reuseCount: 2 },
       { name: 'helper', kind: 'function', definition: { source: 'function helper() {}', line: 4, column: 1 }, reuseCount: 1 },
@@ -6358,7 +6388,7 @@ async function indicatorFixture() {
     if (endpoint === 'list') return { ok: true, value: { revision: 1, entries: [entry] } }
     throw new Error(endpoint)
   } })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', {
+  replProjection(runtime, {
     available: true, total: 1, omitted: 0,
     entries: [{ name: 'answer', kind: 'variable', definition: { source: 'const answer = 42', line: 1, column: 1 } }],
   })
@@ -6493,7 +6523,7 @@ test('the open header card stops polling and rereads its catalog on the global t
     if (endpoint === 'list') return list()
     throw new Error(endpoint)
   } })
-  runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', { available: false, entries: [], total: 0, omitted: 0 })
+  replProjection(runtime, { available: false, entries: [], total: 0, omitted: 0 })
   const view = runtime.renderRoot()
   await runtime.flush()
   fireEvent.click(view.container.querySelector('.ptcPlusActive'))

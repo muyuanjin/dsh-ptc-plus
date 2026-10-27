@@ -226,7 +226,7 @@ export function createIndicatorView(React, deps) {
         }
       }
     }, [cancelClose, cancelOpen, schedulePlacement])
-    const memory = useObservedReplMemory({ sessionId, projected: projectionMemory,
+    const { memory, provenance } = useObservedReplMemory({ sessionId, projected: projectionMemory,
       active: expanded && sessionUsesPtcPreset(preset) && featureEnabled(settings, 'plugin'),
       elementRef: popoverRef, observeRepl })
     if (!sessionUsesPtcPreset(preset) || !featureEnabled(settings, 'plugin')) return null
@@ -251,6 +251,7 @@ export function createIndicatorView(React, deps) {
       }, h('span', { className: 'ptcPlusActiveLabel' }, 'PTC Plus')),
       h(ReplMemoryCard, {
         memory,
+        provenance,
         globalEnabled,
         globalBindings,
         loadGlobalBinding: id => callUserBindings('load', { id }),

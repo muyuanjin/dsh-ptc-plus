@@ -71,9 +71,13 @@ function foldProjection(events, generation = GENERATION) {
   )
 }
 
-function projectedMemory(events, generation = GENERATION) {
+function projectedView(events, generation = GENERATION) {
   const definition = projection(generation)
   return definition.wire.view(foldProjection(events, generation))
+}
+
+function projectedMemory(events, generation = GENERATION) {
+  return projectedView(events, generation).memory
 }
 
 function resultMemory(result) {
@@ -348,7 +352,7 @@ test('projects a bounded value-independent binding inventory through formal call
     toolCall(4, 'memory-call'),
     toolResult(5, 'memory-call', withReplMemorySnapshot(undefined, snapshot, GENERATION)),
   ])
-  assert.deepEqual(projection().wire.view(projected), snapshot)
+  assert.deepEqual(projection().wire.view(projected).memory, snapshot)
   assert.equal(Object.hasOwn(projected.memory.entries[0], 'value'), false)
 })
 
@@ -425,21 +429,21 @@ test('does not let missing, malformed, foreign, or replacement results erase pro
 
   const missingPending = definition.apply(current, toolCall(4, 'missing'))
   const missing = definition.apply(missingPending, toolResult(5, 'missing', {}))
-  assert.deepEqual(definition.wire.view(missing), snapshot)
+  assert.deepEqual(definition.wire.view(missing).memory, snapshot)
   assert.deepEqual(missing.pendingReplCalls, [])
 
   const malformedPending = definition.apply(current, toolCall(6, 'malformed', 'edit_run_code'))
   const malformed = definition.apply(malformedPending, toolResult(7, 'malformed', {
     [REPL_MEMORY_META_KEY]: { available: true },
   }))
-  assert.deepEqual(definition.wire.view(malformed), snapshot)
+  assert.deepEqual(definition.wire.view(malformed).memory, snapshot)
 
   const foreignPending = definition.apply(current, toolCall(8, 'foreign'))
   const foreign = definition.apply(foreignPending, toolResult(9, 'foreign',
     withReplMemorySnapshot(undefined,
       createReplMemorySnapshot([binding('stale')]),
       OTHER_GENERATION)))
-  assert.deepEqual(definition.wire.view(foreign), snapshot)
+  assert.deepEqual(definition.wire.view(foreign).memory, snapshot)
 
   const replacementPending = definition.apply(current, toolCall(10, 'replacement'))
   assert.equal(definition.apply(replacementPending, toolResult(11, 'replacement',
@@ -459,11 +463,28 @@ test('invalidates live proof at runtime-generation and session-seed boundaries',
     toolResult(3, 'current-generation', withReplMemorySnapshot(undefined, snapshot, GENERATION)),
   ])
   const definition = projection()
-  assert.deepEqual(definition.wire.view(current), snapshot)
+  assert.deepEqual(definition.wire.view(current).memory, snapshot)
   assert.deepEqual(
-    definition.wire.view(definition.apply(current, { type: 'session/end-seed', seq: 4, data: {} })),
+    definition.wire.view(definition.apply(current, { type: 'session/end-seed', seq: 4, data: {} })).memory,
     unavailableReplMemorySnapshot(),
   )
+})
+
+test('a projection view carries the runtime that produced its inventory', () => {
+  const snapshot = createReplMemorySnapshot([binding('owned')])
+  const events = [
+    toolCall(0, 'owned'),
+    toolResult(1, 'owned', withReplMemorySnapshot(undefined, snapshot, GENERATION)),
+  ]
+  const view = projectedView(events)
+  // Provenance is data: a reader can tell which runtime observed this inventory
+  // without comparing object identity or guessing from a random id.
+  assert.deepEqual(view, { runtime: GENERATION, memory: snapshot })
+  assert.deepEqual(projectedView(events, OTHER_GENERATION).runtime, OTHER_GENERATION)
+  // The view is a closed shape; a snapshot alone no longer names its owner.
+  assert.throws(() => projection().wire.viewSchema.parse(snapshot), /REPL memory/u)
+  assert.throws(() => projection().wire.viewSchema.parse({ ...view, memory: undefined }), /REPL memory/u)
+  assert.deepEqual(projection().wire.viewSchema.parse(view), view)
 })
 
 test('validates generation-bound projection state and bounded pending calls', () => {

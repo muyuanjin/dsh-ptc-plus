@@ -695,6 +695,7 @@ const CHROME_COPY = Object.freeze({
     'memory.globalCount': '{count} 个全局条目',
     'memory.empty': '当前没有可复用绑定',
     'memory.unavailable': '当前绑定状态尚不可确认',
+    'memory.previousRuntime': '这份清单来自上一个运行期，不再代表当前环境；执行一格即可重新观察',
     'memory.more': '另有 {count} 个绑定未显示',
     'memory.reuseCount': '复用 {count} 次',
     'memory.reuseTotal': '共复用 {count} 次',
@@ -1417,6 +1418,7 @@ const CHROME_COPY = Object.freeze({
     'memory.globalCount': '{count} global entries',
     'memory.empty': 'No reusable bindings',
     'memory.unavailable': 'Current binding state cannot be confirmed',
+    'memory.previousRuntime': 'This inventory came from a previous runtime and no longer describes the current environment; run a cell to observe it again',
     'memory.more': '{count} more bindings not shown',
     // Number-neutral so a single reuse stays grammatical without a plural rule.
     'memory.reuseCount': 'reused {count}\u00d7',

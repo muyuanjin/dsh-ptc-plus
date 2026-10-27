@@ -23,6 +23,7 @@ const COUNTED_ENTRY_FIELDS = new Set([...ENTRY_FIELDS, 'reuseCount'])
 const DEFINITION_FIELDS = new Set(['source', 'line', 'column'])
 const MEMORY_META_FIELDS = new Set(['version', 'generation', 'memory'])
 const PROJECTION_STATE_FIELDS = new Set(['generation', 'memory', 'pendingReplCalls'])
+const VIEW_FIELDS = new Set(['runtime', 'memory'])
 const PENDING_CALL_FIELDS = new Set(['callId', 'seq'])
 const REPL_MEMORY_META_VERSION = 5
 
@@ -205,6 +206,24 @@ export function normalizeReplMemorySnapshot(value) {
   })
 }
 
+/**
+ * One runtime's own observation of its environment, together with the owner that
+ * produced it.
+ *
+ * A panel shows an observation, not "the current state". Two questions then have
+ * to stay separate, and only the owner answers them: a projection refresh inside
+ * one runtime keeps the inventory valid (freshness), while a snapshot from a
+ * previous runtime can no longer be confirmed (provenance). Carrying the owner
+ * in the view lets a reader decide by data instead of by object identity.
+ */
+export function normalizeReplMemoryView(value) {
+  if (!exactFields(value, VIEW_FIELDS)) throw new Error('invalid dsh-ptc-plus REPL memory view')
+  return Object.freeze({
+    runtime: normalizeGeneration(value.runtime),
+    memory: normalizeReplMemorySnapshot(value.memory),
+  })
+}
+
 /** Reuse fields are version 5 additions; an older metadata version cannot own them. */
 function countedMemory(memory) {
   return memory?.reuseTotal !== undefined
@@ -349,8 +368,8 @@ export function createReplMemoryProjection(generation) {
       return state
     },
     wire: Object.freeze({
-      viewSchema: Object.freeze({ parse: normalizeReplMemorySnapshot }),
-      view: state => state.memory,
+      viewSchema: Object.freeze({ parse: normalizeReplMemoryView }),
+      view: state => Object.freeze({ runtime: state.generation, memory: state.memory }),
     }),
   })
 }

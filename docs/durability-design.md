@@ -208,6 +208,8 @@ surface replacement 是否删除状态取决于模型失去了什么，而不取
 
 该规则也约束 live worker。structured host session 的 runtime 在每个后续 cell 前都重新读取 DSH public ordered surface，并验证所有现存 live call 的精确 assistant provenance；`replaceGeneration` 没有变化不构成继续复用的证明。generation 改变、缺失或不可读取也进入同一验证。若现存 binding 超出模型可知 frontier，先重置 worker、重建交集 frontier，再执行当前 cell。只有不带 host session 的内部 primitive session id 明确使用 live-only 连续性。Client header card 的 `dshPtcPlusBindings` 只帮助用户检查，不进入模型上下文，也不延长 binding 生命周期；相同 contraction 应让 UI inventory 进入不可确认状态。未来若新增模型可见状态投影，它必须由用户、模型或明确配置选择，有固定 schema、硬预算、append-only runtime-context 证据和明确清除条件，不能仅为延长隐藏状态而默认注入，也不能污染稳定 prompt prefix。
 
+面板显示的不是“当前状态”，而是某个运行期的一次观察；投影的 wire view 因此携带产生它的运行期（`{ runtime, memory }`，`internal/repl-memory-projection.js` 的 `normalizeReplMemoryView`），让读者按数据判断而不是按对象身份猜。两件事分开：同一运行期内的投影刷新只是新鲜度问题，清单仍然有效，不该闪成“不可确认”；跨运行期的快照属于上一个进程，必须判为不可确认并说明原因（`memory.previousRuntime`）。这同时是契约用例 `repl-memory-projection` 的客户端对应面：服务端仍按 UUID generation 校验写入的快照，客户端不再用兜底把上一个运行期的清单复活。
+
 ## Completion 校验
 
 普通异常可能已经建立或修改 binding，所以 durable `throw` 属于语言历史。重放接受的语义结果只有：

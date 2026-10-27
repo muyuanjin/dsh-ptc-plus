@@ -24,6 +24,7 @@ import {
 } from './client-host-compat.js'
 import {
   normalizeReplMemorySnapshot,
+  normalizeReplMemoryView,
   unavailableReplMemorySnapshot,
 } from '../internal/repl-memory-projection.js'
 import { createBindingReviews } from './client-binding-review.js'
@@ -212,7 +213,8 @@ export function createClientPlugin(require) {
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React, {
-        CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot, unavailableReplMemorySnapshot,
+        CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot, normalizeReplMemoryView,
+        unavailableReplMemorySnapshot,
         useSessionPreset, sessionUsesPtcPreset, useWorkbenchController, UserBindingsWorkbench,
         icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
       })

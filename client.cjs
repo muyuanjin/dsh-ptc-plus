@@ -13079,6 +13079,7 @@ function createReplView(React32, deps) {
     Select: Select2,
     featureEnabled: featureEnabled2,
     normalizeReplMemorySnapshot: normalizeReplMemorySnapshot2,
+    normalizeReplMemoryView: normalizeReplMemoryView2,
     unavailableReplMemorySnapshot: unavailableReplMemorySnapshot2,
     useSessionPreset: useSessionPreset2,
     sessionUsesPtcPreset: sessionUsesPtcPreset2,
@@ -13091,23 +13092,29 @@ function createReplView(React32, deps) {
     return null;
   }
   function useObservedReplMemory({ sessionId, projected, active, elementRef, observeRepl }) {
-    const memory = React32.useMemo(() => {
+    const view = React32.useMemo(() => {
       try {
-        return normalizeReplMemorySnapshot2(projected);
+        return normalizeReplMemoryView2(projected);
       } catch {
-        return unavailableReplMemorySnapshot2();
+        return void 0;
       }
     }, [projected]);
+    const memory = view?.memory ?? unavailableReplMemorySnapshot2();
     const [observed, setObserved] = React32.useState(null);
     React32.useEffect(() => active && typeof observeRepl === "function" ? observeRepl(
       sessionId,
       elementRef.current,
       memory,
-      (value) => setObserved({ sessionId, source: memory, value })
-    ) : void 0, [active, observeRepl, sessionId, memory, elementRef]);
-    if (observed?.sessionId !== sessionId) return memory;
-    if (!memory.available && observed.value?.available === true) return observed.value;
-    return observed.source === memory ? observed.value : memory;
+      (value) => setObserved({ sessionId, runtime: view?.runtime, source: memory, value })
+    ) : void 0, [active, observeRepl, sessionId, memory, view, elementRef]);
+    if (observed?.sessionId !== sessionId) return { memory, provenance: "current" };
+    if (view !== void 0 && observed.runtime !== view.runtime && !(observed.runtime === void 0 && view.runtime === void 0)) {
+      return { memory, provenance: "previous-runtime" };
+    }
+    if (observed.runtime === view?.runtime && !memory.available && observed.value?.available === true) {
+      return { memory: observed.value, provenance: "refreshed" };
+    }
+    return { memory: observed.source === memory ? observed.value : memory, provenance: "current" };
   }
   function ReplBindingInspector({ entry, preview, t: t2 }) {
     const readable = preview?.status === "readable";
@@ -13137,7 +13144,7 @@ function createReplView(React32, deps) {
       readable ? h("pre", { className: "ptcPlusObservationPreview" }, preview.text) : h("p", { className: "ptcPlusObservationUnavailable" }, t2(preview === void 0 ? "console.unobservedValue" : "console.unreadable"))
     );
   }
-  function ReplSessionBindings({ memory, t: t2 }) {
+  function ReplSessionBindings({ memory, provenance, t: t2 }) {
     const [query, setQuery] = React32.useState("");
     const [kind, setKind] = React32.useState("all");
     const [selectedName, setSelectedName] = React32.useState(null);
@@ -13171,7 +13178,7 @@ function createReplView(React32, deps) {
       memory.entries.length === 0 ? h(
         "div",
         { className: "ptcPlusSessionEmpty" },
-        t2(memory.available ? "memory.empty" : "memory.unavailable")
+        t2(!memory.available ? provenance === "previous-runtime" ? "memory.previousRuntime" : "memory.unavailable" : "memory.empty")
       ) : h(
         "div",
         { className: "ptcPlusObservationGrid", "data-empty": selected === void 0 },
@@ -13262,7 +13269,7 @@ function createReplView(React32, deps) {
     const workbench = useWorkbenchController({ enabled: globalEnabled, active: true, callUserBindings });
     const eligible = featureEnabled2(settings, "replView") && sessionUsesPtcPreset2(preset);
     const observationRegion = React32.useRef(null);
-    const memory = useObservedReplMemory({
+    const { memory, provenance } = useObservedReplMemory({
       sessionId,
       projected,
       active: eligible,
@@ -13277,6 +13284,7 @@ function createReplView(React32, deps) {
       h("div", { className: "ptcPlusConsoleSection", ref: observationRegion }, h(ReplSessionBindings, {
         key: sessionId,
         memory,
+        provenance,
         t: t2
       })),
       globalEnabled ? h(
@@ -13317,6 +13325,7 @@ function createReplView(React32, deps) {
   }
   function ReplMemoryCard({
     memory,
+    provenance,
     globalEnabled,
     globalBindings,
     loadGlobalBinding,
@@ -13416,7 +13425,7 @@ function createReplView(React32, deps) {
             ),
             globalSource?.id !== entry.id ? null : globalSource.error === true ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.globalUnavailable")) : h("pre", { className: "ptcPlusGlobalSource" }, globalSource.source)
           )))
-        ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index2) => {
+        ) : !memory.available ? h("span", { className: "ptcPlusReplEmpty" }, t2(provenance === "previous-runtime" ? "memory.previousRuntime" : "memory.unavailable")) : memory.entries.length === 0 ? h("span", { className: "ptcPlusReplEmpty" }, t2("memory.empty")) : h("ul", { className: "ptcPlusReplList" }, memory.entries.map((binding, index2) => {
           const expanded = expandedBinding === binding.name;
           const preview = binding.definition.source.replace(/\s+/g, " ").trim();
           const definitionId = `${id2}-binding-${index2}`;
@@ -15269,7 +15278,7 @@ function createIndicatorView(React32, deps) {
         }
       };
     }, [cancelClose, cancelOpen, schedulePlacement]);
-    const memory = useObservedReplMemory({
+    const { memory, provenance } = useObservedReplMemory({
       sessionId,
       projected: projectionMemory,
       active: expanded && sessionUsesPtcPreset2(preset) && featureEnabled2(settings, "plugin"),
@@ -15309,6 +15318,7 @@ function createIndicatorView(React32, deps) {
       }, h("span", { className: "ptcPlusActiveLabel" }, "PTC Plus")),
       h(ReplMemoryCard, {
         memory,
+        provenance,
         globalEnabled,
         globalBindings,
         loadGlobalBinding: (id2) => callUserBindings("load", { id: id2 }),
@@ -41178,6 +41188,7 @@ var MAX_BINDINGS = 128;
 var MAX_BINDING_NAME_LENGTH = 128;
 var MAX_DEFINITION_SOURCE_LENGTH = 1024;
 var MAX_DEFINITION_SOURCE_TOTAL_LENGTH = 16 * 1024;
+var MAX_GENERATION_LENGTH = 128;
 var SNAPSHOT_FIELDS = /* @__PURE__ */ new Set(["available", "entries", "total", "omitted"]);
 var COUNTED_SNAPSHOT_FIELDS = /* @__PURE__ */ new Set([...SNAPSHOT_FIELDS, "reuseTotal"]);
 var OBSERVED_SNAPSHOT_FIELDS = /* @__PURE__ */ new Set([...SNAPSHOT_FIELDS, "observation"]);
@@ -41187,6 +41198,7 @@ var PREVIEW_FIELDS = /* @__PURE__ */ new Set(["name", "status", "text", "truncat
 var ENTRY_FIELDS = /* @__PURE__ */ new Set(["name", "kind", "definition"]);
 var COUNTED_ENTRY_FIELDS = /* @__PURE__ */ new Set([...ENTRY_FIELDS, "reuseCount"]);
 var DEFINITION_FIELDS = /* @__PURE__ */ new Set(["source", "line", "column"]);
+var VIEW_FIELDS2 = /* @__PURE__ */ new Set(["runtime", "memory"]);
 function isReuseCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
@@ -41204,6 +41216,12 @@ var EMPTY_REPL_MEMORY = Object.freeze({
 });
 function unavailableReplMemorySnapshot() {
   return EMPTY_REPL_MEMORY;
+}
+function normalizeGeneration(value) {
+  if (typeof value !== "string" || value.length === 0 || value.length > MAX_GENERATION_LENGTH) {
+    throw new Error("invalid dsh-ptc-plus REPL memory generation");
+  }
+  return value;
 }
 function normalizeDefinition(value) {
   if (!exactFields2(value, DEFINITION_FIELDS) || typeof value.source !== "string" || value.source.length === 0 || value.source.length > MAX_DEFINITION_SOURCE_LENGTH || !Number.isSafeInteger(value.line) || value.line < 1 || !Number.isSafeInteger(value.column) || value.column < 1) {
@@ -41277,6 +41295,13 @@ function normalizeReplMemorySnapshot(value) {
     omitted: value.omitted,
     reuseTotal,
     ...observation === void 0 ? {} : { observation }
+  });
+}
+function normalizeReplMemoryView(value) {
+  if (!exactFields2(value, VIEW_FIELDS2)) throw new Error("invalid dsh-ptc-plus REPL memory view");
+  return Object.freeze({
+    runtime: normalizeGeneration(value.runtime),
+    memory: normalizeReplMemorySnapshot(value.memory)
   });
 }
 
@@ -41972,6 +41997,7 @@ var CHROME_COPY = Object.freeze({
     "memory.globalCount": "{count} \u4E2A\u5168\u5C40\u6761\u76EE",
     "memory.empty": "\u5F53\u524D\u6CA1\u6709\u53EF\u590D\u7528\u7ED1\u5B9A",
     "memory.unavailable": "\u5F53\u524D\u7ED1\u5B9A\u72B6\u6001\u5C1A\u4E0D\u53EF\u786E\u8BA4",
+    "memory.previousRuntime": "\u8FD9\u4EFD\u6E05\u5355\u6765\u81EA\u4E0A\u4E00\u4E2A\u8FD0\u884C\u671F\uFF0C\u4E0D\u518D\u4EE3\u8868\u5F53\u524D\u73AF\u5883\uFF1B\u6267\u884C\u4E00\u683C\u5373\u53EF\u91CD\u65B0\u89C2\u5BDF",
     "memory.more": "\u53E6\u6709 {count} \u4E2A\u7ED1\u5B9A\u672A\u663E\u793A",
     "memory.reuseCount": "\u590D\u7528 {count} \u6B21",
     "memory.reuseTotal": "\u5171\u590D\u7528 {count} \u6B21",
@@ -42693,6 +42719,7 @@ var CHROME_COPY = Object.freeze({
     "memory.globalCount": "{count} global entries",
     "memory.empty": "No reusable bindings",
     "memory.unavailable": "Current binding state cannot be confirmed",
+    "memory.previousRuntime": "This inventory came from a previous runtime and no longer describes the current environment; run a cell to observe it again",
     "memory.more": "{count} more bindings not shown",
     // Number-neutral so a single reuse stays grammatical without a plural rule.
     "memory.reuseCount": "reused {count}\xD7",
@@ -43952,6 +43979,7 @@ function createClientPlugin(require2) {
       Select: Select2,
       featureEnabled,
       normalizeReplMemorySnapshot,
+      normalizeReplMemoryView,
       unavailableReplMemorySnapshot,
       useSessionPreset,
       sessionUsesPtcPreset,

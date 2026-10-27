@@ -116,7 +116,8 @@
     "verify:docs": "node scripts/review-findings.mjs docs",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",
     "test:ab": "node scripts/ab-headless-trajectories.mjs",
-    "test:package:consumer": "node scripts/npm-consumer-smoke.mjs"
+    "test:package:consumer": "node scripts/npm-consumer-smoke.mjs",
+    "host:shape-check": "node scripts/check-host-version-literals.mjs"
   },
   "keywords": [
     "deepseek-harness",

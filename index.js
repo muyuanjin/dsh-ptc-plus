@@ -452,17 +452,22 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
           input: { hint: 'refresh | list [all|skills|tools|mcp|mcp_tools] [query] | set session|global <id> [availability|disclosure] <choice>' },
           handler: async ({ commandId, agent, rawInput, signal }) => {
             const input = rawInput.trim()
-            const receipt = (state, error) => capabilityCommandReceipt(state, String(agent.session.id), error,
+            const receipt = (state, error, proof) => capabilityCommandReceipt(state, String(agent.session.id), error,
               state === 'pending' && capabilityEnvironment.pendingChoiceMessage(agent)
-                ? { commandId, rawInput, message: capabilityEnvironment.pendingChoiceMessage(agent) } : undefined)
+                ? { commandId, rawInput, message: capabilityEnvironment.pendingChoiceMessage(agent) } : undefined,
+              proof)
             const selection = /^set (session|global) (\S+) (?:(availability|disclosure) )?(full|on-demand|closed|automatic|inherit|enabled|host|adaptive)$/.exec(input)
             if (selection) {
               if (!capabilityEnvironment.canRefresh(agent)) return { kind: 'error', text: receipt('unavailable') }
               const changed = await capabilityEnvironment.change(agent, {
                 scope: selection[1], id: decodeURIComponent(selection[2]), dimension: selection[3], selection: selection[4], commandId,
               }, signal, settingsForCommand?.())
+              // A save states what it changed and what it did not prove: the
+              // model-visible catalog and a cell that reached the capability are
+              // separate facts, reported by the layer that owns each one.
+              const proof = capabilityEnvironment.describeCapabilityProof(agent, decodeURIComponent(selection[2]))
               return { kind: changed.sessionApplied ? 'success' : 'error',
-                text: receipt(changed.sessionApplied ? changed.publication === 'pending' ? 'pending' : 'recorded' : 'saved-only', changed.error) }
+                text: receipt(changed.sessionApplied ? changed.publication === 'pending' ? 'pending' : 'recorded' : 'saved-only', changed.error, proof) }
             }
             const listing = /^list(?: (all|skills|tools|mcp|mcp_tools))?(?: (.*))?$/.exec(input)
             if (listing) {

@@ -2765,3 +2765,33 @@ test('a v5 snapshot of a policy-managed plan replays its own plan', async t => {
     'a plan with no deliverable capability is the closed-plan case')
   assert.equal(capabilityPlanTextFromMessage(state.message, agents[0].id), state.message.content[0].text)
 })
+
+test('one capability reports saved, delivered and usable as three separate facts', async t => {
+  const ctx = { agents: { list: () => [] }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full' }),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const session = Session.create('capability-proof-session')
+  const agent = agentFor(session)
+  ctx.agents = { list: () => [agent] }
+  // No prepared session yet: the catalog never listed it, so delivery is absent
+  // rather than inferred from the saved configuration.
+  assert.deepEqual(env.describeCapabilityProof(agent, 'tools.probe'), {
+    schema: 'ptc-capability-proof/v1', id: 'tools.probe', saved: true, delivery: 'absent', usability: 'unproven' })
+  assert.deepEqual(env.describeCapabilityProof(agent, 'tools.unsaved'),
+    { schema: 'ptc-capability-proof/v1', id: 'tools.unsaved', saved: false, delivery: 'absent', usability: 'unproven' })
+  assert.throws(() => env.describeCapabilityProof(agent, ''), /requires a capability id/u)
+
+  const state = await acceptPreparation(env, agent, [])
+  assert.equal(env.describeCapabilityProof(agent, 'tools.probe').delivery, 'delivered')
+  // Installing a capability is not evidence that a cell reached it.
+  assert.equal(env.describeCapabilityProof(agent, 'tools.probe').usability, 'unproven')
+
+  const invocation = { agent, name: 'probe', token: {} }
+  env.admitted(invocation)
+  env.dispatched(invocation, { isError: false })
+  const used = env.describeCapabilityProof(agent, 'tools.probe')
+  assert.equal(used.usability, 'proven')
+  assert.equal(used.delivery, 'delivered')
+  assert.equal(state.snapshot.plan.entries.some(entry => entry.id === 'tools.probe'), true)
+})

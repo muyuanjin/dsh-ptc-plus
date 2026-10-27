@@ -9,6 +9,7 @@ import { Context } from '@deepseek-ai/cordis'
 import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
 import { readSessionLog } from './session-events.js'
 import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
+import { normalizeCapabilityProof } from './capability-delivery-proof.js'
 import { createCapabilityPlan } from './capability-plan.js'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
@@ -1305,6 +1306,30 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         if (state) void statisticsOperation(() => store?.status(member, state.snapshot,
           member === agent ? status : member.status))
       }
+    },
+    /**
+     * The saved, delivered and usable facts of one capability. A caller that
+     * only has "the save succeeded" must not report more than this returns.
+     */
+    describeCapabilityProof(agent, id) {
+      if (typeof id !== 'string' || id.length === 0) throw new TypeError('ptc-plus: capability proof requires a capability id')
+      const state = stateFor(agent)
+      const sourceSettings = state?.snapshot.sourceSettings ?? state?.snapshot.settings
+        ?? capabilityConfiguration(currentConfig)
+      const saved = Object.hasOwn(sourceSettings.manual?.overrides ?? {}, id)
+      const listed = state !== undefined && state.snapshot.plan.entries.some(entry => entry.id === id)
+      const delivery = !listed ? 'absent'
+        : state.message === undefined || planCommitted(agent, state.message) ? 'delivered' : 'pending'
+      return normalizeCapabilityProof({
+        schema: 'ptc-capability-proof/v1',
+        id,
+        saved,
+        delivery,
+        // Only a completed execution in this session proves usability; the
+        // worker's installed schemas and the published catalog prove nothing
+        // about what a cell actually obtained.
+        usability: state?.used?.has(id) === true ? 'proven' : 'unproven',
+      })
     },
     describe(agent) {
       const state = stateFor(agent)

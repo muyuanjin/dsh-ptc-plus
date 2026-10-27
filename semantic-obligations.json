@@ -624,6 +624,7 @@
       "disposition": "bounded-external",
       "owner": "Capability environment owns frozen session plan projection across prompt, discovery and compiled tools",
       "implementation": [
+        "internal/capability-delivery-proof.js",
         "internal/capability-environment.js",
         "internal/capability-plan.js",
         "internal/capability-policy.js"
@@ -746,6 +747,7 @@
         "test/capability-statistics.test.js",
         "test/context-host-contract.test.js",
         "test/capability-environment.test.js",
+        "test/capability-delivery-proof.test.js",
         "test/plugin-program-bindings.test.js",
         "test/context-result-preview.test.js",
         "test/expensive-acceptance.test.js",

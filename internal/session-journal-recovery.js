@@ -25,6 +25,7 @@ import {
 } from './session-journal.js'
 import { decodeValue } from './value-wire.js'
 import { editRejectedCell } from './rejected-cell-editor.js'
+import { renderDiagnostic } from './diagnostic.js'
 import {
   byteLength, chainOfEntries, digestOf, extendSummary, retainedClusterCount, retentionLimits, settlementBytes,
   summaryEntry, summaryRecordOf,
@@ -1711,6 +1712,19 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
               }
               : undefined
             const journal = normalizeJournal(rawJournal, { resolveLegacyConfirm })
+        // A throw cell's completion message is the rendering of its own diagnostic.
+        // A record whose message no longer matches was edited after the fact, so it
+        // is not evidence for the bindings that cell declared.
+        {
+          let code
+          try { code = JSON.parse(call.data.arguments)?.code } catch { code = undefined }
+          const firstDiagnostic = journal.diagnostics?.[0]
+          if (journal.completion?.kind === 'throw' && firstDiagnostic !== undefined
+            && typeof code === 'string'
+            && journal.completion.error?.message !== renderDiagnostic(firstDiagnostic, code)) {
+            throw new Error('journal completion does not match its diagnostic')
+          }
+        }
             const userBindings = userBindingsForJournal(meta, journal)
             normalized = {
               ...raw,

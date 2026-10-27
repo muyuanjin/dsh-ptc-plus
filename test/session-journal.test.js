@@ -716,6 +716,29 @@ test('rejects malformed journal schemas exhaustively', () => {
     [journal({ status: 'discarded', calls: [{ global: 'g', member: 'm', args: encodeValue(1), ok: true, value: encodeValue(1), settle: 0 }], completion: undefined }), /must not contain/],
     [journal({ volatileReason: 42 }), /volatile reason/],
     [journal({ volatileReason: 'ambient Date' }), /requires volatile or discarded status/],
+    // A payload the window digested carries a digest and a byte length instead of the
+    // argument wire. Either one missing or malformed is a damaged record: the digest
+    // is the only evidence left that the call was the one it claims to be.
+    [journal({ calls: [{ global: 'g', member: 'm', argsDigest: 'not-a-digest', argsBytes: 2, ok: true, value: encodeValue(1), settle: 0 }] }),
+      /invalid digested dsh-ptc-plus journal call args at index 0/],
+    [journal({ calls: [{ global: 'g', member: 'm', argsDigest: 'a'.repeat(64), argsBytes: -1, ok: true, value: encodeValue(1), settle: 0 }] }),
+      /invalid digested dsh-ptc-plus journal call args at index 0/],
+    // An operation names a kind only for a save; any other action that carries one
+    // describes a relation this generation never wrote.
+    [journal({ operations: [{ action: 'restore', kind: 'binding', name: 'kept' }] }),
+      /invalid dsh-ptc-plus journal operation kind at index 0/],
+    [journal({ operations: [{ action: 'save', kind: 'value', name: 'kept' }] }),
+      /invalid dsh-ptc-plus journal operation kind at index 0/],
+    // Recorded values and unrecorded names are the evidence a volatile cell leaves
+    // behind, so a malformed entry is a refusal rather than a partial record.
+    [journal({ status: 'volatile', volatileReason: 'ambient Date', values: [{ name: '', wire: encodeValue(1) }] }),
+      /invalid dsh-ptc-plus journal value entry/],
+    [journal({ status: 'volatile', volatileReason: 'ambient Date', values: [encodeValue(1)] }),
+      /invalid dsh-ptc-plus journal value entry/],
+    [journal({ status: 'volatile', volatileReason: 'ambient Date', unrecordedBindings: [42] }),
+      /invalid dsh-ptc-plus journal unrecorded bindings/],
+    [journal({ status: 'volatile', volatileReason: 'ambient Date', unrecordedBindings: 'cli' }),
+      /invalid dsh-ptc-plus journal unrecorded bindings/],
   ]
   for (const [value, expected] of invalid) assert.throws(() => normalizeJournal(value), expected)
 })
@@ -1900,6 +1923,24 @@ test('requires one complete target-linked relation for derived edit replay', () 
     ...structuredClone(derivedMeta),
     [REWRITES_KEY]: {},
   }, 1), true)
+  // A derived run outside the payload window keeps the digest of its source instead
+  // of the text. The digest shape is checkable on its own, so a record that names
+  // bytes without a usable length is damaged rather than partially replayable.
+  const digestedDerivedMeta = {
+    ...structuredClone(derivedMeta),
+    dshPtcPlusDerivedRun: {
+      description: 'derived edit',
+      codeDigest: 'a'.repeat(64),
+      codeBytes: 10,
+    },
+  }
+  assert.equal(normalizeDerivedEditResult(digestedDerivedMeta, 1).codeBytes, 10)
+  for (const bytes of [-1, 'ten', undefined]) {
+    assert.throws(() => normalizeDerivedEditResult({
+      ...structuredClone(digestedDerivedMeta),
+      dshPtcPlusDerivedRun: { description: 'derived edit', codeDigest: 'a'.repeat(64), codeBytes: bytes },
+    }, 1), /invalid dsh-ptc-plus derived run metadata/u)
+  }
 
   const boundaryDerivedMeta = {
     ...structuredClone(derivedMeta),

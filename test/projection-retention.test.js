@@ -234,6 +234,52 @@ test('a checkpoint stays below a small multiple of the payload budget', () => {
     'the newest cell fits the budget, so its payload is retained and no notice is due')
 })
 
+test('a compaction summary is refused when any part of it cannot be proved', () => {
+  // Admission holds no session log, so a compacted checkpoint is admitted on the
+  // summary alone. Every part of that claim is checked here: the shape, the range,
+  // the retained window above the boundary, and one record per dropped cluster.
+  const events = []
+  const payload = 'x'.repeat(2048)
+  for (let index = 0; index < 12; index += 1) {
+    const id = `refuse-${index}`
+    events.push(call(`return '${payload}'`, id), result(id))
+  }
+  const state = fold(events)
+  const summary = state.retentionSummary
+  assert.equal(validateRetentionSummary(state, summary), summary)
+  const retainedSeqs = Object.values(state.settledResultsByEventSeq)
+    .map(pair => Number(pair[0])).sort((left, right) => left - right)
+  const refusals = [
+    // The summary is a closed record: a field this generation never wrote cannot be
+    // ignored, because it may describe a claim the reader does not know about.
+    [{ ...summary, extra: true }, /invalid PTC session-log projection retention summary/u],
+    [{ ...summary, count: 0 }, /invalid PTC session-log projection retention summary/u],
+    [{ ...summary, fromSeq: summary.toSeq + 1 }, /invalid PTC session-log projection retention summary/u],
+    [null, /invalid PTC session-log projection retention summary/u],
+    // The retained window must sit strictly above the boundary.
+    [{ ...summary, fromSeq: retainedSeqs[0], toSeq: retainedSeqs[0] }, /below its retention boundary/u],
+    // Each dropped cluster needs one ordered record, and the range has to agree with
+    // the records instead of being stated twice.
+    [{ ...summary, entries: 'records' }, /inconsistent PTC session-log projection retention summary/u],
+    [{ ...summary, entries: summary.entries.slice(0, -1) }, /inconsistent PTC session-log projection retention summary/u],
+    [{ ...summary, entries: summary.entries.map(entry => ({ ...entry, argumentsDigest: 'not-a-digest' })) },
+      /inconsistent PTC session-log projection retention summary/u],
+    [{ ...summary, entries: [...summary.entries].reverse() }, /inconsistent PTC session-log projection retention summary/u],
+    [{ ...summary, entries: summary.entries.map((entry, index) => index === 0 ? { ...entry, resultSeq: -0 } : entry) },
+      /inconsistent PTC session-log projection retention summary/u],
+    [{ ...summary, chainDigest: 'a'.repeat(63) }, /invalid PTC session-log projection retention summary/u],
+  ]
+  for (const [candidate, expected] of refusals) assert.throws(
+    () => validateRetentionSummary(state, candidate), expected)
+  // A retained entry that lost its settlement or its call cannot be proved either:
+  // the window claims a cluster the checkpoint does not describe.
+  assert.throws(() => validateRetentionSummary(
+    { ...state, settledResultsByEventSeq: { ...state.settledResultsByEventSeq, broken: [undefined, undefined] } }, summary),
+  /invalid PTC session-log projection retention window/u)
+  assert.throws(() => validateRetentionSummary({ ...state, executableCalls: {} }, summary),
+    /lost the call of a retained settlement/u)
+})
+
 test('a caller holding the log proves the recorded summary chain instead of trusting it', () => {
   // Admission receives no session log, so it can only check that a compacted
   // checkpoint's summary is internally consistent. A caller that does hold the log

@@ -14,6 +14,18 @@ This responsibility does not erase selected `protected` restrictions, historical
 
 ## Conceptual Design
 
+**A concept is the distinction that decides.** Every concept in this project must be stateable as four things: the question it answers, the boundary of what belongs to it, the consequences that follow from belonging, and the neighbour it must never be confused with. A word without those four is a naming habit, not a concept.
+
+**Concepts precede their encodings.** The concept owns the meaning; a term is only its label; a type, table, field, or enum is one encoding of it. An encoding that already exists — a shared table, a reused field, an existing enum — must not decide the concept. That is how concept drift starts: the shape is reused because it is there, and the meaning is dragged along behind it.
+
+**Conceptual design fixes the distinctions of a domain before any mechanism exists.** It asks, in order: which decisions must this area make? which of those change independently? what has to be distinguishable for those decisions to come out right? Each answer is a candidate concept. Two candidates that never lead to different decisions are one concept; one candidate whose decisions change independently is two. Only after that are ownership, representation, and reuse decided at all.
+
+**Accept a concept only when it survives four questions.**
+1. *Removal*: which decision becomes impossible if this concept is deleted? If none, it is a phrasing, not a concept.
+2. *Distinction*: in which concrete case do this concept and its neighbour give different results? If none, they are one concept wearing two names.
+3. *Closure*: can every decision of this kind be derived from it? If a rule or exception has to be added beside it, either the concept is incomplete or the layering is wrong.
+4. *Counterexample*: what does a legal counterexample look like? If none can be stated, the concept may be a tautology that cannot fail and therefore cannot guide anything.
+
 Design starts from what a thing **is**, not from what it can reuse. Before writing code, a change must answer in one sentence: which layer it belongs to, what question it answers, and who owns it. When that sentence cannot be written, the problem is not in the implementation.
 
 **Separate concepts before considering reuse.** A mechanism is reusable only when two objects answer the same question, are owned by the same maintainer of that relationship, and share a lifecycle. A shared table, a shared component, or a shared word is not evidence of a shared concept. Borrowing an existing term requires checking its meaning: `automatic` means "the host derives this", not "inherit the default value"; calling the latter by the former makes every later reader pay for the difference.

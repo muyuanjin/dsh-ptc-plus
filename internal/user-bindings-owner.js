@@ -1,5 +1,11 @@
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { bindingToggleMessage } from './binding-toggle-receipt.js'
+import {
+  bindingAdoptionMessage,
+  clearedBindingAdoption,
+  declinedBindingEntries,
+  withBindingAdoption,
+} from './binding-adoption.js'
 import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -26,6 +32,7 @@ import {
   createUserBindingsSnapshot,
   normalizeUserBindingEntry,
   normalizeUserBindingsDocument,
+  selectUserBindingsSnapshot,
   storedUserBindingsDocument,
 } from './user-bindings.js'
 
@@ -76,6 +83,40 @@ function parseAuthoringCommand(rawInput) {
       : { kind: 'edit', id: editMatch[1], requirement }
   }
   return { kind: 'help' }
+}
+
+/**
+ * The adoption subcommands of `/binding`. They state which supplied entries this
+ * session uses; authoring and adoption share one command because both answer
+ * questions about the same global catalog, and a second command would suggest
+ * they were separate features.
+ */
+function parseAdoptionCommand(rawInput) {
+  const input = typeof rawInput === 'string' ? rawInput.trim() : ''
+  if (input === 'status') return { kind: 'status' }
+  if (input === 'reset') return { kind: 'reset' }
+  const decision = /^(use|skip)\s+(\S+)$/.exec(input)
+  if (decision === null) return undefined
+  return { kind: decision[1] === 'use' ? 'use' : 'skip', id: decision[2] }
+}
+
+function adoptionStatusText(catalog, adoption) {
+  const declined = declinedBindingEntries(adoption)
+  const supplied = catalog.entries
+  const listed = supplied.map(entry => `${entry.id} (${entry.name}): ${declined.has(entry.id)
+    ? 'not used by this session' : 'used by this session'}`)
+  const unavailable = [...declined].filter(id => !supplied.some(entry => entry.id === id))
+  return [
+    'Global binding catalog supply and this session\'s adoption of it. Adoption decides which supplied entries this session uses; it does not report whether the worker installed them.',
+    ...(listed.length === 0 ? ['The global catalog supplies no enabled entries.'] : listed),
+    ...(unavailable.length === 0 ? [] : [`Declined but not supplied by the global catalog, therefore not used and not revivable here: ${JSON.stringify(unavailable)}`]),
+  ].join('\n')
+}
+
+function adoptionReceipt(adoption) {
+  return `Session binding adoption recorded. This session declines ${JSON.stringify([...declinedBindingEntries(adoption)])}. `
+    + 'The global catalog and other sessions are unchanged, and adoption can only withdraw a supplied entry. '
+    + 'Whether the worker installed the entries this session still uses is reported with the next accepted cell, not by this receipt.'
 }
 
 function authoringTask(command, current) {
@@ -264,6 +305,48 @@ export function createUserBindingsOwner(ctx, options = {}) {
 
   const requireEnabled = () => {
     if (!enabled) throw new Error('Global User Bindings are disabled')
+  }
+  // Adoption is read from the session's own recorded decision, never from a
+  // second in-memory map: the log is the owner, so a restart reconstructs the
+  // same environment without a migration step.
+  const adoptionForAgent = (agent) => {
+    if (typeof options.bindingAdoptionForAgent !== 'function' || agent === undefined || agent === null) return undefined
+    return options.bindingAdoptionForAgent(agent)
+  }
+  /**
+   * Supply minus this session's declines. The catalog decides which entries
+   * exist; adoption only withdraws one, so no entry can appear here that the
+   * global configuration did not supply.
+   */
+  const adoptedCatalog = (snapshot, adoption) => {
+    const declined = declinedBindingEntries(adoption)
+    if (declined.size === 0) return snapshot
+    const kept = snapshot.entries.filter(entry => !declined.has(entry.id))
+    if (kept.length === snapshot.entries.length) return snapshot
+    return selectUserBindingsSnapshot(snapshot, kept.map(entry => entry.id))
+  }
+  const recordAdoption = (agent, adoption) => {
+    const session = agent?.session
+    if (session === undefined || typeof session.append !== 'function') {
+      throw new Error('binding adoption requires a live session')
+    }
+    if (session.append('user/message', bindingAdoptionMessage(adoption), { surfaceOp: 'append' }) === undefined) {
+      throw new Error('the session did not record the binding adoption decision')
+    }
+    return { kind: 'success', text: adoptionReceipt(adoption) }
+  }
+  const stateAdoption = async (agent, command) => {
+    requireEnabled()
+    // Status and validation read the full supplied catalog: an adopted subset
+    // cannot prove what it was derived from.
+    const catalog = await store.snapshot()
+    const current = adoptionForAgent(agent)
+    if (command.kind === 'status') return { kind: 'success', text: adoptionStatusText(catalog, current) }
+    if (command.kind === 'reset') return recordAdoption(agent, clearedBindingAdoption())
+    if (!catalog.entries.some(entry => entry.id === command.id)) {
+      throw new Error(`the global binding catalog does not supply entry ${JSON.stringify(command.id)}; this session can decline a supplied entry but cannot add or revive one`)
+    }
+    return recordAdoption(agent, withBindingAdoption(current, command.id, command.kind === 'use'))
   }
   const draftFor = (capability) => {
     if (typeof capability !== 'string' || capability === '') {
@@ -617,6 +700,14 @@ export function createUserBindingsOwner(ctx, options = {}) {
 
   const commandHandler = async ({ agent, rawInput, signal, commandId }) => {
     signal?.throwIfAborted?.()
+    const adoption = parseAdoptionCommand(rawInput)
+    if (adoption !== undefined) {
+      try {
+        return await stateAdoption(agent, adoption)
+      } catch (error) {
+        return { kind: 'error', text: error instanceof Error ? error.message : String(error) }
+      }
+    }
     const command = parseAuthoringCommand(rawInput)
     if (command.kind === 'help') return { kind: 'error', text: `Usage: ${COMMAND_USAGE}` }
     try {
@@ -666,8 +757,8 @@ export function createUserBindingsOwner(ctx, options = {}) {
         }
         registerOwned(commandCtx, commandCtx.commands, {
           name: 'binding',
-          description: 'Create or revise a Global User Binding draft with the current agent',
-          input: { hint: 'new <requirement> | edit <id> <requirement>' },
+          description: 'Author a Global User Binding draft, or state which supplied entries this session uses',
+          input: { hint: 'new <requirement> | edit <id> <requirement> | status | use <id> | skip <id> | reset' },
           handler: commandHandler,
         }, 'binding command')
       })
@@ -917,6 +1008,17 @@ export function createUserBindingsOwner(ctx, options = {}) {
     cwd: bindingsCwd,
     async snapshot() {
       return enabled ? store.snapshot() : undefined
+    },
+    /**
+     * The catalog entries one session's worker should receive. Without a stated
+     * adoption this is exactly the supplied catalog, so 0.5.2 behavior is
+     * unchanged for every session that never declines an entry.
+     */
+    async snapshotForAgent(agent) {
+      if (!enabled) return undefined
+      const snapshot = await store.snapshot()
+      const adoption = adoptionForAgent(agent)
+      return adoption === undefined ? snapshot : adoptedCatalog(snapshot, adoption)
     },
     async list() {
       requireEnabled()

@@ -5,6 +5,7 @@ import {
 } from './prompt-text.js'
 
 import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { BINDING_ADOPTION_FORM, readBindingAdoption } from './binding-adoption.js'
 
 export const PTC_DELIVERY_CONTEXT = 'tools:ptc-plus-message-delivery'
 export const PTC_BINDING_CATALOG = 'tools:ptc-plus-user-binding-defaults'
@@ -116,6 +117,10 @@ export function readRuntimeMessage(message) {
   const text = message.content[0].text
   const availability = readRuntimeAvailability(message)
   if (availability !== undefined) return { form: 'runtime-availability', state: availability }
+  // A session's binding adoption is recorded as one of its own messages, so the
+  // log is its only owner and replay reconstructs it without process memory.
+  const adoption = readBindingAdoption(message)
+  if (adoption !== undefined) return { form: BINDING_ADOPTION_FORM, declined: [...adoption.declined] }
   if (source.form === 'snapshot') {
     const sections = stateSections(source.sections)
     if (sections !== undefined && [STATE_PREFIX, PREVIOUS_STATE_PREFIX, LEGACY_STATE_PREFIX]

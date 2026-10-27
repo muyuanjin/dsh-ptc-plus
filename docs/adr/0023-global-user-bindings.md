@@ -22,6 +22,18 @@ Journal version 6 introduced the required `userBindingsReusePolicy`: new cells w
 
 Namespace call names and selected export names must parse as exactly one Identifier whose AST name equals the complete supplied string. Whitespace, comments, binding patterns, extra declarations and escaped spellings cannot change identifier identity between validation, declarations, conflict checks, activation and recovery. Supported Unicode identifiers keep their exact spelling. Top-level entry display names remain separate from callable export names.
 
+## Supply, Adoption, Materialization and Proof
+
+Global bindings answer four different questions, and each layer may report only its own answer. **Supply** is which entries the global configuration offers; `bindings.json` and each entry's `enabled` switch own it, and an entry disabled there is simply absent from the catalog. **Adoption** is which of those entries one session uses; the session owns it. **Materialization** is which adopted entries the worker actually installed; the activated set and its per-entry failures own it. **Proof** is what the model can check; the tool result, its journal and the diagnostics it names own that.
+
+Adoption is a two-state decision per entry plus a default: a session uses an entry unless it declined it. "Adopted explicitly" and "never mentioned" therefore produce the same environment, so they are one state rather than two, and no sentinel value is needed. The capability pane's `automatic` is not borrowed here: that word means "the host derives this value", while a binding has no host-derived value to defer to.
+
+Adoption can only withdraw a supplied entry. It cannot add, enable or revive one, because an entry the global configuration disabled does not exist in the catalog for a session to name; `/binding skip <id>` rejects an entry the catalog does not supply instead of recording a decision that would claim authority over supply. No rule forbids "an override revives a deleted entry", because the record has no encoding that could express it.
+
+`/binding status|skip <id>|use <id>|reset` states the decision as one `plugin:ptc-plus` `binding-adoption` message, and the session-log projection reads the newest record back. A restart therefore reconstructs the same environment from the log; no second store or process-local map exists to migrate. A session that never states a decision receives exactly the supplied catalog, so the previous release's environment is unchanged.
+
+Materialization remains a separate report. A declined entry is never offered to the worker, while an entry the worker could not install is named by its execution diagnostic (`PTC-R002`, and `PTC-R006` for a name that was live and then disappeared). An adoption receipt claims neither delivery nor initialization.
+
 ## Storage and Source Ownership
 
 The Host owns one document at `$DSH_HOME/ptc-plus/bindings.json`. The store serializes mutations, holds a file lock, compares the last-read disk bytes, requires an expected revision, and atomically replaces the file with owner-only permissions. The complete enabled declaration budget is validated before replacement; an externally written document that exceeds the same budget is treated as damaged storage. A malformed document remains an explicit error, and stale or external changes require reload instead of blind overwrite. A new Agent draft uses create-only persistence so a concurrent entry with the same ID cannot be replaced.

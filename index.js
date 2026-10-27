@@ -32,6 +32,7 @@ import { valueLimitsFromConfig } from './internal/value-wire-schema.js'
 import { createReplMemoryProjection } from './internal/repl-memory-projection.js'
 import { createUserBindingDraftProjection } from './internal/user-binding-draft-projection.js'
 import { createUserBindingsOwner } from './internal/user-bindings-owner.js'
+import { latestBindingAdoption } from './internal/binding-adoption.js'
 import { createHostRpc } from './internal/host-rpc.js'
 import { RPC_CONTRACTS } from './internal/rpc-contract.js'
 import { createReplObservationInterest } from './internal/repl-observation-interest.js'
@@ -348,6 +349,9 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       readSessionLog: sessionLog.read,
       enabled: activeConfig.userBindingsEnabled,
       draftProjectionAvailable,
+      // A session's adoption is its own recorded decision, so it is read from
+      // that session's log instead of a process-local map.
+      bindingAdoptionForAgent: agent => latestBindingAdoption(sessionLog.project(agent)?.ptcMessages ?? []),
       maxWallMs: activeConfig.maxWallMs,
       maxOutputBytes: activeConfig.maxOutputBytes,
       maxOldGenerationSizeMb: activeConfig.maxOldGenerationSizeMb,
@@ -392,7 +396,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       sessionId,
       toolSchemasForAgent,
       capabilityEnvironment,
-      userBindingsForAgent: () => userBindings.snapshot(),
+      userBindingsForAgent: agent => userBindings.snapshotForAgent(agent),
       setAgentPresentation: (agent, presentation) => (
         userBindings.setAgentPresentation(agent, presentation)
       ),

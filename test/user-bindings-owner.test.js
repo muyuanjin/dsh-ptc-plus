@@ -20,6 +20,8 @@ import {
   USER_BINDINGS_RPC_CONTRACT,
   createUserBindingsOwner,
 } from '../internal/user-bindings-owner.js'
+import { latestBindingAdoption, readBindingAdoption } from '../internal/binding-adoption.js'
+import { projectSessionLog } from '../internal/session-log-view.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { decodeValue } from '../internal/value-wire.js'
@@ -2372,4 +2374,135 @@ test('forwards the configured reclamation bound when reconfiguring the console o
     maxValueBigIntDigits: 100_000,
   })
   assert.deepEqual(received, [4_321])
+})
+
+async function adoptionFixture(t) {
+  const sessions = new Map()
+  const commands = new Map()
+  const agents = []
+  const createAgent = id => {
+    const session = Session.create(id)
+    session.append('system/message', { turn: 1, step: 1, message: createSystemMessage('Host system') }, { surfaceOp: 'append' })
+    let command
+    const agent = {
+      id: `agent-${id}`,
+      session,
+      ctx: injectedAgentContext({
+        commands: { register(definition) { command = definition; return () => {} } },
+        skills: { register() { return () => {} } },
+        tools: { register() { return () => {} } },
+      }),
+    }
+    sessions.set(id, session)
+    commands.set(agent, () => command)
+    agents.push(agent)
+    return agent
+  }
+  const store = fakeStore()
+  let snapshot = createUserBindingsSnapshot({ entries: [
+    { id: 'alpha', name: 'alphaHelpers', scope: 'namespace', purpose: '', enabled: true, source: 'export const one = 1' },
+    { id: 'beta', name: 'betaHelpers', scope: 'namespace', purpose: '', enabled: true, source: 'export const two = 2' },
+  ] }, 3)
+  store.snapshot = async () => snapshot
+  const target = ownerFixture({ agents: { list: () => agents }, commands: {}, on() { return () => {} } })
+  // A restart is the same log read again, so adoption is derived from the
+  // session's own events instead of any owner-local cache.
+  const adoptionOf = agent => latestBindingAdoption(projectSessionLog(
+    typeof agent?.session?.snapshotEvents === 'function'
+      ? { session: { events: agent.session.snapshotEvents() } }
+      : agent,
+  ).ptcMessages)
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store,
+    cwd: process.cwd(),
+    bindingAdoptionForAgent: adoptionOf,
+    maxWallMs: 1_000,
+    maxOutputBytes: 1_024,
+    maxOldGenerationSizeMb: 32,
+    valueLimits: {},
+  })
+  await owner.setDraftProjectionAvailable(true)
+  const agent = createAgent('binding-adoption-session')
+  const other = createAgent('binding-adoption-other')
+  await owner.setAgentPresentation(agent)
+  await owner.setAgentPresentation(other)
+  t.after(() => owner.dispose())
+  const handler = () => commands.get(agent)()
+  const run = async (sessionAgent, rawInput) => handler().handler({
+    agent: sessionAgent, rawInput, signal: new AbortController().signal,
+  })
+  return { agent, other, owner, run, store, setCatalog: (entries) => { snapshot = createUserBindingsSnapshot({ entries }, 4) } }
+}
+
+test('a session adopts supplied binding entries without changing what the catalog supplies', async t => {
+  const state = await adoptionFixture(t)
+  const supplied = await state.store.snapshot()
+  // No stated decision means "use everything the catalog offers", which is the
+  // exact 0.5.2 environment rather than a third state.
+  assert.equal(await state.owner.snapshotForAgent(state.agent), supplied)
+  assert.match((await state.run(state.agent, 'status')).text, /beta \(betaHelpers\): used by this session/)
+
+  const skipped = await state.run(state.agent, 'skip beta')
+  assert.equal(skipped.kind, 'success')
+  assert.match(skipped.text, /declines \["beta"\]/)
+  assert.match(skipped.text, /reported with the next accepted cell, not by this receipt/)
+  const adopted = await state.owner.snapshotForAgent(state.agent)
+  assert.deepEqual(adopted.entries.map(entry => entry.id), ['alpha'])
+  assert.notEqual(adopted.fingerprint, supplied.fingerprint)
+  // Another session keeps the whole catalog: adoption is a session decision.
+  assert.deepEqual((await state.owner.snapshotForAgent(state.other)).entries.map(entry => entry.id), ['alpha', 'beta'])
+  assert.match((await state.run(state.agent, 'status')).text, /beta \(betaHelpers\): not used by this session/)
+
+  const used = await state.run(state.agent, 'use beta')
+  assert.equal(used.kind, 'success')
+  assert.deepEqual((await state.owner.snapshotForAgent(state.agent)).entries.map(entry => entry.id), ['alpha', 'beta'])
+  assert.equal((await state.run(state.agent, 'reset')).kind, 'success')
+  assert.deepEqual((await state.owner.snapshotForAgent(state.agent)).entries.map(entry => entry.id), ['alpha', 'beta'])
+  assert.match((await state.run(state.agent, 'status')).text, /beta \(betaHelpers\): used by this session/)
+})
+
+test('adoption cannot add, revive or outlive the global catalog', async t => {
+  const state = await adoptionFixture(t)
+  const before = state.agent.session.snapshotEvents().length
+  const rejected = await state.run(state.agent, 'skip missing')
+  assert.equal(rejected.kind, 'error')
+  assert.match(rejected.text, /cannot add or revive one/)
+  assert.equal(state.agent.session.snapshotEvents().length, before)
+
+  await state.run(state.agent, 'skip beta')
+  // Disabling the entry globally removes it from supply; the session's older
+  // decision still cannot bring it back, and nothing in the record claims it can.
+  state.setCatalog([{ id: 'alpha', name: 'alphaHelpers', scope: 'namespace', purpose: '', enabled: true, source: 'export const one = 1' }])
+  assert.deepEqual((await state.owner.snapshotForAgent(state.agent)).entries.map(entry => entry.id), ['alpha'])
+  assert.match((await state.run(state.agent, 'status')).text, /Declined but not supplied by the global catalog/)
+
+  await state.run(state.agent, 'skip alpha')
+  assert.deepEqual((await state.owner.snapshotForAgent(state.agent)).entries, [])
+  assert.equal((await state.run(state.agent, 'status')).kind, 'success')
+})
+
+test('adoption survives a restart because the session log owns the decision', async t => {
+  const state = await adoptionFixture(t)
+  await state.run(state.agent, 'skip beta')
+  const recorded = state.agent.session.snapshotEvents().filter(event => readBindingAdoption(event.data))
+  assert.equal(recorded.length, 1)
+  // A new process reads the same events: no owner state exists to migrate.
+  const restarted = () => ({ session: { events: state.agent.session.snapshotEvents() } })
+  assert.deepEqual((await state.owner.snapshotForAgent(restarted())).entries.map(entry => entry.id), ['alpha'])
+  await state.run(state.agent, 'skip alpha')
+  assert.deepEqual((await state.owner.snapshotForAgent(restarted())).entries, [])
+})
+
+test('adoption requires a live session and stays off with Global User Bindings', async t => {
+  const state = await adoptionFixture(t)
+  const detached = { id: 'detached-agent', session: { id: 'detached-session', events: [] } }
+  const rejected = await state.run(detached, 'skip alpha')
+  assert.equal(rejected.kind, 'error')
+  assert.match(rejected.text, /requires a live session/)
+  assert.equal((await state.owner.snapshotForAgent(undefined)).entries.length, 2)
+  const target = ownerFixture()
+  const disabled = createUserBindingsOwner(target.ctx, { enabled: false, bindingAdoptionForAgent: () => undefined })
+  t.after(() => disabled.dispose())
+  assert.equal(await disabled.snapshotForAgent(state.agent), undefined)
 })

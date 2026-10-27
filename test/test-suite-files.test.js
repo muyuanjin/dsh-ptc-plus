@@ -18,7 +18,7 @@ test('backend execution bounds default fanout and validates explicit concurrency
 
 test('focused backend selection preserves runner flags and rejects excluded or unknown files', () => {
   assert.throws(() => backendArguments(['--focus']), /require --file/)
-  assert.deepEqual(backendArguments(['--focus', '--list']), { files: [], testArguments: [], list: true })
+  assert.deepEqual(backendArguments(['--focus', '--list']), { files: [], testArguments: [], list: true, fast: false })
   assert.deepEqual(backendArguments(['--focus', '--file', 'test/a.test.js']).files, ['test/a.test.js'])
   assert.deepEqual(backendArguments(['--file', 'test/a.test.js', '--file=test/b.test.js', '--test-name-pattern=case', '--list']), {
     files: ['test/a.test.js', 'test/b.test.js'], testArguments: ['--test-name-pattern=case'], list: true,

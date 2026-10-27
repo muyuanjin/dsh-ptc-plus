@@ -2744,10 +2744,18 @@ function isValidModuleSemantics(value, version) {
   const legacy = version <= VERSIONED_BINDING_REUSE_JOURNAL_VERSION;
   return hasExactFields(value, legacy ? LEGACY_MODULE_SEMANTICS_FIELDS : MODULE_SEMANTICS_FIELDS) && DEFAULT_EXPORT_BINDINGS.has(value.defaultExportBinding) && (legacy || IMPORT_EXPRESSION_BOUNDARIES.has(value.importExpressionBoundary));
 }
+function payloadShape(value, textField, digestField, bytesField) {
+  if (Object.hasOwn(value, textField)) {
+    return Object.hasOwn(value, digestField) || Object.hasOwn(value, bytesField) ? void 0 : "text";
+  }
+  return typeof value[digestField] === "string" && /^[a-f0-9]{64}$/u.test(value[digestField]) && isSafeSequence(value[bytesField]) ? "digest" : void 0;
+}
 function isValidCall(value) {
   if (!isRecord3(value) || value.ok !== true && value.ok !== false) return false;
   const fields = value.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS;
-  if (!hasExactFields(value, fields) || typeof value.global !== "string" || typeof value.member !== "string" || !isValidValueWire(value.args) || !isSafeSequence(value.settle)) return false;
+  const argsShape = payloadShape(value, "args", "argsDigest", "argsBytes");
+  if (argsShape === void 0 || !hasClosedFields(value, fields) || typeof value.global !== "string" || typeof value.member !== "string" || !isSafeSequence(value.settle)) return false;
+  if (argsShape === "text" && !isValidValueWire(value.args)) return false;
   return value.ok ? isValidValueWire(value.value) : typeof value.error === "string";
 }
 function isValidOperation(value) {
@@ -2826,7 +2834,9 @@ function isValidEditTarget(value) {
 }
 function isValidDerivedRun(value) {
   try {
-    return hasExactFields(value, DERIVED_RUN_FIELDS) && typeof value.code === "string" && typeof value.description === "string";
+    if (!isRecord3(value) || !hasClosedFields(value, DERIVED_RUN_FIELDS) || typeof value.description !== "string") return false;
+    const codeShape = payloadShape(value, "code", "codeDigest", "codeBytes");
+    return codeShape === "digest" || codeShape === "text" && typeof value.code === "string";
   } catch {
     return false;
   }

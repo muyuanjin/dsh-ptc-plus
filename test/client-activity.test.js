@@ -4,6 +4,7 @@ import { derivePtcToolView } from '../src/client-activity.js'
 import { normalizeJournal } from '../internal/session-journal.js'
 import { JOURNAL_VERSION, JOURNAL_VERSIONS, PER_NAME_USER_BINDINGS_JOURNAL_VERSION } from '../internal/session-journal-schema.js'
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
+import { byteLength, digestOf } from '../internal/projection-retention.js'
 import { DEFAULT_VALUE_LIMITS, VALUE_CODEC } from '../internal/value-wire-schema.js'
 import { LEGACY_USER_BINDING_TRANSFORM, PREVIOUS_USER_BINDING_TRANSFORM,
   PROTECTED_MODULE_TRANSFORM } from '../internal/module-transform-contract.js'
@@ -660,6 +661,40 @@ test('validates function/class provenance against its independent binding policy
   assert.deepEqual(view.features, [
     { key: 'autoRewriteImports.label', detail: 'node:path' },
   ])
+})
+
+test('presents the argument and source digests retention records after pruning', () => {
+  const wire = encodeValue({})
+  const pruned = normalizeJournal(journal({
+    calls: [{
+      global: 'code',
+      member: 'run',
+      argsDigest: digestOf(wire),
+      argsBytes: byteLength(wire),
+      ok: true,
+      value: encodeValue(undefined),
+      settle: 0,
+    }],
+  }))
+  assert.deepEqual(derivePtcToolView(result({ dshPtcPlus: pruned })).features,
+    [{ key: 'feature.codeRun', detail: '' }])
+
+  const source = 'return fixed'
+  const edit = derivePtcToolView(result({
+    dshPtcPlus: pruned,
+    dshPtcPlusEdit: { targetCallSeq: 0 },
+    dshPtcPlusDerivedRun: {
+      codeDigest: digestOf(source),
+      codeBytes: byteLength(source),
+      description: 'Apply fix',
+    },
+  }, { toolName: 'edit_run_code' }), 'edit_run_code')
+  assert.deepEqual(edit.features,
+    [{ key: 'feature.safeEdit', detail: '' }, { key: 'feature.codeRun', detail: '' }])
+
+  const both = structuredClone(pruned)
+  both.calls[0].args = encodeValue({})
+  assert.equal(derivePtcToolView(result({ dshPtcPlus: both })).ptc, false)
 })
 
 test('preserves source, result, and lifecycle fallbacks for the replacement tool row', () => {

@@ -249,12 +249,30 @@ function isValidModuleSemantics(value, version) {
     && (legacy || IMPORT_EXPRESSION_BOUNDARIES.has(value.importExpressionBoundary))
 }
 
+/**
+ * The retention window keeps everything recovery reads and replaces one payload
+ * with the digest of exactly the bytes it used to carry, so a recorded call keeps
+ * the Value V1 wire of its arguments or the digest of that wire, and a derived run
+ * keeps its source or the digest of that source. `normalizeCalls` and
+ * `normalizeDerivedRelation` accept exactly one of the two shapes and reject a
+ * record that claims both, so this boundary reports which shape it read.
+ */
+function payloadShape(value, textField, digestField, bytesField) {
+  if (Object.hasOwn(value, textField)) {
+    return Object.hasOwn(value, digestField) || Object.hasOwn(value, bytesField) ? undefined : 'text'
+  }
+  return typeof value[digestField] === 'string' && /^[a-f0-9]{64}$/u.test(value[digestField])
+    && isSafeSequence(value[bytesField]) ? 'digest' : undefined
+}
+
 function isValidCall(value) {
   if (!isRecord(value) || (value.ok !== true && value.ok !== false)) return false
   const fields = value.ok ? CALL_SUCCESS_FIELDS : CALL_ERROR_FIELDS
-  if (!hasExactFields(value, fields) || typeof value.global !== 'string'
-    || typeof value.member !== 'string' || !isValidValueWire(value.args)
+  const argsShape = payloadShape(value, 'args', 'argsDigest', 'argsBytes')
+  if (argsShape === undefined || !hasClosedFields(value, fields)
+    || typeof value.global !== 'string' || typeof value.member !== 'string'
     || !isSafeSequence(value.settle)) return false
+  if (argsShape === 'text' && !isValidValueWire(value.args)) return false
   return value.ok ? isValidValueWire(value.value) : typeof value.error === 'string'
 }
 
@@ -389,8 +407,10 @@ function isValidEditTarget(value) {
 
 function isValidDerivedRun(value) {
   try {
-    return hasExactFields(value, DERIVED_RUN_FIELDS)
-      && typeof value.code === 'string' && typeof value.description === 'string'
+    if (!isRecord(value) || !hasClosedFields(value, DERIVED_RUN_FIELDS)
+      || typeof value.description !== 'string') return false
+    const codeShape = payloadShape(value, 'code', 'codeDigest', 'codeBytes')
+    return codeShape === 'digest' || (codeShape === 'text' && typeof value.code === 'string')
   } catch {
     return false
   }

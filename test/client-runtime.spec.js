@@ -1706,6 +1706,41 @@ test.each(['recorded', 'unavailable', 'usage', 'saved-only', 'paused', 'off'])('
   expect(commandNode.outcome.text).toBe(historicalText)
 })
 
+test('a capability command notice states saved, delivered and usable as three separate facts', () => {
+  const copy = (key, params = {}) => String(SETTINGS_COPY.en[key] ?? key)
+    .replace(/\{(\w+)\}/g, (_, name) => params[name] ?? '')
+  const noticeFor = proof => {
+    const container = renderCapabilityCard({ commandId: `proof-${proof.delivery}-${proof.usability}`,
+      name: 'capabilities', args: 'set global tools.probe availability full',
+      outcome: { kind: 'success',
+        text: capabilityCommandReceipt('recorded', 'proof-session', undefined, undefined, proof) } })
+    return container.querySelector('.ptcPlusCapabilityCommandNotice').textContent
+  }
+  const delivered = noticeFor({ schema: 'ptc-capability-proof/v1', id: 'tools.probe', saved: true,
+    delivery: 'delivered', usability: 'proven' })
+  // The three facts never collapse into one verdict: a delivered and a still
+  // pending save read differently even though both were saved by this command.
+  expect(delivered).toContain(copy('capabilities.card.recorded'))
+  expect(delivered).toContain(copy('capabilities.proof.delivery.delivered'))
+  expect(delivered).toContain(copy('capabilities.proof.usability.proven'))
+  const pending = noticeFor({ schema: 'ptc-capability-proof/v1', id: 'tools.probe', saved: true,
+    delivery: 'pending', usability: 'unproven' })
+  expect(pending).toContain(copy('capabilities.proof.delivery.pending'))
+  expect(pending).toContain(copy('capabilities.proof.usability.unproven'))
+  expect(pending).not.toContain(copy('capabilities.proof.delivery.delivered'))
+  expect(pending).not.toContain(copy('capabilities.proof.usability.proven'))
+  const unsaved = noticeFor({ schema: 'ptc-capability-proof/v1', id: 'tools.probe', saved: false,
+    delivery: 'absent', usability: 'unproven' })
+  expect(unsaved).toContain(copy('capabilities.proof.saved.no'))
+  expect(unsaved).toContain(copy('capabilities.proof.delivery.absent'))
+  expect(unsaved).not.toContain(copy('capabilities.proof.saved.yes'))
+  // A receipt without the proof field keeps the bare session outcome, so
+  // historical notices still reproduce their own text.
+  const bare = renderCapabilityCard({ commandId: 'bare', name: 'capabilities', args: 'set global tools.probe availability full',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'proof-session') } })
+  expect(bare.querySelector('.ptcPlusCapabilityCommandNotice').textContent).toBe(copy('capabilities.card.recorded'))
+})
+
 test('a capability environment delivered without a submitted command renders no chat notice', async () => {
   // What a new session publishes is a model-visible runtime context. A node that
   // carries no submitted input is not a user command, so it must not announce that
@@ -2126,6 +2161,39 @@ test.each(['pending', 'usage'])('sparkle session capability %s receipt reports o
     expect(document.body.textContent).toContain('remaining changes were not applied')
     expect(view.getByRole('button', { name: 'Apply to session' }).disabled).toBe(false)
   }
+})
+
+test('session capability controls report the three capability facts the applied receipts proved', async () => {
+  const entries = [{ id: 'tools.probe', category: 'tool', source: { kind: 'host' },
+    saved: 'automatic', temporary: 'inherit', effective: 'on-demand' }]
+  const proof = { schema: 'ptc-capability-proof/v1', id: 'tools.probe', saved: true, delivery: 'pending', usability: 'unproven' }
+  const execute = vi.fn(async sessionId => {
+    entries[0] = { ...entries[0], temporary: 'closed', effective: 'pending' }
+    return { ok: true, value: { commandId: 'proof', result: { kind: 'success',
+      text: capabilityCommandReceipt('pending', sessionId, undefined, undefined, proof) } } }
+  })
+  const { runtime } = await fixture({ bindings: false,
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog' ? sessionCatalog(entries) : [] }),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }] }), execute } })
+  const view = runtime.renderRoot(); await runtime.flush(); await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
+  const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
+  const copy = key => String(SETTINGS_COPY.en[key] ?? key)
+  // Before any command, the catalogue says what the plan will do and the panel
+  // must not pretend to know which layer succeeded.
+  const before = panel.querySelector('[data-capability-proof="tools.probe"]')
+  expect(before.textContent).toContain(copy('capabilities.proof.title'))
+  expect(before.textContent).toContain(copy('capabilities.proof.unobserved'))
+  await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
+  fireEvent.click(view.getByRole('button', { name: 'Apply to session' })); await runtime.flush()
+  const after = panel.querySelector('[data-capability-proof="tools.probe"]')
+  expect(after.textContent).toBe(copy('capabilities.proof.title')
+    + copy('capabilities.proof.line')
+      .replace('{saved}', copy('capabilities.proof.saved.yes'))
+      .replace('{delivery}', copy('capabilities.proof.delivery.pending'))
+      .replace('{usability}', copy('capabilities.proof.usability.unproven'))
+    + copy('capabilities.proof.observed').replace('{command}', '/capabilities set session tools.probe closed'))
+  expect(after.textContent).not.toContain(copy('capabilities.proof.usability.proven'))
 })
 
 test('a paused session capability list states Host defaults and blocks staged writes', async () => {

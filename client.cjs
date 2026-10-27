@@ -3604,6 +3604,44 @@ function registerGated(scope, { subscribe, isEnabled, register }) {
   });
 }
 
+// internal/capability-delivery-proof.js
+var CAPABILITY_PROOF_SCHEMA = "ptc-capability-proof/v1";
+var CAPABILITY_DELIVERY_STATES = /* @__PURE__ */ new Set(["delivered", "pending", "absent"]);
+var CAPABILITY_USABILITY_STATES = /* @__PURE__ */ new Set(["proven", "unproven"]);
+var CAPABILITY_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+function isRecord4(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function normalizeCapabilityProof(value) {
+  if (!isRecord4(value) || Reflect.ownKeys(value).length !== 5 || !Object.hasOwn(value, "schema") || !Object.hasOwn(value, "id") || !Object.hasOwn(value, "saved") || !Object.hasOwn(value, "delivery") || !Object.hasOwn(value, "usability")) {
+    throw new TypeError("invalid capability proof");
+  }
+  if (value.schema !== CAPABILITY_PROOF_SCHEMA) throw new TypeError("invalid capability proof schema");
+  if (typeof value.id !== "string" || !CAPABILITY_ID.test(value.id)) throw new TypeError("invalid capability proof id");
+  if (typeof value.saved !== "boolean") throw new TypeError("invalid capability proof saved fact");
+  if (!CAPABILITY_DELIVERY_STATES.has(value.delivery)) throw new TypeError("invalid capability proof delivery state");
+  if (!CAPABILITY_USABILITY_STATES.has(value.usability)) throw new TypeError("invalid capability proof usability state");
+  return Object.freeze({
+    schema: CAPABILITY_PROOF_SCHEMA,
+    id: value.id,
+    saved: value.saved,
+    delivery: value.delivery,
+    usability: value.usability
+  });
+}
+function capabilityProofText(proof) {
+  const normalized = normalizeCapabilityProof(proof);
+  const id2 = normalized.id;
+  const saved = normalized.saved ? `Saved: yes. The global configuration records a choice for ${id2}.` : `Saved: no. The global configuration records no choice for ${id2}, so this save did not happen; the session choice below is the only change.`;
+  const delivery = {
+    delivered: `Delivered: yes. The model-visible capability catalog published ${id2} at an accepted step.`,
+    pending: `Delivered: not yet. The saved configuration reaches the model-visible catalog at the next accepted step, so ${id2} is not in it now.`,
+    absent: `Delivered: no. The published capability catalog does not list ${id2}, so the model never received it.`
+  }[normalized.delivery];
+  const usability = normalized.usability === "proven" ? `Usable: proven. A completed execution in this session reached ${id2}.` : `Usable: unproven. No completed execution in this session reached ${id2}; only such a result would prove it, and a saved or published entry does not.`;
+  return `${saved} ${delivery} ${usability}`;
+}
+
 // internal/capability-command-receipt.js
 var PREFIX = "\n\nPTC Plus capability refresh receipt:\n";
 var FALLBACKS = Object.freeze({
@@ -3616,17 +3654,25 @@ var FALLBACKS = Object.freeze({
   off: "Capability management is off; the session stays with the Host capabilities for session"
 });
 var STATES = /* @__PURE__ */ new Set(["recorded", "pending", "unavailable", "usage", "saved-only", "paused", "off"]);
-function capabilityCommandReceipt(state, sessionId, error, proposal) {
+function capabilityCommandReceipt(state, sessionId, error, proposal, proof) {
   if (!STATES.has(state) || typeof sessionId !== "string" || !sessionId) throw new TypeError("invalid capability command receipt");
   if (error !== void 0 && (state !== "saved-only" || typeof error !== "string" || !error)) throw new TypeError("invalid capability command error");
   if (proposal !== void 0 && (state !== "pending" || !proposal || typeof proposal.commandId !== "string" || typeof proposal.rawInput !== "string" || !proposal.message)) throw new TypeError("invalid capability proposal receipt");
-  return `${FALLBACKS[state]} ${sessionId}.${error ? ` ${error}` : ""}` + PREFIX + JSON.stringify({ schema: "ptc-capability-command/v1", state, sessionId, ...error === void 0 ? {} : { error }, ...proposal === void 0 ? {} : { proposal } });
+  const layers = proof === void 0 ? void 0 : normalizeCapabilityProof(proof);
+  return `${FALLBACKS[state]} ${sessionId}.${error ? ` ${error}` : ""}` + (layers === void 0 ? "" : ` ${capabilityProofText(layers)}`) + PREFIX + JSON.stringify({
+    schema: "ptc-capability-command/v1",
+    state,
+    sessionId,
+    ...error === void 0 ? {} : { error },
+    ...proposal === void 0 ? {} : { proposal },
+    ...layers === void 0 ? {} : { proof: layers }
+  });
 }
 function readCapabilityCommandReceipt(text) {
   if (typeof text !== "string" || !text.includes(PREFIX)) return void 0;
   try {
     const receipt = JSON.parse(text.slice(text.indexOf(PREFIX) + PREFIX.length));
-    return receipt?.schema === "ptc-capability-command/v1" && STATES.has(receipt.state) && typeof receipt.sessionId === "string" && receipt.sessionId && capabilityCommandReceipt(receipt.state, receipt.sessionId, receipt.error, receipt.proposal) === text ? receipt : void 0;
+    return receipt?.schema === "ptc-capability-command/v1" && STATES.has(receipt.state) && typeof receipt.sessionId === "string" && receipt.sessionId && capabilityCommandReceipt(receipt.state, receipt.sessionId, receipt.error, receipt.proposal, receipt.proof) === text ? receipt : void 0;
   } catch {
     return void 0;
   }
@@ -9154,10 +9200,22 @@ function sortCapabilityEntries(entries, current, valueFor) {
 }
 
 // src/client-capabilities-view.js
+function capabilityProofCopy(t2, proof) {
+  const delivery = ["delivered", "pending", "absent"].includes(proof?.delivery) ? proof.delivery : void 0;
+  const usability = ["proven", "unproven"].includes(proof?.usability) ? proof.usability : void 0;
+  if (delivery === void 0 || usability === void 0) return t2("capabilities.quick.unknown");
+  return t2("capabilities.proof.line", {
+    saved: t2(proof.saved === true ? "capabilities.proof.saved.yes" : "capabilities.proof.saved.no"),
+    delivery: t2(`capabilities.proof.delivery.${delivery}`),
+    usability: t2(`capabilities.proof.usability.${usability}`)
+  });
+}
 function capabilityCommandText(t2, text) {
   if (text?.key) return t2(text.key, text.params);
   const receipt = readCapabilityCommandReceipt(text);
-  return receipt ? t2(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? "" }) : text;
+  if (!receipt) return text;
+  const line = t2(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? "" });
+  return receipt.proof === void 0 ? line : `${line} ${capabilityProofCopy(t2, receipt.proof)}`;
 }
 var HOST_CONTEXT_SECTIONS = Object.freeze([
   Object.freeze({ id: "host:system-prompt", presence: "capabilities.prompt.hostPresenceEvery" }),
@@ -9210,11 +9268,12 @@ function createCapabilityCommandCard(React32) {
     const legacyRefresh = text === "Session capability environment refreshed; the model-visible notification is recorded.";
     if (receipt || String(node.args ?? "").trim() === "refresh" || legacyRefresh) {
       const outcome2 = receipt ? t2(`capabilities.card.${receipt.state}`, { error: receipt.error ?? "" }) : legacyRefresh ? t2("capabilities.card.recorded") : node.outcome ? (typeof text === "string" && !text.trim() ? void 0 : capabilityCommandText(t2, text)) ?? t2(node.outcome.kind === "error" ? "capabilities.commandFailed" : "capabilities.refreshAcknowledged") : t2("capabilities.refreshing");
+      const notice = receipt?.proof === void 0 || outcome2 === void 0 ? outcome2 : `${outcome2} ${capabilityProofCopy(t2, receipt.proof)}`;
       return h("p", {
         className: "ptcPlusCapabilityCommandNotice",
         role: node.outcome?.kind === "error" ? "alert" : "status",
         "data-state": node.outcome?.kind ?? "pending"
-      }, outcome2);
+      }, notice);
     }
     let json;
     if (typeof text === "string") {
@@ -11403,6 +11462,7 @@ function createCapabilityRefreshView(React32, commands) {
 function createSessionCapabilityControlsView(React32, { commands, Modal, Select: Select2, inspectSessionCatalog }) {
   const h = React32.createElement;
   const emptyDrafts = () => ({});
+  const emptyProofs = () => ({});
   return function SessionCapabilityControls({ sessionId, open, enabled, t: t2, onClose }) {
     const source = React32.useMemo(() => commands.source(sessionId), [sessionId]);
     const available = React32.useSyncExternalStore(source.subscribe, source.getSnapshot);
@@ -11424,6 +11484,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     const [sort2, setSort] = React32.useState(null);
     const [focusDimension, setFocusDimension] = React32.useState(null);
     const [status, setStatus] = React32.useState(null);
+    const [proofs, setProofs] = React32.useState(emptyProofs);
     const [pending, setPending] = React32.useState(false);
     const request = React32.useRef(null);
     const applying = React32.useRef(false);
@@ -11458,6 +11519,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
       setPane("list");
       setFocusDimension(null);
       setStatus(null);
+      setProofs(emptyProofs());
       setPending(false);
       setError(null);
     }, [sessionId]);
@@ -11588,15 +11650,18 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
         let pendingCount = 0;
         let failure = null;
         let savedOnly = null;
+        const observed = {};
         for (const [id2, selection, dimension] of staged) {
           if (controller.signal.aborted) break;
+          const line = `set ${targetScope} ${encodeURIComponent(id2)} ${dimension ? dimension + " " : ""}${selection}`;
           try {
-            const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id2)} ${dimension ? dimension + " " : ""}${selection}`, controller.signal);
+            const result = await commands.run(sessionId, line, controller.signal);
             const receipt = readCapabilityCommandReceipt(result.text);
             if (!receipt || receipt.sessionId !== sessionId || !["recorded", "pending"].includes(receipt.state)) {
               throw new Error(receipt ? capabilityCommandText(t2, result.text) : t2("capabilities.quick.unknownReceipt"));
             }
             if (receipt?.state === "pending") pendingCount += 1;
+            if (receipt.proof !== void 0) observed[receipt.proof.id] = { proof: receipt.proof, command: `/capabilities ${line}` };
             completed += 1;
           } catch (cause) {
             failure = String(cause?.message ?? cause);
@@ -11604,6 +11669,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
             break;
           }
         }
+        if (mounted.current && Object.keys(observed).length) setProofs((current) => ({ ...current, ...observed }));
         if (request.current !== controller || controller.signal.aborted || !mounted.current) return;
         const refreshed = await load(controller.signal);
         if (request.current !== controller || controller.signal.aborted || !mounted.current) return;
@@ -11996,6 +12062,17 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
               h("dd", null, statusLabel(selected.effective)),
               selected.sourceDimensions ? h(React32.Fragment, null, h("dt", null, t2("capabilities.policy.frozenSource")), h("dd", null, dimensionFacts(selected.sourceDimensions))) : null,
               selected.effectiveDimensions ? h(React32.Fragment, null, h("dt", null, t2("capabilities.policy.effectiveDimensions")), h("dd", null, dimensionFacts(selected.effectiveDimensions))) : null
+            ),
+            h(
+              "div",
+              { className: "ptcPlusCapabilityProof", "data-capability-proof": selected.id },
+              h("h4", null, t2("capabilities.proof.title")),
+              proofs[selected.id] ? h(
+                React32.Fragment,
+                null,
+                h("p", { className: "ptcPlusDetail", role: "status" }, capabilityProofCopy(t2, proofs[selected.id].proof)),
+                h("small", null, t2("capabilities.proof.observed", { command: proofs[selected.id].command }))
+              ) : h("p", { className: "ptcPlusDetail" }, t2("capabilities.proof.unobserved"))
             ),
             selected.source?.kind === "mcp" && selected.category !== "server" ? (() => {
               const server = catalog.find((entry) => entry.category === "server" && entry.source?.server === selected.source.server);
@@ -13595,7 +13672,7 @@ var {
   appendArray: appendArray2,
   popArray
 } = runtimeIntrinsics;
-function isRecord4(value) {
+function isRecord5(value) {
   return value !== null && typeof value === "object" && !isArray2(value);
 }
 function assertOwnFields(value, allowed, label) {
@@ -13612,7 +13689,7 @@ function assertOwnFields(value, allowed, label) {
 var FIELDS = /* @__PURE__ */ new Set(["includeDeclaration", "instructions", "enabled", "declaration"]);
 function normalizeBindingModelContext(value) {
   if (value === void 0) return void 0;
-  if (!isRecord4(value)) throw new TypeError("binding modelContext must be an object");
+  if (!isRecord5(value)) throw new TypeError("binding modelContext must be an object");
   assertOwnFields(value, FIELDS, "binding modelContext");
   const { includeDeclaration = true, instructions = "", enabled = true, declaration = "" } = value;
   if (typeof includeDeclaration !== "boolean") throw new TypeError("binding modelContext.includeDeclaration must be a boolean");
@@ -13645,7 +13722,7 @@ var MAX_COMMAND_ID_LENGTH = 256;
 var VIEW_FIELDS = /* @__PURE__ */ new Set(["phase", "capability", "commandId"]);
 var PHASES2 = /* @__PURE__ */ new Set(["idle", "pending", "ready", "failed"]);
 function normalizeCandidate(value) {
-  if (!isRecord4(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord4(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
+  if (!isRecord5(value) || typeof value.requestId !== "string" || value.requestId.length === 0 || value.requestId.length > 128 || !Number.isSafeInteger(value.version) || value.version < 1 || !["new", "edit"].includes(value.mode) || !isRecord5(value.entry) || !["namespace", "top-level"].includes(value.entry.scope) || value.entry.enabled !== false || !Array.isArray(value.entry.symbols) || value.entry.symbols.some((symbol) => typeof symbol !== "string") || ["id", "name", "purpose", "source"].some((key) => typeof value.entry[key] !== "string") || value.entry.source.length === 0 || value.entry.source.length > 65536) {
     throw new Error("invalid dsh-ptc-plus accepted binding candidate");
   }
   const modelContext = normalizeBindingModelContext(value.entry.modelContext);
@@ -13694,7 +13771,7 @@ function historyFields(value) {
   return value.history === void 0 ? {} : { history: normalizeHistory(value.history) };
 }
 function exactFields(value, fields) {
-  if (!isRecord4(value)) return false;
+  if (!isRecord5(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
 }
@@ -41105,7 +41182,7 @@ function isReuseCount(value) {
   return Number.isSafeInteger(value) && value >= 0;
 }
 function exactFields2(value, fields) {
-  if (!isRecord4(value)) return false;
+  if (!isRecord5(value)) return false;
   const keys2 = Reflect.ownKeys(value);
   return keys2.length === fields.size && keys2.every((key) => typeof key === "string" && fields.has(key) && Object.prototype.propertyIsEnumerable.call(value, key));
 }
@@ -41436,6 +41513,17 @@ var CHROME_COPY = Object.freeze({
     "capabilities.receipt.off": "\u80FD\u529B\u7BA1\u7406\u5DF2\u5173\u95ED\uFF1B\u4F1A\u8BDD {session} \u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.receipt.unavailable": "\u8BF7\u9009\u62E9\u4ECD\u6D3B\u8DC3\u7684 PTC \u4F1A\u8BDD\u3002",
     "capabilities.receipt.usage": "\u4F7F\u7528 /capabilities \u67E5\u770B\uFF0C\u6216 /capabilities refresh \u540C\u6B65\u5DF2\u4FDD\u5B58\u8BBE\u7F6E\u3002",
+    "capabilities.proof.title": "\u4E09\u5C42\u4E8B\u5B9E",
+    "capabilities.proof.line": "\u5DF2\u4FDD\u5B58\uFF1A{saved}\uFF1B\u5DF2\u6295\u9012\uFF1A{delivery}\uFF1B\u5DF2\u53EF\u7528\uFF1A{usability}\u3002",
+    "capabilities.proof.saved.yes": "\u662F\uFF0C\u5168\u5C40\u8BBE\u7F6E\u8BB0\u5F55\u4E86\u8FD9\u9879\u9009\u62E9",
+    "capabilities.proof.saved.no": "\u5426\uFF0C\u8FD9\u6761\u547D\u4EE4\u6CA1\u6709\u6539\u52A8\u5168\u5C40\u8BBE\u7F6E",
+    "capabilities.proof.delivery.delivered": "\u662F\uFF0C\u6A21\u578B\u53EF\u89C1\u76EE\u5F55\u5DF2\u5728\u53D7\u7406\u7684\u6B65\u9AA4\u53D1\u5E03\u8BE5\u9879",
+    "capabilities.proof.delivery.pending": "\u5C1A\u672A\uFF0C\u5DF2\u4FDD\u5B58\u7684\u8BBE\u7F6E\u8981\u5230\u4E0B\u4E00\u4E2A\u53D7\u7406\u6B65\u9AA4\u624D\u8FDB\u5165\u76EE\u5F55",
+    "capabilities.proof.delivery.absent": "\u5426\uFF0C\u76EE\u5F55\u6CA1\u6709\u5217\u51FA\u8BE5\u9879\uFF0C\u6A21\u578B\u6CA1\u6709\u6536\u5230\u5B83",
+    "capabilities.proof.usability.proven": "\u5DF2\u8BC1\u660E\uFF0C\u672C\u4F1A\u8BDD\u6709\u5B8C\u6210\u7684\u6267\u884C\u53D6\u5230\u4E86\u5B83",
+    "capabilities.proof.usability.unproven": "\u672A\u8BC1\u660E\uFF0C\u672C\u4F1A\u8BDD\u6CA1\u6709\u5B8C\u6210\u7684\u6267\u884C\u53D6\u5230\u8FC7\u5B83\uFF1B\u4FDD\u5B58\u6216\u53D1\u5E03\u90FD\u4E0D\u6784\u6210\u8BC1\u660E",
+    "capabilities.proof.observed": "\u6765\u81EA {command} \u8FD4\u56DE\u7684\u6536\u636E\u3002",
+    "capabilities.proof.unobserved": "\u672C\u9762\u677F\u8FD8\u6CA1\u6709\u8FD9\u9879\u80FD\u529B\u7684\u6295\u9012\u4E0E\u53EF\u7528\u6027\u8BC1\u636E\uFF1B\u5E94\u7528\u4E00\u6B21\u6539\u52A8\uFF0C\u6216\u56DE\u5230\u4F1A\u8BDD\u67E5\u770B\u547D\u4EE4\u6536\u636E\u3002",
     "bindings.toggleEnabled": "\u5DF2\u4FDD\u5B58\u201C{name}\u201D\u7684\u542F\u7528\u9009\u62E9\uFF1B\u6A21\u578B\u76EE\u5F55\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u66F4\u65B0\uFF0C\u7A0B\u5E8F\u503C\u5C1A\u672A\u8BC1\u660E\u521D\u59CB\u5316\u3002",
     "bindings.toggleDisabled": "\u5DF2\u4FDD\u5B58\u201C{name}\u201D\u7684\u505C\u7528\u9009\u62E9\uFF1B\u6A21\u578B\u76EE\u5F55\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u64A4\u9500\uFF0C\u4E0D\u64A4\u9500\u5DF2\u7ECF\u53D1\u751F\u7684\u6548\u679C\u3002",
     "capabilities.observationGroup": "\u53EA\u8BFB\u4F1A\u8BDD\u89C2\u5BDF",
@@ -42149,6 +42237,17 @@ var CHROME_COPY = Object.freeze({
     "capabilities.receipt.off": "Capability management is off; session {session} stays with the Host capabilities.",
     "capabilities.receipt.unavailable": "Select an active PTC session.",
     "capabilities.receipt.usage": "Use /capabilities to inspect or /capabilities refresh to apply saved settings.",
+    "capabilities.proof.title": "Three separate facts",
+    "capabilities.proof.line": "Saved: {saved}; delivered: {delivery}; usable: {usability}.",
+    "capabilities.proof.saved.yes": "yes, the global configuration records this choice",
+    "capabilities.proof.saved.no": "no, this command did not change the global configuration",
+    "capabilities.proof.delivery.delivered": "yes, the model-visible catalog published it at an accepted step",
+    "capabilities.proof.delivery.pending": "not yet, the saved configuration reaches the catalog at the next accepted step",
+    "capabilities.proof.delivery.absent": "no, the catalog does not list it, so the model never received it",
+    "capabilities.proof.usability.proven": "proven, a completed execution in this session reached it",
+    "capabilities.proof.usability.unproven": "unproven, no completed execution in this session reached it; a save or a published entry does not prove it",
+    "capabilities.proof.observed": "From the receipt {command} returned.",
+    "capabilities.proof.unobserved": "This panel holds no delivery or usability evidence for this capability yet; apply a change, or read the command receipt in the conversation.",
     "bindings.toggleEnabled": "Enabled \u201C{name}\u201D in saved configuration. The model catalog updates at the next accepted step; worker initialization is not yet established.",
     "bindings.toggleDisabled": "Disabled \u201C{name}\u201D in saved configuration. The model catalog withdraws it at the next accepted step; earlier effects are unchanged.",
     "capabilities.observationGroup": "Read-only session observation",

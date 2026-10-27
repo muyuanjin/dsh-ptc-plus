@@ -9,10 +9,28 @@ import {
   accountPromptText, parsePromptTextDocument, resolvePromptText,
 } from '../internal/prompt-text.js'
 
+/**
+ * One capability, three separate facts, in the reader's language. Saved,
+ * delivered and usable are different questions, so a reader must be able to see
+ * which one failed instead of reading one blanket "applied".
+ */
+export function capabilityProofCopy(t, proof) {
+  const delivery = ['delivered', 'pending', 'absent'].includes(proof?.delivery) ? proof.delivery : undefined
+  const usability = ['proven', 'unproven'].includes(proof?.usability) ? proof.usability : undefined
+  if (delivery === undefined || usability === undefined) return t('capabilities.quick.unknown')
+  return t('capabilities.proof.line', {
+    saved: t(proof.saved === true ? 'capabilities.proof.saved.yes' : 'capabilities.proof.saved.no'),
+    delivery: t(`capabilities.proof.delivery.${delivery}`),
+    usability: t(`capabilities.proof.usability.${usability}`),
+  })
+}
+
 export function capabilityCommandText(t, text) {
   if (text?.key) return t(text.key, text.params)
   const receipt = readCapabilityCommandReceipt(text)
-  return receipt ? t(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? '' }) : text
+  if (!receipt) return text
+  const line = t(`capabilities.receipt.${receipt.state}`, { session: receipt.sessionId, error: receipt.error ?? '' })
+  return receipt.proof === undefined ? line : `${line} ${capabilityProofCopy(t, receipt.proof)}`
 }
 
 // Host-owned context the model sees in PTC mode. The plugin never receives the host's
@@ -115,9 +133,14 @@ export function createCapabilityCommandCard(React) {
           : node.outcome ? (typeof text === 'string' && !text.trim() ? undefined : capabilityCommandText(t, text))
             ?? t(node.outcome.kind === 'error' ? 'capabilities.commandFailed' : 'capabilities.refreshAcknowledged')
             : t('capabilities.refreshing')
+      // A command that names one capability carries that capability's three
+      // facts; the notice states them beside its session outcome so "saved"
+      // cannot be read as "delivered" or "usable".
+      const notice = receipt?.proof === undefined || outcome === undefined
+        ? outcome : `${outcome} ${capabilityProofCopy(t, receipt.proof)}`
       return h('p', { className: 'ptcPlusCapabilityCommandNotice',
         role: node.outcome?.kind === 'error' ? 'alert' : 'status',
-        'data-state': node.outcome?.kind ?? 'pending' }, outcome)
+        'data-state': node.outcome?.kind ?? 'pending' }, notice)
     }
     let json
     if (typeof text === 'string') {
@@ -1427,6 +1450,10 @@ export function createCapabilityRefreshView(React, commands) {
 export function createSessionCapabilityControlsView(React, { commands, Modal, Select, inspectSessionCatalog }) {
   const h = React.createElement
   const emptyDrafts = () => ({})
+  // The panel reports the three capability facts only where it holds evidence:
+  // the receipts its own commands returned. A catalogue row says what the plan
+  // will do; it cannot say a cell reached the capability.
+  const emptyProofs = () => ({})
   return function SessionCapabilityControls({ sessionId, open, enabled, t, onClose }) {
     const source = React.useMemo(() => commands.source(sessionId), [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
@@ -1448,6 +1475,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const [sort, setSort] = React.useState(null)
     const [focusDimension, setFocusDimension] = React.useState(null)
     const [status, setStatus] = React.useState(null)
+    const [proofs, setProofs] = React.useState(emptyProofs)
     const [pending, setPending] = React.useState(false)
     const request = React.useRef(null)
     const applying = React.useRef(false)
@@ -1480,6 +1508,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       setPane('list')
       setFocusDimension(null)
       setStatus(null)
+      setProofs(emptyProofs())
       setPending(false)
       setError(null)
     }, [sessionId])
@@ -1646,15 +1675,20 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
         let pendingCount = 0
         let failure = null
         let savedOnly = null
+        const observed = {}
         for (const [id, selection, dimension] of staged) {
           if (controller.signal.aborted) break
+          const line = `set ${targetScope} ${encodeURIComponent(id)} ${dimension ? dimension + ' ' : ''}${selection}`
           try {
-            const result = await commands.run(sessionId, `set ${targetScope} ${encodeURIComponent(id)} ${dimension ? dimension + ' ' : ''}${selection}`, controller.signal)
+            const result = await commands.run(sessionId, line, controller.signal)
             const receipt = readCapabilityCommandReceipt(result.text)
             if (!receipt || receipt.sessionId !== sessionId || !['recorded', 'pending'].includes(receipt.state)) {
               throw new Error(receipt ? capabilityCommandText(t, result.text) : t('capabilities.quick.unknownReceipt'))
             }
             if (receipt?.state === 'pending') pendingCount += 1
+            // A receipt that names the capability carries the only proof this
+            // panel can hold: what the save did and did not establish.
+            if (receipt.proof !== undefined) observed[receipt.proof.id] = { proof: receipt.proof, command: `/capabilities ${line}` }
             completed += 1
           } catch (cause) {
             failure = String(cause?.message ?? cause)
@@ -1663,6 +1697,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
             break
           }
         }
+        if (mounted.current && Object.keys(observed).length) setProofs(current => ({ ...current, ...observed }))
         if (request.current !== controller || controller.signal.aborted || !mounted.current) return
         const refreshed = await load(controller.signal)
         if (request.current !== controller || controller.signal.aborted || !mounted.current) return
@@ -1900,6 +1935,13 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
             h('dt', null, t('capabilities.quick.effective')), h('dd', null, statusLabel(selected.effective)),
             selected.sourceDimensions ? h(React.Fragment, null, h('dt', null, t('capabilities.policy.frozenSource')), h('dd', null, dimensionFacts(selected.sourceDimensions))) : null,
             selected.effectiveDimensions ? h(React.Fragment, null, h('dt', null, t('capabilities.policy.effectiveDimensions')), h('dd', null, dimensionFacts(selected.effectiveDimensions))) : null),
+          h('div', { className: 'ptcPlusCapabilityProof', 'data-capability-proof': selected.id },
+            h('h4', null, t('capabilities.proof.title')),
+            proofs[selected.id]
+              ? h(React.Fragment, null,
+                h('p', { className: 'ptcPlusDetail', role: 'status' }, capabilityProofCopy(t, proofs[selected.id].proof)),
+                h('small', null, t('capabilities.proof.observed', { command: proofs[selected.id].command })))
+              : h('p', { className: 'ptcPlusDetail' }, t('capabilities.proof.unobserved'))),
           selected.source?.kind === 'mcp' && selected.category !== 'server'
             ? (() => {
               const server = catalog.find(entry => entry.category === 'server' && entry.source?.server === selected.source.server)

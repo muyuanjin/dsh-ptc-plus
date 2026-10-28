@@ -123,7 +123,7 @@ export function validateManifest(manifest, packages) {
   for (const definition of CHANNELS) {
     const record = manifest.channels?.[definition.channel]
     if (record === undefined) throw new Error(`${MANIFEST_PATH} does not record channel ${definition.channel}`)
-    if (record.distTag !== definition.distTag || record.blocks !== definition.blocks) {
+    if (record.channel !== definition.channel || record.distTag !== definition.distTag || record.blocks !== definition.blocks) {
       throw new Error(`${MANIFEST_PATH} channel ${definition.channel} does not match its declared dist-tag or blocking role`)
     }
     const pinned = Object.keys(record.packages ?? {})
@@ -343,9 +343,10 @@ export async function describeDevelopmentGraph(channels, root = resolve(dirname(
   const version = lock.packages?.['node_modules/@deepseek-ai/dsh']?.version
   const matched = [...channels.values()].find(record => record.version === version)
   const installed = await installedHostVersion(root)
-  const materialization = installed === version
-    ? 'materialized as locked'
-    : `installed ${String(installed)} differs from the lock; run npm ci`
+  if (installed !== version) {
+    throw new Error(`installed @deepseek-ai/dsh@${String(installed)} differs from package-lock.json (${String(version)}); run npm ci`)
+  }
+  const materialization = 'materialized as locked'
   const channel = matched === undefined
     ? 'no channel resolves to this release; host:channels:graph moves it onto next'
     : `the ${matched.channel} channel`

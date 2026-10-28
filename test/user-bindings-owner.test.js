@@ -230,9 +230,18 @@ function ownerFixture(authoring) {
     },
     tools: {
       get(name, agent) {
-        return name === 'run_code' && agent?.runCodeAvailable !== false
+        return name === 'run_code' && agent?.runCodeAvailable !== false && agent?.executorTransport !== true
           ? { name: 'run_code' }
           : undefined
+      },
+      // A host that keeps the program transport in its tool executor reserves
+      // the registry name and answers nothing for it.
+      selectExecutor(agent) {
+        if (agent?.executorTransport !== true) throw new Error('no executor is selected for this scope')
+        return {
+          describe: () => ({ schemas: [], knownNames: ['run_code'] }),
+          transport: () => ({ name: 'run_code', output: { schema: {}, render: () => [] }, async execute() {} }),
+        }
       },
     },
     inject(services, callback) {
@@ -914,6 +923,43 @@ test('serializes same-agent command reinstallation behind async disposal', async
   release()
   await Promise.all([removing, reinstalling])
   assert.equal(registrations, 2)
+  await owner.dispose()
+})
+
+test('binding authoring accepts a host that keeps the program transport in its tool executor', async () => {
+  // The registry reserves run_code and answers nothing; the selected executor
+  // publishes it. The command must be eligible exactly as on a registry host,
+  // and not when neither surface publishes the transport.
+  const registered = []
+  const executorAgent = {
+    id: 'executor-transport-agent',
+    session: { id: 'executor-transport-session', header: { agentPreset: 'custom' } },
+    executorTransport: true,
+    ctx: injectedAgentContext({
+      commands: {
+        register(definition) {
+          registered.push(definition.name)
+          return () => {}
+        },
+      },
+      skills: { register() { return () => {} } },
+      tools: { register() { return () => {} } },
+    }),
+  }
+  const target = ownerFixture({ agents: { list: () => [executorAgent] }, on() { return () => {} } })
+  const owner = createUserBindingsOwner(target.ctx, {
+    enabled: true,
+    store: fakeStore(),
+    cwd: process.cwd(),
+  })
+  await owner.setDraftProjectionAvailable(true)
+  assert.deepEqual(registered, ['binding'])
+  // Withdrawing the transport withdraws the command: only the executor surface
+  // ever published it.
+  executorAgent.executorTransport = false
+  await owner.setAgentPresentation(executorAgent)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(registered, ['binding'], 'no further registration once no surface publishes the transport')
   await owner.dispose()
 })
 

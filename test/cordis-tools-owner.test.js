@@ -484,6 +484,21 @@ test('Cordis owner retries agents once run_code becomes visible', async () => {
   await owner.dispose()
 })
 
+test('Cordis owner accepts a host that keeps the program transport in its tool executor', async () => {
+  // The registry reserves the name and answers nothing; the selected executor
+  // owns the transport. Availability must follow the surface that publishes it.
+  const executorAgent = scopedAgent('executor-owned-transport', { ptc: false })
+  const transport = { name: 'run_code', output: { schema: {}, render: () => [] }, async execute() {} }
+  executorAgent.ctx.tools.selectExecutor = () => ({
+    describe: () => ({ schemas: [], knownNames: ['run_code'] }),
+    requirePtcTransport: () => transport,
+  })
+  const host = ownerContext([executorAgent])
+  const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin)
+  await owner.ready
+  assert.deepEqual(TEST_CORDIS_TOOL_NAMES.filter(name => executorAgent.definitions.has(name)), TEST_CORDIS_TOOL_NAMES)
+  await owner.dispose()
+})
 test('Cordis owner rolls back both contributions when the companion Skill cannot publish', async () => {
   const activationFailure = scopedAgent('skill-activation-failure', {
     skillActivationError: new Error('Skill activation failed'),

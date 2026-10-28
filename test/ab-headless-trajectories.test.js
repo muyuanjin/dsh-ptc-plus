@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createFixtureSessionServices } from './host-fixture.js'
-import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { ptcPresentation, ptcPresentationRows } from '../scripts/dsh-host-contract.mjs'
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -298,7 +298,7 @@ function rows(ptcDisabled, customIdentity = true) {
     },
     { id: 'ptc-plus', name: 'dsh-ptc-plus', ...(ptcDisabled ? { disabled: true } : {}) },
     ...(customIdentity ? [{ id: 'custom-harness-identity', disabled: true }] : []),
-    { id: 'tools', config: { mode: ptcToolsMode() } },
+    ...ptcPresentationRows(ptcPresentation()),
     { id: 'sandbox-policy', config: { mode: 'danger-full-access' } },
     { id: 'approval', config: { policy: 'never' } },
   ]
@@ -330,8 +330,11 @@ test('accepts an A/B config pair whose only treatment is ptc-plus.disabled', () 
   assert.equal(result.pluginSha256.length, 64)
   assert.equal(result.baselineSha256.length, 64)
   assert.doesNotThrow(() => validateConfigPair(rows(false, false), rows(true, false), runtime))
-  plugin.find(row => row.id === 'tools').config.mode = 'unsupported-test-mode'
-  baseline.find(row => row.id === 'tools').config.mode = 'unsupported-test-mode'
+  for (const profile of [plugin, baseline]) {
+    const toolsRow = profile.find(row => row.id === 'tools') ?? { id: 'tools' }
+    if (!profile.includes(toolsRow)) profile.push(toolsRow)
+    toolsRow.config = { ...toolsRow.config, mode: 'unsupported-test-mode' }
+  }
   assert.throws(() => validateConfigPair(plugin, baseline, { ...runtime, toolsMode: 'unsupported-test-mode' }), /public DSH tools config/)
 })
 
@@ -361,8 +364,16 @@ test('rejects missing isolation, fake headless rows, and any second treatment', 
   assert.throws(() => validateConfigPair(rows(false), rows(false), runtime), /baseline config does not disable ptc-plus/)
 
   const nativeTools = rows(false)
-  nativeTools.find(row => row.id === 'tools').config.mode = 'native'
-  assert.throws(() => validateConfigPair(nativeTools, baseline, runtime), new RegExp(`does not use tools mode ${ptcToolsMode()}`))
+  const presentation = ptcPresentation()
+  if (presentation.kind === 'registry') {
+    nativeTools.find(row => row.id === 'tools').config.mode = 'native'
+  } else {
+    // An executor host selects presentation by composition row, so the same
+    // mistake is selecting the native executor instead of the PTC one.
+    nativeTools.find(row => row.id === 'tool-executor-native').disabled = false
+  }
+  assert.throws(() => validateConfigPair(nativeTools, baseline, runtime),
+    new RegExp(presentation.kind === 'registry' ? 'does not use tools mode' : 'does not disable tool-executor-native'))
 })
 
 test('compares only injections visible before the first model request', () => {

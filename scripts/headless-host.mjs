@@ -8,7 +8,7 @@ import { parseDocument, stringify } from 'yaml'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { npmCliCommand } from './npm-cli.mjs'
 import { RUNTIME_PROBE_PREFIX } from './repl-preflight.mjs'
-import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcToolsMode, readHostPersona } from './dsh-host-contract.mjs'
+import { hostPersonaPatch, hostProviderConfig, hostToolRuntime, ptcPresentation, ptcPresentationPatchLines, ptcPresentationRows, readHostPersona } from './dsh-host-contract.mjs'
 
 // The persona uses only variables every supported Host release registers.
 // The working directory belongs to the Host deployment persona (removed on
@@ -431,8 +431,12 @@ function headlessRuntimePolicy(runtime) {
     throw new Error(`${HEADLESS_CONFIG_CODE}: permissionMode must be set explicitly`)
   }
   return Object.freeze({
-    toolsMode: toolsMode.trim() === HEADLESS_TOOLS_MODE
-      ? ptcToolsMode(hostToolRuntime(runtime.dshEntry)) : toolsMode.trim(),
+    // The PTC presentation is a host decision: a registry field on one line, a
+    // mounted executor on another. The policy records which shape the installed
+    // host declared; the patch encodes that shape, never a release.
+    presentation: toolsMode.trim() === HEADLESS_TOOLS_MODE
+      ? ptcPresentation(hostToolRuntime(runtime.dshEntry))
+      : { kind: 'registry', mode: toolsMode.trim() },
     permissionMode: permissionMode.trim(),
     approvalPolicy: permissionMode.trim() === 'danger-full-access' ? 'never' : 'ask',
   })
@@ -512,13 +516,31 @@ export function redactHeadlessConfig(text) {
 
 export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   const policy = headlessRuntimePolicy(runtime)
+  // The tools row carries no configuration on an executor-shaped host, so the
+  // schema check runs against what the host actually owns: the row it announces.
+  // A host that selects its executor by composition owns no tools configuration
+  // row at all; requiring one would report a shape difference as a schema fault.
+  const toolsRow = policy.presentation.kind === 'registry'
+    ? configRow(rows, 'tools', label)
+    : rows.find(row => row.id === 'tools') ?? { id: 'tools' }
   try {
-    hostToolRuntime(runtime.dshEntry).Config(structuredClone(configRow(rows, 'tools', label).config))
+    hostToolRuntime(runtime.dshEntry).Config(structuredClone(toolsRow.config ?? {}))
   } catch (error) {
     throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} violates the public DSH tools config: ${error.message}`, { cause: error })
   }
-  if (configRow(rows, 'tools', label).config?.mode !== policy.toolsMode) {
-    throw new Error(`${label} does not use tools mode ${policy.toolsMode}`)
+  // The presentation must be expressed in the shape the installed host
+  // declared: a registry field, or the composition row that selects its
+  // executor. Either way the running deployment, not a release, decides.
+  if (policy.presentation.kind === 'registry') {
+    if (toolsRow.config?.mode !== policy.presentation.mode) {
+      throw new Error(`${label} does not use tools mode ${policy.presentation.mode}`)
+    }
+  } else {
+    for (const row of ptcPresentationRows(policy.presentation)) {
+      if (configRow(rows, row.id, label).disabled !== row.disabled) {
+        throw new Error(`${label} does not ${row.disabled ? 'disable' : 'enable'} ${row.id}`)
+      }
+    }
   }
   if (configRow(rows, 'sandbox-policy', label).config?.mode !== policy.permissionMode) {
     throw new Error(`${label} does not use permission mode ${policy.permissionMode}`)
@@ -585,9 +607,7 @@ export function headlessConfigPatch(baseRows, runtime, options = {}) {
     '    includeRuntimeContext: true',
     ...Object.entries(hostPersonaPatch(prompt, NEUTRAL_PERSONA))
       .map(([field, value]) => `    ${field}: ${JSON.stringify(value)}`),
-    '- id: tools',
-    '  config:',
-    `    mode: ${JSON.stringify(policy.toolsMode)}`,
+    ...ptcPresentationPatchLines(policy.presentation),
     '- id: sandbox-policy',
     '  config:',
     `    mode: ${JSON.stringify(policy.permissionMode)}`,

@@ -163,7 +163,7 @@ escalation it thinks it is offering.
 ## Consequences
 
 The default bundle and current official base profile use the `ptcRuntime`
-resolve/run shape, also exercised by the frozen Host graphs. Explicit
+resolve/run shape, also exercised by the installed channel graphs. Explicit
 `codeRuntime` request-only compositions retain public Loader fixture coverage
 for request identity, replacement and bundle removal. The evidence boundary is
 recorded in [Installation](../installation.md#compatibility-evidence).

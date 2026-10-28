@@ -3,3 +3,5 @@ win_node_modules/
 /coverage/
 *.log
 artifacts/
+# Installed host-channel graphs are cache; compat/channels.json is the record.
+compat/.channels/

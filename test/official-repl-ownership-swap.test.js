@@ -79,12 +79,18 @@ test('a volatile settings commit swaps execution ownership in both directions', 
   await root.loader.await()
   assert.equal(root.get('ptcRuntime').executionInstructions, 'official REPL guidance')
   assert.equal(root.get('ptcRuntime').sandboxMode, 'workspace-write')
+  // The retentive form is what the decision reads on a provider that publishes
+  // no declaration of its own.
+  assert.equal(root.get('ptcRuntime').retainsState, true)
 
   // Deferred -> owned: the deferred runtime cannot produce these descriptors.
   await root.loader.create({ id: 'ptc-plus', name: pluginUrl, config: { ...config, officialReplPriority: false } })
   await root.loader.await()
   await waitFor(() => root.get('ptcRuntime').executionInstructions === '', 'plugin ownership')
   assert.equal(root.get('ptcRuntime').sandboxMode, undefined)
+  // While the plugin kernel runs the program the provider is stateful, even
+  // though the original would run a fresh process.
+  assert.equal(root.get('ptcRuntime').retainsState, true)
   assert.equal(root.get('ptcRuntime').timeout, undefined)
   await root.get('ptcRuntime').release({})
 

@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { RUN_CODE } from './runtime-bridge-owner.js'
+import { sessionExecutionAvailable } from './host-tool-sdk.js'
 
 const CORDIS_PRESET_ID = 'cordis'
 const CORDIS_SKILL_NAME = 'cordis-plugin-development'
@@ -111,7 +112,7 @@ function requireFiberServices(agent, fiber, owner) {
 function absentCompanionSurfaces(agent) {
   if (typeof agent?.ctx?.get !== 'function') return undefined
   const missing = []
-  if (agent.ctx.tools?.get?.(RUN_CODE, agent) === undefined) missing.push(`the ${RUN_CODE} tool`)
+  if (!sessionExecutionAvailable(agent.ctx.tools, agent, RUN_CODE)) missing.push(`the ${RUN_CODE} tool`)
   if (agent.ctx.tools?.get?.(COMPANION_SKILL_TOOL, agent) === undefined) {
     missing.push(`the ${COMPANION_SKILL_TOOL} tool`)
   }

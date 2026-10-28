@@ -1,4 +1,4 @@
-name: Refresh DSH baselines
+name: Refresh host channels
 
 on:
   schedule:
@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: dsh-baseline-refresh
+  group: dsh-host-channels
   cancel-in-progress: false
 
 jobs:
@@ -25,35 +25,38 @@ jobs:
         with:
           node-version: 24.15.0
           registry-url: https://registry.npmjs.org
-      - name: Refresh frozen locks when official tags move
+      - name: Resolve host channels from their dist-tags
         id: refresh
         shell: bash
         run: |
           set -euo pipefail
-          npm run host:baseline:update
-          if git diff --quiet -- package-lock.json compat/latest/package-lock.json compat/current; then
+          npm run host:channels:update
+          # The manifest is supply; the development lock is what the ordinary gates
+          # materialize. Move it onto the new next release in the same commit.
+          npm run host:channels:graph
+          if git diff --quiet -- compat/channels.json package-lock.json; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: Publish the baseline update branch
+      - name: Publish the channel update branch
         if: steps.refresh.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          branch="automation/dsh-baselines"
+          branch="automation/dsh-channels"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$branch"
-          git add package-lock.json compat/latest/package-lock.json compat/current
-          git commit -m "build(host): refresh frozen DSH baselines"
+          git add compat/channels.json package-lock.json
+          git commit -m "build(host): refresh host channels"
           git push --force origin "HEAD:refs/heads/$branch"
           if gh pr view "$branch" --json number >/dev/null 2>&1; then
-            gh pr edit "$branch" --title "build(host): refresh frozen DSH baselines" --body "Refresh the tracked official DSH latest and next dependency graphs. The normal CI workflow validates the frozen candidate without resolving floating tags."
+            gh pr edit "$branch" --title "build(host): refresh host channels" --body "Refresh the tracked host channels from their official dist-tags. The normal CI workflow validates the packed plugin against each channel."
           else
-            gh pr create --base main --head "$branch" --title "build(host): refresh frozen DSH baselines" --body "Refresh the tracked official DSH latest and next dependency graphs. The normal CI workflow validates the frozen candidate without resolving floating tags."
+            gh pr create --base main --head "$branch" --title "build(host): refresh host channels" --body "Refresh the tracked host channels from their official dist-tags. The normal CI workflow validates the packed plugin against each channel."
           fi
           # GITHUB_TOKEN suppresses workflow runs from its push and PR events,
           # so this dispatch is the candidate's only CI run.

@@ -109,9 +109,14 @@ export function createCordisRecoveryPolicy(initiallyEnabled) {
   })
 }
 
-function presentationState(assembly) {
-  const tools = Array.isArray(assembly?.tools) ? assembly.tools : []
-  if (!tools.some(tool => tool?.name === RUN_CODE)) {
+function presentationState(assembly, declaresRunCode, agent) {
+  const tools = Array.isArray(assembly?.tools) ? assembly.tools : undefined
+  // A host that declares tools after the presentation waterfall carries no
+  // array here; the transport it publishes is then the same fact.
+  const present = tools === undefined
+    ? declaresRunCode?.(agent) === true
+    : tools.some(tool => tool?.name === RUN_CODE)
+  if (!present) {
     return { presentation: 'native', ownerProven: false, collapseSectionName: undefined }
   }
   const collapse = PTC_COLLAPSE_SECTION_NAMES
@@ -453,6 +458,7 @@ export function createDirectSurfaceOwner({
   canonicalizeToolCalls,
   sessionId,
   toolSchemasForAgent,
+  declaresRunCode,
   userBindingsForAgent = async () => undefined,
   setAgentPresentation = async () => {},
   sessionLogView,
@@ -578,7 +584,7 @@ export function createDirectSurfaceOwner({
       const requestOwner = id === undefined ? undefined : sessionOwner(id)
       const isCurrent = () => !disposed && (requestOwner === undefined
         || (requestOwner.active && sessions.get(id) === requestOwner))
-      const initialState = presentationState(initialAssembly)
+      const initialState = presentationState(initialAssembly, declaresRunCode, agent)
       let composition = compositions.get(agent)
       if (composition === undefined && id !== undefined
         && (initialState.ownerProven || initialState.presentation === 'ptc')) {
@@ -590,11 +596,17 @@ export function createDirectSurfaceOwner({
 
       const assembly = await next()
       if (!isCurrent()) return assembly
+      // A host may declare the model-facing tool array after this waterfall, in
+      // which case the assembly carries none. The declaration surface is then
+      // host-owned: the plugin still owns presentation, sections, contexts and
+      // request policy, but it must not claim to have replaced declarations the
+      // host has not asked it for. A present but non-array declaration is still
+      // a malformed assembly.
       const tools = assembly.tools
-      if (!Array.isArray(tools)) {
+      if (tools !== undefined && !Array.isArray(tools)) {
         throw new Error('ptc-plus: incompatible prompt assembly; expected a tools array')
       }
-      const completedState = presentationState(assembly)
+      const completedState = presentationState(assembly, declaresRunCode, agent)
       if (composition === undefined && id !== undefined) {
         const state = initialState.ownerProven ? initialState : completedState
         composition = captureComposition(agent, id, state.presentation)
@@ -607,7 +619,7 @@ export function createDirectSurfaceOwner({
       const requestSignal = context?.signal !== null && typeof context?.signal === 'object'
         ? context.signal
         : undefined
-      if (!tools.some(tool => tool?.name === RUN_CODE)) {
+      if (completedState.presentation === 'native') {
         if (presentation !== 'native') {
           throw new Error(`ptc-plus: ${presentation} agent composition assembled without run_code`)
         }
@@ -628,12 +640,14 @@ export function createDirectSurfaceOwner({
       if (sessionPtc) await capabilityEnvironment?.prepare(agent, assembly.sections)
       const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
       if (!isCurrent()) return assembly
-      const runCode = tools.find(tool => tool?.name === RUN_CODE)
+      const runCode = tools?.find(tool => tool?.name === RUN_CODE)
       const promptText = currentPromptText
-      let directTools = sessionPtc ? capabilityEnvironment?.visibleSchemas(agent, tools) ?? tools : tools
+      const hostDeclaresTools = tools !== undefined
+      let directTools = tools === undefined ? undefined
+        : sessionPtc ? capabilityEnvironment?.visibleSchemas(agent, tools) ?? tools : tools
       if (sessionPtcProjection) {
         editTransport.ensureInstalled(agent)
-        directTools = [adaptRunCodeSchema(runCode, promptText)]
+        if (hostDeclaresTools) directTools = [adaptRunCodeSchema(runCode, promptText)]
       }
       const runtimeContexts = sessionPtc
         ? sessionRuntimeContexts(agent, tipConfig, {
@@ -685,11 +699,11 @@ export function createDirectSurfaceOwner({
 
       return {
         ...assembly,
-        tools: sessionPtcProjection
+        ...(directTools === undefined ? {} : { tools: sessionPtcProjection
           ? directTools
           : directTools.map(tool => tool?.name === RUN_CODE
             ? adaptRunCodeSchema(tool, promptText)
-            : tool),
+            : tool) }),
         sections,
       }
     },

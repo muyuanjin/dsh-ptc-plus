@@ -67,15 +67,63 @@ export function hostSessionPersistencePlugin(module) {
   throw new TypeError('The DSH session persistence module provides no public plugin entry')
 }
 
-/** PTC presentation was previously named code; the host schema owns the spelling. */
-export function ptcToolsMode(runtime = ToolRuntime) {
+/** The shipped agent preset that composes PTC mode, for deployments that select one. */
+export const PTC_PRESET_ID = 'ptc'
+
+/**
+ * How this host selects the PTC tool presentation.
+ *
+ * The presentation is a host decision with two published shapes. A registry
+ * host carries a `mode` field on its tool registry row. A host that moved
+ * presentation into a tool executor retires that field (its schema rejects every
+ * value) and selects the executor by composition row instead. The installed
+ * schema is the only authority on which shape applies, so probe it; never infer
+ * the shape from a release identifier.
+ * @param {object} runtime - the installed tool registry class.
+ * @returns {{kind: 'registry', mode: string}|{kind: 'executor'}} the selection.
+ */
+export function ptcPresentation(runtime = ToolRuntime) {
+  if (typeof runtime?.Config !== 'function') return { kind: 'executor' }
   for (const mode of ['ptc', 'code']) {
     try {
       runtime.Config({ mode })
-      return mode
-    } catch {}
+      return { kind: 'registry', mode }
+    } catch {
+      // This host rejects that presentation value; try the older spelling.
+    }
   }
-  throw new Error('The DSH tools schema supports neither ptc nor code presentation')
+  return { kind: 'executor' }
+}
+
+/**
+ * Composition rows that select the PTC presentation this host declared.
+ * @param {object} presentation - the result of {@link ptcPresentation}.
+ * @returns {object[]} rows to append to a profile patch.
+ */
+export function ptcPresentationRows(presentation) {
+  return presentation.kind === 'registry'
+    ? [{ id: 'tools', config: { mode: presentation.mode } }]
+    : [
+        { id: 'tool-executor-native', disabled: true },
+        { id: 'tool-executor-ptc', disabled: false },
+      ]
+}
+
+/**
+ * Render the composition rows of {@link ptcPresentationRows} as profile patch
+ * lines.
+ * @param {object} presentation - the result of {@link ptcPresentation}.
+ * @returns {string[]} YAML patch lines.
+ */
+export function ptcPresentationPatchLines(presentation) {
+  return ptcPresentationRows(presentation).flatMap(row => [
+    `- id: ${row.id}`,
+    ...(row.disabled === undefined ? [] : [`  disabled: ${row.disabled}`]),
+    ...(row.config === undefined ? [] : [
+      '  config:',
+      ...Object.entries(row.config).map(([field, value]) => `    ${field}: ${JSON.stringify(value)}`),
+    ]),
+  ])
 }
 
 function personaFields(config) {

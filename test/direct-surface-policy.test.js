@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context as CordisContext } from '@deepseek-ai/cordis'
 import { BlockAssembler, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { apply as applyLlmInvariant } from '@deepseek-ai/dsh-llm/invariant'
 import { Session } from '@deepseek-ai/dsh-session'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { renderToolsSdk, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
@@ -45,15 +44,69 @@ async function collect(stream) {
   return output
 }
 
+/**
+ * Stream-grammar oracle for the assistant stream this surface emits.
+ *
+ * The host used to publish this grammar as a companion plugin on an
+ * `@deepseek-ai/dsh-llm` subpath; newer hosts retire that package entry and the
+ * grammar with it, so the oracle lives here. It keeps the same rules the retired
+ * companion enforced — index validity, deltas only against an open block of the
+ * matching type, at most one usage, nothing after the terminal finish, and a
+ * finish before the stream ends — because those rules are what makes a rewritten
+ * stream consumable by any host version.
+ */
+async function* validateStreamGrammar(source, fail) {
+  const open = new Map()
+  let usageSeen = false
+  let finished = false
+  for await (const chunk of source) {
+    if (finished) fail(`LLM stream emitted ${chunk.type} after terminal finish`)
+    switch (chunk.type) {
+      case 'block-start':
+        if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) fail(`LLM stream block index must be a non-negative safe integer, got ${chunk.index}`)
+        if (open.has(chunk.index)) fail(`LLM stream repeated block-start index ${chunk.index}`)
+        open.set(chunk.index, chunk.blockType)
+        break
+      case 'text-delta':
+      case 'reasoning-delta':
+      case 'tool-call-delta': {
+        const expected = chunk.type.slice(0, -'-delta'.length)
+        if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) fail(`LLM stream block index must be a non-negative safe integer, got ${chunk.index}`)
+        const actual = open.get(chunk.index)
+        if (actual !== expected) fail(`${expected} delta at index ${chunk.index} requires an open ${expected} block, got ${String(actual)}`)
+        break
+      }
+      case 'block-end': {
+        if (!Number.isSafeInteger(chunk.index) || chunk.index < 0) fail(`LLM stream block index must be a non-negative safe integer, got ${chunk.index}`)
+        const blockType = open.get(chunk.index)
+        if (blockType === undefined) fail(`LLM stream block-end index ${chunk.index} has no open block`)
+        if (chunk.block.type !== blockType) fail(`LLM stream block-end index ${chunk.index} closes ${chunk.block.type}, expected ${blockType}`)
+        open.delete(chunk.index)
+        break
+      }
+      case 'usage':
+        if (usageSeen) fail('LLM stream emitted usage more than once')
+        usageSeen = true
+        break
+      case 'finish':
+        if (open.size > 0 && chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted') {
+          fail(`LLM stream finished with ${open.size} open block(s)`)
+        }
+        finished = true
+        break
+    }
+    yield chunk
+  }
+  if (!finished) fail('LLM stream ended without a terminal finish chunk')
+}
+
 async function invariantContext(t) {
   const ctx = new CordisContext()
-  ctx.provide('invariants', {
-    register(_packageName, install) {
-      install(ctx, message => { throw new Error(message) })
-      return () => {}
-    },
+  const fail = message => { throw new Error(message) }
+  ctx.on('llm/stream', (_options, next) => validateStreamGrammar(next(), fail), {
+    global: true,
+    prepend: true,
   })
-  await applyLlmInvariant(ctx)
   t.after(() => ctx.fiber.dispose())
   return ctx
 }
@@ -903,4 +956,43 @@ test('argument diagnostics survive inbox persistence and complete session restor
     restore.decodeRow(JSON.parse(JSON.stringify(sessionFormatCatalog.encodeCurrentEvent(event))))
   }
   assert.deepEqual(restore.finish().events, sessionEvents(session))
+})
+
+// The grammar oracle is the proof that a rewritten stream is consumable, so it
+// must be able to fail: each case below is one rule the retired host companion
+// enforced and a rewrite could break.
+test('the stream-grammar oracle rejects the sequences a rewrite can produce', async (t) => {
+  const ctx = await invariantContext(t)
+  const cases = [
+    [[{ type: 'block-start', index: -1, blockType: 'text' }], /non-negative safe integer/],
+    [[{ type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'block-start', index: 0, blockType: 'reasoning' }], /repeated block-start index 0/],
+    [[{ type: 'text-delta', index: 0, text: 'x' }], /requires an open text block/],
+    [[{ type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'reasoning-delta', index: 0, text: 'x' }], /requires an open reasoning block, got text/],
+    [[{ type: 'block-end', index: 0, block: { type: 'text', text: 'x' } }], /has no open block/],
+    [[{ type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'x' } }], /closes reasoning, expected text/],
+    [[{ type: 'usage', usage: { input: 1, output: 1 } },
+      { type: 'usage', usage: { input: 1, output: 1 } },
+      { type: 'finish', reason: { kind: 'stop' } }], /usage more than once/],
+    [[{ type: 'finish', reason: { kind: 'stop' } },
+      { type: 'text-delta', index: 0, text: 'late' }], /after terminal finish/],
+    [[{ type: 'block-start', index: 0, blockType: 'text' }], /ended without a terminal finish/],
+    [[{ type: 'block-start', index: 0, blockType: 'text' },
+      { type: 'finish', reason: { kind: 'stop' } }], /finished with 1 open block/],
+  ]
+  for (const [chunks, message] of cases) {
+    await assert.rejects(collect(ctx.waterfall(ctx, 'llm/stream', {}, async function* () {
+      yield* chunks
+    })), message)
+  }
+  // An error finish may legally end while a block is still open.
+  const aborted = [
+    { type: 'block-start', index: 0, blockType: 'text' },
+    { type: 'finish', reason: { kind: 'error' } },
+  ]
+  assert.deepEqual(await collect(ctx.waterfall(ctx, 'llm/stream', {}, async function* () {
+    yield* aborted
+  })), aborted)
 })

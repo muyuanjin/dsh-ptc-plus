@@ -5,12 +5,24 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { ptcPresentation } from './dsh-host-contract.mjs'
 
-export function executionServiceName(source) {
+/**
+ * The program-runtime service name is a host declaration: the package that
+ * consumes a runtime names it through `ctx.get('<name>Runtime')`. Which package
+ * that is moved between lines — a registry host resolves the runtime itself, an
+ * executor host resolves it in its tool executor — so every package that can
+ * play that role contributes a source to inspect.
+ * @param {...string} sources - source text of the candidate consuming packages.
+ * @returns {string} the single declared program-runtime service name.
+ */
+export function executionServiceName(...sources) {
   const names = new Set()
-  for (const match of source.matchAll(/\bget\(\s*["']([A-Za-z_$][\w$]*Runtime)["']\s*\)/g)) names.add(match[1])
+  for (const source of sources) {
+    for (const match of source.matchAll(/\bget\(\s*["']([A-Za-z_$][\w$]*Runtime)["']\s*\)/g)) names.add(match[1])
+  }
   if (names.size !== 1) {
-    throw new Error(`dsh-execution-seam-smoke: the installed tool runtime names ${names.size} execution services (${[...names].join(', ') || 'none'})`)
+    throw new Error(`dsh-execution-seam-smoke: the installed tool consumers name ${names.size} execution services (${[...names].join(', ') || 'none'})`)
   }
   return [...names][0]
 }
@@ -31,7 +43,15 @@ async function main() {
   const { agentEvents } = await load('@deepseek-ai/dsh-agent')
   const { createScope } = await load('@deepseek-ai/dsh-scope')
   const { createAssistantMessage, createToolResultMessage } = await load('@deepseek-ai/dsh-llm')
-  const seamService = executionServiceName(readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8'))
+  // Presentation is either a registry field or a mounted executor; only the
+  // installed schema says which, and the consumers of a program runtime are the
+  // registry on one shape and the tool executor on the other.
+  const presentation = ptcPresentation(ToolRuntime)
+  const runtimeConsumers = [readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8')]
+  if (presentation.kind === 'executor') {
+    runtimeConsumers.push(readFileSync(require.resolve('@deepseek-ai/dsh-tool-executor-ptc'), 'utf8'))
+  }
+  const seamService = executionServiceName(...runtimeConsumers)
   if (!['ptcRuntime', 'codeRuntime'].includes(seamService)) throw new Error(`dsh-execution-seam-smoke: unsupported public provider service ${seamService}`)
   const manifestPath = require.resolve('dsh-ptc-plus/package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
@@ -69,6 +89,9 @@ async function main() {
   `)
   const originalRow = { id: originalEntryId, name: upstreamUrl, config: { cwd: consumer } }
   const rows = composeEntries([[{ insert: [originalRow] }], bundle])
+  if (presentation.kind === 'executor') {
+    rows.push({ id: 'tool-executor-ptc', name: pathToFileURL(require.resolve('@deepseek-ai/dsh-tool-executor-ptc')).href })
+  }
   const adapterRow = rows.find(row => row.id === 'ptc-plus-execution')
   const mainRow = rows.find(row => row.id === 'ptc-plus')
   if (adapterRow === undefined || mainRow === undefined) throw new Error('dsh-execution-seam-smoke: bundle lacks public provider composition')
@@ -83,7 +106,7 @@ async function main() {
   try {
     root.effect(() => root.provide('agents', { list: () => [] }))
     new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-    new ToolRuntime(root, { mode: 'ptc' })
+    new ToolRuntime(root, presentation.kind === 'registry' ? { mode: presentation.mode } : {})
     for (const plugin of [SessionStore, SessionQueryEngine, SessionProjectionRegistry]) {
       let fiber
       root.effect(() => {
@@ -171,7 +194,9 @@ async function main() {
     assert.match(editorSdk, /regex_edits\??:/)
     assert.doesNotMatch(editorSdk, /edit_run_code: unknown/)
     assert.equal(root.get('tools').get('edit_run_code'), undefined, 'editor must remain agent scoped')
-    const runParameters = root.get('tools').get('run_code').parameters
+    // The transport schema is whatever the assembled request publishes, not a
+    // registry registration: a host may keep it inside its tool executor.
+    const runParameters = initialAssembly.tools.find(tool => tool.name === 'run_code').parameters
     let step = 0
     const invoke = async (name, callId, args) => {
       step += 1
@@ -195,7 +220,15 @@ async function main() {
         ],
       }, { surfaceOp: 'append' })
       const call = session.append('tool/call', { turn: 1, step, callId, name, arguments: argumentsValue })
-      const result = await root.get('tools').execute({ name, callId, arguments: args, agent, signal })
+      // The registry accepts one call on a registry host; a host that publishes
+      // `selectExecutor` accepts a complete model batch and assigns the
+      // execution identity itself.
+      const registry = root.get('tools')
+      const result = typeof registry.selectExecutor !== 'function'
+        ? await registry.execute({ name, callId, arguments: args, agent, signal })
+        : (await registry.execute({
+          calls: [{ id: callId, name, arguments: argumentsValue }], signal, agent,
+        })).results.find(entry => entry.callId === callId).result
       session.append('tool/result', {
         turn: 1, step,
         message: createToolResultMessage({ callId, content: result.content, isError: result.isError }),
@@ -266,7 +299,7 @@ async function main() {
     assert.equal(rejected.isError, true)
     assert.equal(nativeCalls, 1)
     assert.equal(state.runs.length, 1, 'session execution must not delegate to the frozen original')
-    assert.deepEqual(root.get('tools').get('run_code').parameters, runParameters)
+    assert.deepEqual(finalAssembly.tools.find(tool => tool.name === 'run_code').parameters, runParameters)
     assert.equal(root.get('tools').get(native.name), native)
     assert.deepEqual(Object.getOwnPropertyDescriptors(state.original), state.descriptors)
     for (const record of state.originals) assert.deepEqual(Object.getOwnPropertyDescriptors(record.original), record.descriptors)
@@ -297,6 +330,9 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error(error.message)
+  // A wrapped host failure keeps its cause; report it, or the smoke names a
+  // symptom the reader cannot act on.
+  console.error(error.cause === undefined ? error.message
+    : `${error.message}\n${error.cause?.stack ?? String(error.cause)}`)
   process.exitCode = 1
 })

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
 import { parse as parseJavaScript } from '@babel/parser'
-import { selectPublishedRelease, update, validatePublishedRelease, verifyCurrent, verifyInstalledHostGraph } from '../scripts/dsh-dependency-baseline.mjs'
+import { isHostServicePackageName, manifestDigest, probePackages, readManifest, refreshDevelopmentGraph, resolveChannel, serializeManifest, validateManifest, verifyInstalledChannel, verifyInstalledHostGraph } from '../scripts/host-channel-manifest.mjs'
 
 const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-atomic-write',
@@ -266,13 +266,15 @@ test('reused frozen Host rejects installed service drift despite unchanged lock 
   }
 })
 
-test('freezes official latest and next host baselines without changing ordinary installs', async () => {
+test('generates one channel manifest from dist-tags and installs it on demand', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
-  const latestManifest = JSON.parse(await readFile(new URL('../compat/latest/package.json', import.meta.url), 'utf8'))
-  const latestLock = JSON.parse(await readFile(new URL('../compat/latest/package-lock.json', import.meta.url), 'utf8'))
+  const generated = JSON.parse(await readFile(new URL('../compat/channels.json', import.meta.url), 'utf8'))
   const hostSuite = await readFile(new URL('../scripts/dsh-host-contract-suite.mjs', import.meta.url), 'utf8')
 
+  // The development graph declares the in-flight release-candidate channel; the
+  // graph it actually materializes is a separate layer that host:channels:graph
+  // moves, and ordinary gates only ever read the lock they find.
   const dshDevelopmentPackages = Object.entries(manifest.devDependencies)
     .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
   assert.ok(dshDevelopmentPackages.some(([name]) => name === '@deepseek-ai/dsh'))
@@ -280,83 +282,150 @@ test('freezes official latest and next host baselines without changing ordinary 
   assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[''].devDependencies[name] === 'next'))
   const nextVersion = lock.packages['node_modules/@deepseek-ai/dsh'].version
   assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[`node_modules/${name}`].version === nextVersion))
-  assert.deepEqual(latestManifest.dependencies, { '@deepseek-ai/dsh': 'latest' })
-  assert.equal(latestLock.packages[''].dependencies['@deepseek-ai/dsh'], 'latest')
-  assert.match(latestLock.packages['node_modules/@deepseek-ai/dsh'].version, /^\d+\.\d+\.\d+/)
-  assert.doesNotMatch(hostSuite, /npm\(\[['"]install['"]/)
+
+  // The tracked manifest is the only record of the channels, so it must cover
+  // every probed host package and state which channel may block a release.
+  const packages = probePackages(manifest)
+  const stored = validateManifest(generated, packages)
+  assert.deepEqual([...stored.keys()], ['latest', 'next', 'alpha'])
+  assert.deepEqual([...stored.values()].filter(record => record.blocks).map(record => record.channel), ['latest', 'next'])
+  assert.deepEqual(JSON.parse(await readFile(new URL('../compat/channels.json', import.meta.url), 'utf8')),
+    JSON.parse(serializeManifest(stored)))
+
+  // Refreshing is one command: the suite installs the resolved version on demand
+  // and never rewrites a lock to change channels.
+  assert.match(hostSuite, /readManifest\(ROOT\)/)
+  assert.match(hostSuite, /installChannelHost\(record\)/)
+  assert.doesNotMatch(hostSuite, /package-lock\.json/)
   assert.match(hostSuite, /run\('tar', \['-xzf'/)
   assert.match(hostSuite, /exposePluginDependencies\(consumer\)/)
-  const current = JSON.parse(await readFile(new URL('../compat/current/package.json', import.meta.url), 'utf8'))
-  const currentLock = JSON.parse(await readFile(new URL('../compat/current/package-lock.json', import.meta.url), 'utf8'))
-  const source = JSON.parse(await readFile(new URL('../compat/current/release.json', import.meta.url), 'utf8'))
-  assert.equal(current.dependencies['@deepseek-ai/dsh'], source.channel)
-  assert.equal(currentLock.packages[''].dependencies['@deepseek-ai/dsh'], source.channel)
-  assert.equal(currentLock.packages['node_modules/@deepseek-ai/dsh'].version, source.version)
-  assert.ok(Object.entries(currentLock.packages).filter(([name]) => /node_modules\/@deepseek-ai\/dsh(?:-[^/]+)?$/.test(name))
-    .every(([, value]) => value.version === source.version))
 })
 
-test('published release discovery follows a moved prerelease channel while latest and next remain unchanged', () => {
-  const tags = { latest: '7.0.0', next: '7.0.0', preview: '8.0.0-beta.3', canary: '9.0.0-dev.1' }
-  const releases = [
-    { draft: false, tag_name: 'dsh-v7.0.0', published_at: '2020-01-01T00:00:00Z' },
-    { draft: true, tag_name: 'dsh-v9.0.0-dev.1', published_at: '2020-03-01T00:00:00Z' },
-    { draft: false, tag_name: 'dsh-v8.0.0-beta.3', published_at: '2020-02-01T00:00:00Z', prerelease: true },
-  ]
-  assert.deepEqual(selectPublishedRelease(tags, releases), {
-    version: tags.preview, channel: 'preview', releaseTag: 'dsh-v8.0.0-beta.3', publishedAt: '2020-02-01T00:00:00Z',
-  })
-  assert.throws(() => selectPublishedRelease({ latest: tags.latest, next: tags.next }, releases), /has no official npm channel/)
-})
-
-test('published baseline refresh captures channel and provenance changes without rediscovering an unchanged cohort', async t => {
-  const root = await mkdtempUnderTmp('ptc-published-baseline-')
-  t.after(() => rm(root, { recursive: true, force: true }))
-  const latestRoot = join(root, 'latest')
-  const currentRoot = join(root, 'current')
-  await Promise.all([mkdir(latestRoot), mkdir(currentRoot)])
-  const host = '@deepseek-ai/dsh'
-  const writeJson = (folder, filename, value) => writeFile(join(folder, filename), JSON.stringify(value, null, 2) + '\n')
-  const lock = (channel, dependencyKey, version) => ({ lockfileVersion: 3, packages: {
-    '': { [dependencyKey]: { [host]: channel } }, [`node_modules/${host}`]: { version, resolved: `https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-${version}.tgz` },
-  } })
-  const release = { version: '8.0.0-beta.3', channel: 'beta', releaseTag: 'dsh-v8.0.0-beta.3', publishedAt: '2020-02-01T00:00:00Z' }
-  await Promise.all([
-    writeJson(root, 'package.json', { devDependencies: { [host]: 'next' } }), writeJson(root, 'package-lock.json', lock('next', 'devDependencies', '7.0.0')),
-    writeJson(latestRoot, 'package.json', { dependencies: { [host]: 'latest' } }), writeJson(latestRoot, 'package-lock.json', lock('latest', 'dependencies', '7.0.0')),
-    writeFile(join(latestRoot, '.npmrc'), 'registry=https://registry.npmjs.org/\n'),
-    writeJson(currentRoot, 'package.json', { dependencies: { [host]: 'beta' } }), writeJson(currentRoot, 'package-lock.json', lock('beta', 'dependencies', release.version)),
-    writeJson(currentRoot, 'release.json', release),
-  ])
-  let selected = release
-  let lookups = 0
-  const calls = []
-  const options = { root, latestRoot, currentRoot, readTags: () => ({ latest: '7.0.0', next: '7.0.0', [selected.channel]: selected.version }),
-    readRelease: async () => { lookups++; return selected }, runNpm: (args, options) => calls.push({ args, options }) }
-  await update(options)
-  assert.equal(lookups, 1)
-  assert.deepEqual(calls, [])
-  selected = { ...release, channel: 'preview' }
-  await update(options)
-  assert.deepEqual(await verifyCurrent(currentRoot), selected)
-  const changedLock = JSON.parse(await readFile(join(currentRoot, 'package-lock.json'), 'utf8'))
-  assert.equal(changedLock.packages[''].dependencies[host], 'preview')
-  assert.deepEqual(changedLock.packages[`node_modules/${host}`], lock('beta', 'dependencies', release.version).packages[`node_modules/${host}`])
-  assert.deepEqual(calls.map(call => call.args), [['ci', '--dry-run', '--ignore-scripts']])
-  selected = { ...selected, publishedAt: '2020-02-02T00:00:00Z' }
-  await update(options)
-  assert.deepEqual(await verifyCurrent(currentRoot), selected)
-  assert.equal(calls.length, 1, 'Provenance-only updates reuse the frozen graph without running npm.')
-  const before = await readFile(join(currentRoot, 'release.json'), 'utf8')
-  await update(options)
-  assert.equal(await readFile(join(currentRoot, 'release.json'), 'utf8'), before)
-  assert.equal(calls.length, 1)
-  for (const invalid of [{ ...selected, releaseTag: 'unrelated-tag' }, { ...selected, publishedAt: 42 },
-    { ...selected, publishedAt: '2020-02-31T00:00:00Z' }, { ...selected, publishedAt: undefined }, { ...selected, channel: '' }]) {
-    assert.throws(() => validatePublishedRelease(invalid), /invalid frozen published/)
-    await writeJson(currentRoot, 'release.json', invalid)
-    await assert.rejects(() => verifyCurrent(currentRoot), /invalid frozen published/)
+test('resolves each channel from its own dist-tag and records off-train packages apart', () => {
+  const packages = ['@deepseek-ai/dsh', '@deepseek-ai/dsh-tools', '@deepseek-ai/cordis']
+  const packument = (tags, versions) => ({ 'dist-tags': tags, versions: Object.fromEntries(
+    versions.map(version => [version, { version, dist: { integrity: `sha512-${version}` } }]),
+  ) })
+  const packuments = {
+    '@deepseek-ai/dsh': packument({ latest: '7.0.0', next: '8.0.0-beta.3', alpha: '9.0.0-alpha.1' },
+      ['7.0.0', '8.0.0-beta.3', '9.0.0-alpha.1']),
+    // A package whose own dist-tags lag the release train joins at the release version.
+    '@deepseek-ai/dsh-tools': packument({ latest: '0.0.1-rc.1', next: '0.0.1-rc.1' }, ['0.0.1-rc.1', '8.0.0-beta.3']),
+    // A package outside the release train is named, not pinned.
+    '@deepseek-ai/cordis': packument({ latest: '4.0.5', next: '4.0.6-alpha.1' }, ['4.0.5', '4.0.6-alpha.1']),
   }
+  const alpha = resolveChannel(packuments, { channel: 'alpha', distTag: 'alpha', blocks: false }, packages)
+  assert.deepEqual(alpha, {
+    channel: 'alpha', distTag: 'alpha', blocks: false, version: '9.0.0-alpha.1',
+    packages: { '@deepseek-ai/dsh': { version: '9.0.0-alpha.1', integrity: 'sha512-9.0.0-alpha.1' } },
+    offTrain: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-tools'],
+  })
+  const next = resolveChannel(packuments, { channel: 'next', distTag: 'next', blocks: true }, packages)
+  assert.deepEqual(Object.keys(next.packages), ['@deepseek-ai/dsh', '@deepseek-ai/dsh-tools'])
+  assert.deepEqual(next.offTrain, ['@deepseek-ai/cordis'])
+  assert.throws(() => resolveChannel(packuments, { channel: 'beta', distTag: 'beta', blocks: true }, packages),
+    /publishes no "beta" dist-tag/)
+  assert.throws(() => resolveChannel({ ...packuments,
+    '@deepseek-ai/dsh': packument({}, []) }, { channel: 'latest', distTag: 'latest', blocks: true }, packages),
+  /publishes no "latest" dist-tag/)
+})
+
+test('refresh is idempotent and rejects a manifest that drops a probed package', () => {
+  const definition = { channel: 'latest', distTag: 'latest', blocks: true }
+  const packages = ['@deepseek-ai/dsh', '@deepseek-ai/cordis']
+  const packuments = {
+    '@deepseek-ai/dsh': { 'dist-tags': { latest: '7.0.0' },
+      versions: { '7.0.0': { dist: { integrity: 'sha512-dsh' } } } },
+    '@deepseek-ai/cordis': { 'dist-tags': { latest: '4.0.5' }, versions: {} },
+  }
+  const record = resolveChannel(packuments, definition, packages)
+  const document = serializeManifest(new Map([
+    ['latest', record],
+    ['next', { ...record, channel: 'next', distTag: 'next', blocks: true }],
+    ['alpha', { ...record, channel: 'alpha', distTag: 'alpha', blocks: false }],
+  ]))
+  assert.equal(document, serializeManifest(new Map([
+    ['alpha', { ...record, channel: 'alpha', distTag: 'alpha', blocks: false }],
+    ['next', { ...record, channel: 'next', distTag: 'next', blocks: true }],
+    ['latest', record],
+  ])), 'channel order must not depend on insertion order')
+  const stored = validateManifest(JSON.parse(document), packages)
+  assert.equal(manifestDigest(JSON.parse(document)), manifestDigest(JSON.parse(serializeManifest(stored))))
+  assert.throws(() => validateManifest({ schema: 'dsh-host-channels/v1', channels: {
+    ...JSON.parse(document).channels,
+    latest: { ...record, offTrain: [] },
+  } }, packages), /does not account for every probed host package/)
+  assert.throws(() => validateManifest({ schema: 'dsh-host-channels/v1', channels: {
+    ...JSON.parse(document).channels,
+    latest: { ...record, blocks: false },
+  } }, packages), /does not match its declared dist-tag or blocking role/)
+  assert.throws(() => validateManifest({ schema: 'dsh-other/v1', channels: {} }, packages), /must declare schema/)
+})
+
+test('the development graph refresh keeps the channel declarations it started from', async t => {
+  const root = await mkdtempUnderTmp('ptc-development-graph-')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const channel = { channel: 'next', version: '9.0.0', packages: {}, offTrain: [] }
+  const manifest = { devDependencies: { '@deepseek-ai/dsh': 'next', '@deepseek-ai/dsh-tools': 'next' } }
+  const lock = { packages: { 'node_modules/@deepseek-ai/dsh': { version: '8.0.0' } } }
+  await writeFile(join(root, 'package.json'), JSON.stringify(manifest, null, 2) + '\n')
+  await writeFile(join(root, 'package-lock.json'), JSON.stringify(lock, null, 2) + '\n')
+  const steps = []
+  // npm's --save-dev rewrites the declarations to pinned ranges; the refresh must
+  // restore them before it commits the lock.
+  const runNpm = async args => {
+    await mkdir(root, { recursive: true })
+    steps.push(args.slice(0, 2).join(' '))
+    if (args.includes('--save-dev')) {
+      await writeFile(join(root, 'package.json'), JSON.stringify({ devDependencies: {
+        '@deepseek-ai/dsh': '^9.0.0', '@deepseek-ai/dsh-tools': '^9.0.0',
+      } }, null, 2) + '\n')
+      return
+    }
+    if (args[0] === 'install') {
+      await writeFile(join(root, 'package-lock.json'), JSON.stringify({ packages: {
+        'node_modules/@deepseek-ai/dsh': { version: '9.0.0' },
+      } }, null, 2) + '\n')
+    }
+  }
+  assert.equal(await refreshDevelopmentGraph({ root, record: channel, runNpm }), '9.0.0')
+  assert.deepEqual(steps, ['install --package-lock-only', 'install --package-lock-only', 'ci --dry-run'])
+  assert.deepEqual(JSON.parse(await readFile(join(root, 'package.json'), 'utf8')), manifest,
+    'the channel declarations must survive the refresh')
+
+  // A development graph that is already current is not touched at all.
+  const untouched = []
+  await writeFile(join(root, 'package-lock.json'), JSON.stringify({ packages: {
+    'node_modules/@deepseek-ai/dsh': { version: '9.0.0' },
+  } }, null, 2) + '\n')
+  assert.equal(await refreshDevelopmentGraph({ root, record: channel, runNpm: args => untouched.push(args) }), undefined)
+  assert.deepEqual(untouched, [])
+})
+
+test('an installed channel is proven against the manifest that selected it', async t => {
+  const root = await mkdtempUnderTmp('ptc-channel-install-')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const record = { channel: 'latest', version: '7.0.0', offTrain: [],
+    packages: { '@deepseek-ai/dsh': { version: '7.0.0', integrity: 'sha512-7.0.0' } } }
+  const install = async version => {
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true })
+    await writeFile(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/dsh', version }))
+  }
+  const integrity = 'sha512-7.0.0'
+  const writeInstallRecord = async value => writeFile(
+    join(root, 'node_modules', '.package-lock.json'),
+    JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/@deepseek-ai/dsh': { version: '7.0.0', integrity: value } } }),
+  )
+  await install('7.0.0')
+  await writeInstallRecord(integrity)
+  assert.deepEqual(await verifyInstalledChannel(root, record), [{ name: '@deepseek-ai/dsh', version: '7.0.0' }])
+  // The recorded digest is the identity of the pinned bytes, not a note.
+  await writeInstallRecord('sha512-someone-elses-tarball')
+  await assert.rejects(() => verifyInstalledChannel(root, record), /manifest records sha512-7\.0\.0/)
+  await writeInstallRecord(integrity)
+  await install('0.0.0-stale')
+  await assert.rejects(() => verifyInstalledChannel(root, record), /installed @deepseek-ai\/dsh@0\.0\.0-stale/)
 })
 
 test('keeps npm release authority stage-only and bound to a verified tag', async () => {
@@ -388,13 +457,18 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   const verifyStep = ci.jobs.check.steps.find(step => step.name === 'Verify portable runtime contracts')
   assert.equal(verifyStep.run, 'npm run verify:ci')
   assert.equal(verifyStep.if, undefined)
-  assert.equal(ci.jobs.check.strategy.matrix.include.filter(entry => entry['host-contracts']).length, 1)
-  assert.deepEqual(ci.jobs.check.strategy.matrix.include.find(entry => entry['host-contracts']), {
-    os: 'ubuntu-latest', node: 24, 'host-contracts': true,
-  })
-  const hostStep = ci.jobs.check.steps.find(step => step.name === 'Verify frozen latest and next host contracts')
-  assert.equal(hostStep.run, 'npm run test:host-contract')
-  assert.equal(hostStep.if, 'matrix.host-contracts')
+  // The five-platform matrix carries no host-channel work of its own: channels
+  // are one job each, so an alpha report cannot hide behind a platform row.
+  assert.equal(ci.jobs.check.strategy.matrix.include.length, 5)
+  assert.deepEqual(ci.jobs.check.strategy.matrix.include.map(entry => [entry.os, entry.node]), [
+    ['ubuntu-latest', '22.19.0'], ['ubuntu-latest', 24], ['ubuntu-latest', 26],
+    ['windows-latest', 24], ['macos-latest', 24],
+  ])
+  assert.ok(ci.jobs.check.strategy.matrix.include.every(entry => Object.keys(entry).length === 2))
+  assert.deepEqual(ci.jobs['host-contracts'].strategy.matrix.channel, ['latest', 'next', 'alpha'])
+  assert.equal(ci.jobs['host-contracts']['continue-on-error'], "${{ matrix.channel == 'alpha' }}")
+  const hostStep = ci.jobs['host-contracts'].steps.find(step => step.name === 'Verify the ${{ matrix.channel }} host channel')
+  assert.equal(hostStep.run, 'npm run test:host-contract -- ${{ matrix.channel }}')
 
   const serializedCi = JSON.stringify(ci)
   const serializedRelease = JSON.stringify(release)
@@ -405,7 +479,7 @@ test('keeps npm release authority stage-only and bound to a verified tag', async
   assert.doesNotMatch(serializedCi, /npm install|for channel|@deepseek-ai\/dsh@\$channel/)
   assert.doesNotMatch(serializedCi, /npm run (?:check|verify:platform)|NODE_V8_COVERAGE/)
   const serializedRefresh = JSON.stringify(refresh)
-  assert.match(serializedRefresh, /npm run host:baseline:update/)
+  assert.match(serializedRefresh, /npm run host:channels:update/)
   assert.match(serializedRefresh, /GITHUB_TOKEN suppresses workflow runs/)
   assert.match(serializedRefresh, /gh workflow run ci\.yml/)
   assert.doesNotMatch(serializedRefresh, /npm run (?:check|verify|test:host-contract)/)

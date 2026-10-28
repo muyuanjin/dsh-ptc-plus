@@ -172,7 +172,7 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 宿主执行 provider 必须使用 TypeScript；热重载换成别的语言时插件会撤出并报出诊断，换回来就重新启用。
 
-开启 DSH 官方的 `executionMode: persistent-in-memory` 后，可以在“状态与恢复”里用**官方 REPL 模式优先**选择谁接管 PTC 会话：默认关闭，`run_code` 由 PTC Plus 接管；开启后由官方运行时接管，PTC Plus 让出执行、REPL 状态语义与观察，官方模式没开启时该设置不生效。切换立即生效，离开插件执行时会释放插件的内存环境；官方内存状态由 DSH 的 Agent/provider 生命周期管理，切换优先设置不保证清空它。官方执行期间的调用不进入插件记录，切回插件后不会当作可恢复状态。
+当官方运行时按状态所有者保留程序环境时，可以在“状态与恢复”里用**官方 REPL 模式优先**选择谁接管 PTC 会话：默认关闭，`run_code` 由 PTC Plus 接管；开启后由官方运行时接管，PTC Plus 让出执行、REPL 状态语义与观察。判断依据是运行时自己的声明（`retainsState`；更早的运行时通过 `repl` 源码形式表达同一件事），不是某个执行模式名或版本号，无状态运行时上该设置不生效。切换立即生效，离开插件执行时会释放插件的内存环境；官方内存状态由 DSH 的 Agent/provider 生命周期管理，切换优先设置不保证清空它。官方执行期间的调用不进入插件记录，切回插件后不会当作可恢复状态。
 
 ![PTC Plus 设置窗口](assets/ptc-plus-settings-zh.png)
 

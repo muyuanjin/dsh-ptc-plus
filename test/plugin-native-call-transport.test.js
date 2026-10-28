@@ -9,7 +9,7 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
-import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { ptcPresentation } from '../scripts/dsh-host-contract.mjs'
 import { createFixtureExecutionProvider, executionInstalled } from './host-fixture.js'
 import { Config, apply } from '../index.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
@@ -553,7 +553,13 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   // reads so that `apply` can run here at all.
   ctx.provide('agents', { list: () => [] })
   ctx.provide('llm', {})
-  new ToolRuntime(ctx, { mode: ptcToolsMode() })
+  // This fixture patches the registered transport definition, so it needs a host
+  // that registers one. It writes the presentation field only when the installed
+  // schema publishes one, and reports the shape it found instead of assuming it.
+  const presentation = ptcPresentation()
+  assert.equal(presentation.kind, 'registry',
+    'this fixture requires a host that registers the run_code transport definition')
+  new ToolRuntime(ctx, { mode: presentation.mode })
   let echoCalls = 0
   ctx.tools.register(defineTool({
     name: 'echo',

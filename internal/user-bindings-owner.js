@@ -1,4 +1,5 @@
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { sessionExecutionAvailable } from './host-tool-sdk.js'
 import { bindingToggleMessage } from './binding-toggle-receipt.js'
 import {
   bindingAdoptionMessage,
@@ -565,7 +566,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
     const requireCurrentAgent = () => {
       if (!agentIsCurrent(agent, sessionId, agentGeneration)
         || commandRegistrations.get(sessionId)?.agent !== agent
-        || ctx.tools.get('run_code', agent) === undefined) {
+        || !sessionExecutionAvailable(ctx.tools, agent)) {
         throw new Error('this binding authoring Agent is no longer active')
       }
     }
@@ -751,7 +752,7 @@ export function createUserBindingsOwner(ctx, options = {}) {
         // still claiming one.
         if (disposed || !enabled || lifecycleGeneration !== registration.generation
           || !agentIsCurrent(agent, sessionId, agentGeneration)
-          || ctx.tools.get('run_code', agent) === undefined
+          || !sessionExecutionAvailable(ctx.tools, agent)
           || commandRegistrations.get(sessionId) !== registration) {
           throw new Error('Global User Bindings binding command registration is no longer eligible')
         }
@@ -803,13 +804,13 @@ export function createUserBindingsOwner(ctx, options = {}) {
     }
     if (!agentIsCurrent(agent, sessionId, agentGeneration)) return
     const eligible = enabled && draftProjectionAvailable && !disposed
-      && ctx.tools.get('run_code', agent) !== undefined
+      && sessionExecutionAvailable(ctx.tools, agent)
     const current = commandRegistrations.get(sessionId)
     if (eligible && current?.agent === agent) return
     if (current !== undefined) await removeCommandFor(sessionId, current)
     if (!agentIsCurrent(agent, sessionId, agentGeneration)) return
     const stillEligible = enabled && draftProjectionAvailable && !disposed
-      && ctx.tools.get('run_code', agent) !== undefined
+      && sessionExecutionAvailable(ctx.tools, agent)
     if (stillEligible) {
       registerCommandFor(agent)
       return

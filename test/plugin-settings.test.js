@@ -324,7 +324,13 @@ function hostContext(settings = undefined, agents = [], options = {}) {
                       return operation
                     }
                     childDisposers.push(unregister)
-                    return unregister
+                    // A host may answer with a projection handle instead of a
+                    // disposer; the registration is the same either way.
+                    return options.projectionHandleKeys?.includes(definition.key) === true
+                      ? { stateOf: () => undefined,
+                          readerFor: () => () => undefined,
+                          dispose: async () => { await unregister() } }
+                      : unregister
                   },
                 },
                 effect(register) {
@@ -776,6 +782,46 @@ test('degrades an incompatible session projection and releases its callable inje
   for (const cleanup of host.cleanups.reverse()) await cleanup()
   assert.equal(executionInstalled(host.runtime), false)
   assert.deepEqual(host.projectionInjections, [])
+})
+
+test('accepts a host projection handle in place of a disposer', async () => {
+  const scope = settingsScope({ enabled: true, userBindingsEnabled: true })
+  const host = hostContext(settingsContext(scope), [], {
+    projectionHandleKeys: ['ptcPlusBindingDraft', 'ptcPlusRepl'],
+  })
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  // The handle carries the release, so the projection must be registered and
+  // released exactly like a disposer-returning host.
+  assert.deepEqual(host.ctx.logger.warnings, [], 'a handle is a usable registration')
+  assert.deepEqual(host.projectionDefinitions.map(definition => definition.key).sort(), [
+    'ptcPlusBindingDraft',
+    'ptcPlusRepl',
+    'ptcPlusSessionLog',
+  ])
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+  assert.deepEqual(host.projectionDefinitions, [])
+})
+
+test('a failed projection disposal still hands the session runtime back', async () => {
+  // The model-visible handback states a fact about execution, so it must not
+  // ride on whether every projection unregistered: the caller that retries the
+  // disposal reports the failure, and the handback still happens.
+  const scope = settingsScope({ enabled: true, userBindingsEnabled: true })
+  const host = hostContext(settingsContext(scope), [], { draftProjectionDisposeFailures: 1 })
+  apply(host.ctx)
+  await new Promise(resolve => setImmediate(resolve))
+  const sessions = host.ctx.get('sessions')
+  const list = sessions.list
+  let handedBack = 0
+  sessions.list = () => { handedBack += 1; return list() }
+  const failures = []
+  for (const cleanup of host.cleanups.reverse()) {
+    try { await cleanup() } catch (error) { failures.push(error) }
+  }
+  assert.equal(handedBack, 1, 'the handback ran despite the failed disposal')
+  assert.equal(failures.some(error => errorMessages(error).some(message => /projection disposal failed/.test(message))), true,
+    'the disposal failure is still reported')
 })
 
 test('binds the session binding command to live draft projection availability', async () => {

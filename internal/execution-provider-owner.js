@@ -1,4 +1,5 @@
 import { createExecutionSeam, EXECUTION_SEAM_SERVICE, LEGACY_EXECUTION_SEAM_SERVICE } from './execution-seam-compat.js'
+import { providerRetainsState } from './official-repl-priority.js'
 
 export const name = 'ptc-plus-execution-provider'
 export const inject = ['loader']
@@ -70,6 +71,11 @@ export function apply(ctx, config = {}) {
       get language() { return readOriginal().language },
       get isolation() { return readOriginal().isolation },
       get programFormat() { return readOriginal().programFormat ?? 'function-body' },
+      // This composition isolates state owners and forwards every run to the
+      // original provider, so the original's retention declaration is the
+      // truthful answer. A host plugin that reads it must not see a stateful
+      // environment reported as stateless.
+      get retainsState() { return providerRetainsState(readOriginal()) },
       get executionInstructions() { return readOriginal().executionInstructions },
       get sandboxMode() { return readOriginal().sandboxMode },
       get timeout() { return readOriginal().timeout },

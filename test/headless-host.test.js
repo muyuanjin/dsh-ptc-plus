@@ -68,6 +68,22 @@ function storedLog(events = [], header = {}) {
     .map(row => JSON.stringify(row)).join('\n') + '\n'
 }
 
+/**
+ * Assert the composed profile selects the PTC presentation in the shape the
+ * installed host declares. Looking the field up unconditionally would throw on a
+ * host that retired it, which is a broken test rather than a failed assertion.
+ */
+function assertToolsPresentation(rows, label) {
+  const presentation = hostContract.ptcPresentation()
+  if (presentation.kind === 'registry') {
+    assert.equal(rows.find(row => row.id === 'tools')?.config?.mode, presentation.mode, label)
+    return
+  }
+  for (const row of hostContract.ptcPresentationRows(presentation)) {
+    assert.equal(rows.find(entry => entry.id === row.id)?.disabled, row.disabled, `${label}: ${row.id}`)
+  }
+}
+
 function configRows(disabled = false) {
   return [
     { id: 'agent-instructions', disabled: true },
@@ -317,7 +333,7 @@ test('owns neutral config parsing and projection for both runners', () => {
   assert.equal(validateNeutralConfig(configRows(true), 'baseline config', 'disabled'), true)
   const projected = parseConfigDump(headlessConfigPatch(rows, runtime))
   assert.equal(projected.find(row => row.id === 'system-prompt').config.includeRuntimeContext, true)
-  assert.equal(projected.find(row => row.id === 'tools').config.mode, hostContract.ptcToolsMode())
+  assertToolsPresentation(projected, 'projected config')
   assert.equal(projected.find(row => row.id === 'sandbox-policy').config.mode, 'danger-full-access')
   assert.equal(projected.find(row => row.id === 'approval').config.policy, 'never')
   assert.equal(validateHeadlessRuntimeConfig(projected, 'projected config', runtime), true)
@@ -391,12 +407,15 @@ test('pairs the public canonical observer overlay across evaluation variants', {
 
 test('checks generated tools settings against the public Host schema, independently of runner expectations', () => {
   const rows = parseConfigDump(headlessConfigPatch(configRows(), runtime))
-  assert.equal(rows.find(row => row.id === 'tools').config.mode, hostContract.ptcToolsMode())
+  assertToolsPresentation(rows, 'accepted config')
   assert.equal(validateHeadlessRuntimeConfig(rows, 'accepted config', runtime), true)
   const unsupported = { ...runtime, toolsMode: 'unsupported-test-mode' }
   const unsupportedRows = parseConfigDump(headlessConfigPatch(configRows(), unsupported))
   assert.throws(() => validateHeadlessRuntimeConfig(unsupportedRows, 'unsupported config', unsupported), /PTC-EVAL-CONFIG:.*public DSH tools config/)
-  rows.find(row => row.id === 'tools').config.maxParallelSubCalls = 0
+  // The composed profile carries a tools row only in the registry shape.
+  const unsupportedRow = rows.find(row => row.id === 'tools') ?? { id: 'tools' }
+  if (!rows.includes(unsupportedRow)) rows.push(unsupportedRow)
+  unsupportedRow.config = { ...unsupportedRow.config, maxParallelSubCalls: 0 }
   assert.throws(() => validateHeadlessRuntimeConfig(rows, 'invalid tools settings', runtime), /public DSH tools config/)
 })
 

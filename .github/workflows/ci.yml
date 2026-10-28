@@ -32,19 +32,14 @@ jobs:
         include:
           - os: ubuntu-latest
             node: 22.19.0
-            host-contracts: false
           - os: ubuntu-latest
             node: 24
-            host-contracts: true
           - os: ubuntu-latest
             node: 26
-            host-contracts: false
           - os: windows-latest
             node: 24
-            host-contracts: false
           - os: macos-latest
             node: 24
-            host-contracts: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -58,7 +53,26 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Verify portable runtime contracts
         run: npm run verify:ci
-      - name: Verify frozen latest and next host contracts
-        if: matrix.host-contracts
+
+  # One job per host channel. The blocking channels are the published release and
+  # the in-flight release candidate; the alpha channel is a pre-adaptation for a
+  # line the host has not released yet, so it reports its result without blocking.
+  host-contracts:
+    name: host contract / ${{ matrix.channel }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.channel == 'alpha' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [latest, next, alpha]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - name: Verify the ${{ matrix.channel }} host channel
         shell: bash
-        run: npm run test:host-contract
+        run: npm run test:host-contract -- ${{ matrix.channel }}

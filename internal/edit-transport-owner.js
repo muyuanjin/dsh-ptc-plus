@@ -29,6 +29,7 @@ import { sessionEvents } from './session-events.js'
 import { deepEqualJson, snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { RUN_CODE } from './runtime-bridge-owner.js'
+import { dispatchToolCall } from './host-tool-sdk.js'
 import { CAPABILITY_EVIDENCE_KEY } from './capability-environment.js'
 import { isRecord } from './record-utils.js'
 import {
@@ -310,7 +311,7 @@ export function createEditTransportOwner(ctx, {
         const executionStart = agent.session.append('tool/ptc-dispatch-start', data)
         const derivedExec = { callId: data.subCallId, rootCallId: data.rootCallId,
           parent: rootExec.token, name: RUN_CODE, arguments: argumentsValue, agent, signal: rootSignal }
-        const dispatch = () => ctx.tools.execute(derivedExec)
+        const dispatch = () => dispatchToolCall(ctx.tools, derivedExec)
         const tentative = await executeTentative(executionStart.seq, start.rootCallSeq,
           dispatch, executionLog, derivedExec)
         const inner = tentative.result

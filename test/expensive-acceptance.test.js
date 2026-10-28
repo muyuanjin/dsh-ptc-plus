@@ -30,7 +30,7 @@ import {
 import { decodeValue, encodeValue } from '../internal/value-wire.js'
 import { editRejectedCell } from '../internal/rejected-cell-editor.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
-import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { ptcPresentation, ptcPresentationPatchLines } from '../scripts/dsh-host-contract.mjs'
 import { analyzeSession } from '../scripts/ab-headless-trajectories.mjs'
 import { Session } from '@deepseek-ai/dsh-session'
 import { createCapabilityEnvironment as createEnvironment } from '../internal/capability-environment.js'
@@ -364,9 +364,7 @@ test('validates a clean expensive-acceptance profile', () => {
     persona: 'You are a coding agent powered by the {{model}} model.'
 - id: ptc-plus
   name: dsh-ptc-plus
-- id: tools
-  config:
-    mode: ${ptcToolsMode()}
+${ptcPresentationPatchLines(ptcPresentation()).join('\n')}
 - id: sandbox-policy
   config:
     mode: danger-full-access
@@ -376,7 +374,10 @@ test('validates a clean expensive-acceptance profile', () => {
 `)
   assert.equal(validateAcceptanceConfig(rows, headlessRuntime), true)
   const unsupported = structuredClone(rows)
-  unsupported.find(row => row.id === 'tools').config.mode = 'unsupported-test-mode'
+  // The composed profile may omit the row when the host retired its field.
+  const unsupportedTools = unsupported.find(row => row.id === 'tools') ?? { id: 'tools' }
+  if (!unsupported.includes(unsupportedTools)) unsupported.push(unsupportedTools)
+  unsupportedTools.config = { mode: 'unsupported-test-mode' }
   assert.throws(() => validateAcceptanceConfig(unsupported, { ...headlessRuntime, toolsMode: 'unsupported-test-mode' }), /public DSH tools config/)
   const functionClassLoose = structuredClone(rows)
   functionClassLoose.find(row => row.id === 'ptc-plus').config = {

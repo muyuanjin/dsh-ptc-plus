@@ -276,7 +276,7 @@ test('an installed seam gates changed source language before its asynchronous li
   assert.throws(() => seam.provider.resolve({}), /incompatible with the active/)
   assert.throws(() => seam.invokeUpstream({}), /incompatible with the active/)
   assert.throws(() => seam.runUpstream({}), /incompatible with the active/)
-  for (const property of ['language', 'isolation', 'programFormat', 'executionInstructions', 'sandboxMode', 'timeout']) {
+  for (const property of ['language', 'isolation', 'programFormat', 'retainsState', 'executionInstructions', 'sandboxMode', 'timeout']) {
     assert.throws(() => seam.provider[property], /incompatible with the active/)
   }
   assert.equal(executions, 0)
@@ -792,6 +792,7 @@ test('forwards the original program format and owner release in both provider st
     language: 'typescript',
     isolation: 'process',
     programFormat: 'repl',
+    retainsState: true,
     executionInstructions: 'retained REPL',
     resolve(request) { return { ...request, cwd: '/provider-workspace' } },
     async run() { return { logs: [], value: 'original' } },
@@ -799,16 +800,53 @@ test('forwards the original program format and owner release in both provider st
   })
   const seam = createExecutionSeam(original, EXECUTION_SEAM_SERVICE)
   assert.equal(seam.provider.programFormat, 'repl')
+  assert.equal(seam.provider.retainsState, true)
   const owner = {}
   await seam.provider.release(owner)
   const release = seam.installExecute(() => Promise.resolve({ logs: [], value: 'plugin' }))
   assert.equal(seam.provider.programFormat, 'repl')
   assert.equal(seam.provider.executionInstructions, '')
+  // While the installed adapter runs the program this provider retains a
+  // per-session environment, so it must not describe itself as stateless.
+  assert.equal(seam.provider.retainsState, true)
+  assert.equal(seam.originalRetainsState, true)
   await seam.provider.release(owner)
   release()
   assert.equal(seam.provider.programFormat, 'repl')
+  assert.equal(seam.provider.retainsState, true)
   await seam.provider.release(owner)
   assert.deepEqual(owners, [owner, owner, owner])
+})
+
+// Retention, not the source form, decides; a generation that predates the
+// declaration answers through the one form it could retain state in.
+test('derives state retention from the source form only when the provider declares none', () => {
+  const retaining = createExecutionSeam({ language: 'typescript', isolation: 'process',
+    programFormat: 'script', retainsState: true, resolve: request => request, run() {} }, 'ptcRuntime')
+  assert.equal(retaining.provider.retainsState, true)
+  const stateless = createExecutionSeam({ language: 'typescript', isolation: 'process',
+    programFormat: 'repl', retainsState: false, resolve: request => request, run() {} }, 'ptcRuntime')
+  assert.equal(stateless.provider.retainsState, false)
+  assert.equal(createExecutionSeam({ language: 'typescript', isolation: 'process',
+    programFormat: 'repl', resolve: request => request, run() {} }, 'ptcRuntime').provider.retainsState, true)
+  assert.equal(createExecutionSeam({ language: 'typescript', isolation: 'process',
+    programFormat: 'function-body', resolve: request => request, run() {} }, 'ptcRuntime').provider.retainsState, false)
+})
+
+test('an installed adapter reports its own retention while the decision reads the original', () => {
+  const stateless = { language: 'typescript', isolation: 'process', programFormat: 'function-body',
+    retainsState: false, resolve: request => request, run() { return { logs: [], value: 'original' } } }
+  const seam = createExecutionSeam(stateless, 'ptcRuntime')
+  // Nothing is installed, so the original's answer is the provider's answer.
+  assert.equal(seam.provider.retainsState, false)
+  assert.equal(seam.originalRetainsState, false)
+  const release = seam.installExecute(() => Promise.resolve({ logs: [], value: 'plugin' }))
+  // Once the plugin kernel runs the program it retains state per session, while
+  // the ownership decision still asks the original.
+  assert.equal(seam.provider.retainsState, true)
+  assert.equal(seam.originalRetainsState, false)
+  release()
+  assert.equal(seam.provider.retainsState, false)
 })
 
 test('falls back without state-owner members and preserves cleanup after adapter retirement', async () => {

@@ -10,7 +10,7 @@ import { stringify } from 'yaml'
 import { probeMarker, probeReason } from '../test/binding-web-adapter.js'
 import { npmCliCommand } from './npm-cli.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
-import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
+import { hostToolRuntime, PTC_PRESET_ID, ptcPresentation, ptcPresentationRows } from './dsh-host-contract.mjs'
 import { assertSparkleMenuTypography, assertSparkleMenuFocus, assertSparkleMenuLayout, assertDraftReviewLayout, assertControlVisual, assertToolLayout, assertToolTypography, assertVisualSurface } from './client-visual-contract.mjs'
 import { SETTINGS_COPY } from '../src/client-copy.js'
 /** Conventional exit status per interruption signal, matching the repository's coverage runner. */
@@ -28,7 +28,7 @@ import {
 
 let values = {}
 let dshEntry
-let ptcMode
+let ptcSelection
 let repository
 let temporary
 let evidence
@@ -1354,7 +1354,7 @@ export async function main(argv = process.argv.slice(2)) {
   } }))
   assert.ok(values['dsh-entry'], 'Pass --dsh-entry with the installed latest DSH CLI JavaScript entry')
   dshEntry = resolve(values['dsh-entry'])
-  ptcMode = ptcToolsMode(hostToolRuntime(dshEntry))
+  ptcSelection = ptcPresentation(hostToolRuntime(dshEntry))
   repository = resolve(import.meta.dirname, '..')
   temporary = await mkdtemp(join(tmpdir(), 'ptc-client-web-'))
   evidence = resolve(repository, 'artifacts/client-web-smoke')
@@ -1411,7 +1411,7 @@ export async function main(argv = process.argv.slice(2)) {
         { insert: [{ id: 'binding-web-fixture', name: pathToFileURL(adapterEntry).href }] },
         { id: 'agent-default-model', config: { provider: 'binding-web-fixture', model: 'fixture' } },
         ...['agent-instructions', 'skill-filesystem', 'tool-skill', 'session-title-llm'].map(id => ({ id, disabled: true })),
-        { id: 'tools', config: { mode: ptcMode } },
+        ...ptcPresentationRows(ptcSelection),
         { id: 'sandbox-policy', config: { mode: 'danger-full-access' } },
         // The fixture's scoped probe is the only ask source, so the default policy still
         // leaves every other tool unanswered and the Host owns the probe decision.
@@ -1516,10 +1516,10 @@ export async function main(argv = process.argv.slice(2)) {
       await mkdir(workspace)
       await rpc('settings/update', { ns: 'locale', patch: { preference: 'en' } })
       try {
-        await rpc('settings/update', { ns: 'agent-preset-registry', patch: { selectedDefault: ptcMode } })
+        await rpc('settings/update', { ns: 'agent-preset-registry', patch: { selectedDefault: PTC_PRESET_ID } })
       } catch (error) {
         if (!/No configurable plugin entry ["“]agent-preset-registry["”]/u.test(error.message)) throw error
-        await rpc('settings/update', { ns: 'agent-presets', patch: { default: ptcMode } })
+        await rpc('settings/update', { ns: 'agent-presets', patch: { default: PTC_PRESET_ID } })
       }
       await rpc('workspace/create', { request: { path: workspace } })
       await page.getByText('workspace', { exact: true }).first().hover()

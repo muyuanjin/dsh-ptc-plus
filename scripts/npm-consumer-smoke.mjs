@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-import { isHostServicePackageName, verifyInstalledHostGraph } from './dsh-dependency-baseline.mjs'
+import { isHostServicePackageName, verifyInstalledHostGraph } from './host-channel-manifest.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -18,8 +18,19 @@ export async function consumerManifest(archive, plugin, host) {
   const dependencies = {}
   const selected = new Set()
   const pending = []
+  const optionalPeers = new Set(Object.entries(plugin.peerDependenciesMeta ?? {})
+    .filter(([, meta]) => meta?.optional === true)
+    .map(([name]) => name))
   for (const name of Object.keys(plugin.peerDependencies ?? {})) {
-    const filename = require.resolve(`${name}/package.json`)
+    let filename
+    try {
+      filename = require.resolve(`${name}/package.json`)
+    } catch (error) {
+      // An optional peer is resolved by whichever host publishes it; a host
+      // without it is a supported shape, not a broken consumer install.
+      if (optionalPeers.has(name) && error.code === 'MODULE_NOT_FOUND') continue
+      throw error
+    }
     const installed = JSON.parse(await readFile(filename, 'utf8'))
     const packagePath = relative(host, dirname(filename)).replaceAll('\\', '/')
     if (installed.name !== name || lock.packages?.[packagePath]?.version !== installed.version) {

@@ -834,10 +834,34 @@ test('failed execute installation restores the original presentation owner', asy
   }
 })
 
-test('rejects a tool assembly without a tools array', async (t) => {
+test('rejects a present non-array tool declaration and tolerates one the host defers', async (t) => {
   const state = fixture()
   t.after(() => state.dispose())
   await assert.rejects(() => state.assemble({ tools: null }), /expected a tools array/)
+  await assert.rejects(() => state.assemble({ tools: { name: 'run_code' } }), /expected a tools array/)
+  // A host that declares its tools after the presentation waterfall sends no
+  // array at all. The plugin keeps its own sections and leaves the declarations
+  // to the host instead of failing the request.
+  // The scoped registry the plugin-owned editor installs into, as a host exposes it.
+  const scoped = new Map()
+  const agent = {
+    id: 'deferred-tool-declaration',
+    session: { id: 'deferred-tool-declaration', events: [], header: { cwd: process.cwd() } },
+    ctx: { tools: {
+      get: name => scoped.get(name),
+      register(definition) {
+        scoped.set(definition.name, definition)
+        return () => scoped.delete(definition.name)
+      },
+    } },
+  }
+  const deferred = await state.assemble({ sections: [], contexts: [], variables: {} },
+    { agent, scope: agent })
+  // The transport is published, so this is a PTC composition: the plugin-owned
+  // editor is installed while the tool declarations stay the host's.
+  assert.equal(scoped.has('edit_run_code'), true)
+  assert.equal(Array.isArray(deferred.tools), false)
+  assert.equal(Object.hasOwn(deferred, 'tools'), false)
 })
 
 test('rejects malformed direct requests and normalizes tool errors with throwing properties', async (t) => {

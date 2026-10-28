@@ -36,7 +36,7 @@ import { stringify } from 'yaml'
 import { SETTINGS_COPY } from '../src/client-copy.js'
 import { releaseResources, stopOwnedProcess, watchProcessEnd } from './client-web-smoke.mjs'
 import { settleVisual } from './client-visual-contract.mjs'
-import { hostToolRuntime, ptcToolsMode } from './dsh-host-contract.mjs'
+import { hostToolRuntime, PTC_PRESET_ID, ptcPresentation, ptcPresentationRows } from './dsh-host-contract.mjs'
 import { formatHeadlessError, runProcess } from './headless-host.mjs'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
@@ -168,7 +168,7 @@ export async function main(argv = process.argv.slice(2)) {
   for (const locale of locales) assert.ok(README_LOCALES.includes(locale), `--locale must be ${README_LOCALES.join(' or ')}`)
   const repository = resolve(import.meta.dirname, '..')
   const output = resolve(repository, values.out)
-  const ptcMode = ptcToolsMode(hostToolRuntime(dshEntry))
+  const ptcSelection = ptcPresentation(hostToolRuntime(dshEntry))
   const temporary = await mkdtemp(join(tmpdir(), 'ptc-readme-screenshots-'))
   // Frames are photographed into this staging directory and published to `output` only after the
   // whole run, including its page-error assertion, succeeds.
@@ -231,7 +231,7 @@ export async function main(argv = process.argv.slice(2)) {
       { insert: [{ id: 'readme-screenshot-fixture', name: pathToFileURL(join(fixtureDirectory, 'index.mjs')).href }] },
       { id: 'agent-default-model', config: { provider: 'readme-screenshot-fixture', model: 'fixture' } },
       ...['agent-instructions', 'skill-filesystem', 'tool-skill', 'session-title-llm'].map(id => ({ id, disabled: true })),
-      { id: 'tools', config: { mode: ptcMode } },
+      ...ptcPresentationRows(ptcSelection),
       { id: 'sandbox-policy', config: { mode: 'danger-full-access' } },
       { id: 'approval', config: { policy: 'ask' } },
       { id: 'permission', config: { presets: {
@@ -289,7 +289,7 @@ export async function main(argv = process.argv.slice(2)) {
     await rpc('settings/update', { ns: 'ui-theme', patch: { preference: 'light' } })
     // The REPL tab, header indicator and composer entry appear only under a PTC preset. The
     // profile default belongs to the operator, so the capture asks for the PTC preset first.
-    await rpc('settings/update', { ns: 'agent-preset-registry', patch: { selectedDefault: ptcMode } })
+    await rpc('settings/update', { ns: 'agent-preset-registry', patch: { selectedDefault: PTC_PRESET_ID } })
     const workspace = join(temporary, WORKSPACE_NAME)
     await mkdir(workspace)
     await rpc('workspace/create', { request: { path: workspace } })

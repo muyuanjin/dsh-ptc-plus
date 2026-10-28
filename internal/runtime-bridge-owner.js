@@ -24,6 +24,7 @@ import {
   toolCapabilityMetadata,
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
+import { hostTransportDefinition } from './host-tool-sdk.js'
 import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { POST_EDIT_KEY } from './session-journal-schema.js'
@@ -394,7 +395,7 @@ export function createRuntimeBridgeOwner({
   }
 
   const patchRunCodeDefinition = (agent) => {
-    const definition = ctx.tools.get(RUN_CODE, agent)
+    const definition = hostTransportDefinition(ctx.tools, agent, RUN_CODE)
     if (definition === undefined) {
       throw new Error('ptc-plus: run_code definition is unavailable for the owning session')
     }

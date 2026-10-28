@@ -69,8 +69,14 @@
     "@deepseek-ai/dsh-skill-filesystem": "*",
     "@deepseek-ai/dsh-spill-policy": "*",
     "@deepseek-ai/dsh-tool-cordis": "*",
+    "@deepseek-ai/dsh-tool-executor-ptc": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-typert-protocol": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-tool-executor-ptc": {
+      "optional": true
+    }
   },
   "scripts": {
     "build": "node scripts/client-bundle.mjs build && node scripts/compiler-bundle.mjs build",
@@ -88,8 +94,9 @@
     "test:client:fallback": "node scripts/client-fallback-smoke.mjs",
     "test:client:layout": "node scripts/client-binding-layout.mjs",
     "readme:screenshots": "node scripts/readme-screenshots.mjs",
-    "host:baseline:update": "node scripts/dsh-dependency-baseline.mjs update",
-    "host:baseline:verify": "node scripts/dsh-dependency-baseline.mjs verify",
+    "host:channels:update": "node scripts/host-channel-manifest.mjs update",
+    "host:channels:graph": "node scripts/host-channel-manifest.mjs graph",
+    "host:channels:verify": "node scripts/host-channel-manifest.mjs verify",
     "test:host-contract": "node scripts/dsh-host-contract-suite.mjs",
     "prepack": "npm run build:check",
     "hooks:install": "node scripts/review-findings.mjs install-hook",
@@ -109,9 +116,9 @@
     "test:backend": "node scripts/test-suite-files.mjs",
     "test:backend:fast": "node scripts/test-suite-files.mjs --fast",
     "test:ci:runtime": "node --test --test-concurrency=1 test/package-contract.test.js test/compiler-platform.test.js test/direct-surface-policy.test.js test/isolated-entrance.test.js test/plugin-native-call-transport.test.js",
-    "verify": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && node scripts/deterministic-test-groups.mjs",
-    "verify:check": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node scripts/deterministic-test-groups.mjs --check",
-    "verify:ci": "npm run review:validate && npm run host:baseline:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node scripts/deterministic-test-groups.mjs --ci",
+    "verify": "npm run review:validate && npm run host:channels:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node --check scripts/expensive-headless-acceptance.mjs && node --check scripts/ab-headless-trajectories.mjs && node scripts/deterministic-test-groups.mjs",
+    "verify:check": "npm run review:validate && npm run host:channels:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node scripts/deterministic-test-groups.mjs --check",
+    "verify:ci": "npm run review:validate && npm run host:channels:verify && npm run semantic:check && npm run build:check && node --check index.js && node --check internal/kernel-worker.js && node --check scripts/migrate-session-log.mjs && node scripts/deterministic-test-groups.mjs --ci",
     "check": "node scripts/review-findings.mjs check",
     "verify:docs": "node scripts/review-findings.mjs docs",
     "test:expensive": "node scripts/expensive-headless-acceptance.mjs",

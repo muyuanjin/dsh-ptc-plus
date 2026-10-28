@@ -32,6 +32,7 @@ async function loaderFixture(t, { originalEntryId = 'ptc-runtime', isolation = '
         language = config.language ?? 'typescript'
         isolation = 'process'
         get programFormat() { return config.programFormat ?? 'function-body' }
+        get retainsState() { return config.retainsState ?? config.programFormat === 'repl' }
         get executionInstructions() { return config.guidance ?? 'original guidance' }
         get sandboxMode() { return config.mode ?? 'workspace-write' }
         get timeout() { return config.timeout ?? { defaultMs: 1000, maxMs: 2000 } }
@@ -180,9 +181,82 @@ test('composed provider forwards the original program format and owner release',
   const { root, state } = await loaderFixture(t, { originalConfig: { tag: 'repl-mode', programFormat: 'repl' } })
   const provider = root.get('ptcRuntime')
   assert.equal(provider.programFormat, 'repl')
+  // The composition forwards the original declaration, so a host plugin asking
+  // this provider never sees a stateful environment reported as stateless.
+  assert.equal(provider.retainsState, true)
   const owner = {}
   await provider.release(owner)
   assert.deepEqual(state.releases, [owner])
+})
+
+test('composed provider derives retention from the form when the original declares none', async t => {
+  const { root } = await loaderFixture(t, { originalConfig: { tag: 'script-mode', programFormat: 'script' } })
+  const provider = root.get('ptcRuntime')
+  assert.equal(provider.programFormat, 'script')
+  assert.equal(provider.retainsState, false)
+})
+
+test('composed provider reports the retention its original declares, whatever source form it runs', async t => {
+  // A host line retains `script` programs in a stateful environment. The
+  // composition forwards that declaration, so a host plugin asking this provider
+  // does not read the source form as a fresh process.
+  const { root } = await loaderFixture(t, {
+    originalConfig: { tag: 'stateful-script', programFormat: 'script', retainsState: true },
+  })
+  const provider = root.get('ptcRuntime')
+  assert.equal(provider.programFormat, 'script')
+  assert.equal(provider.retainsState, true)
+})
+
+test('a stateless original never receives execution, however often the setting is committed', async t => {
+  // The original runs a fresh process. The plugin owns execution, and once it
+  // does, its provider is stateful — so the decision must keep reading the
+  // original, not the composition it just installed.
+  const { root } = await loaderFixture(t, {
+    originalConfig: { tag: 'stateless', programFormat: 'function-body' },
+  })
+  root.provide('agents', { list: () => [] })
+  new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(root, { mode: 'ptc' })
+  const config = { enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false }
+  const main = root.plugin({ apply: applyMain }, config)
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, '', 'the plugin must keep execution')
+  assert.equal(root.get('ptcRuntime').retainsState, true, 'its own kernel is stateful')
+  // Re-committing the same setting must not read that statefulness as the
+  // official provider's answer and hand execution away.
+  main.update({ ...config, tipCooldownMessages: 3 })
+  await main.await()
+  assert.equal(root.get('ptcRuntime').executionInstructions, '', 'the decision still reads the original')
+  await main.dispose()
+})
+test('a live host reconfiguration keeps execution when only the installed composition is stateful', async t => {
+  // The discriminating case for the ownership decision: the original runs a
+  // fresh process, the plugin owns execution, and the host re-evaluates the
+  // configuration while the composition is installed. At that moment the
+  // installed composition reports `retainsState: true`, so an ownership decision
+  // that reads the composition hands execution away to a provider that retains
+  // nothing.
+  const { root } = await loaderFixture(t, {
+    originalConfig: { tag: 'stateless', programFormat: 'function-body' },
+  })
+  root.provide('agents', { list: () => [] })
+  new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(root, { mode: 'ptc' })
+  const main = root.plugin({ apply: applyMain }, {
+    enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false,
+  })
+  await main.await()
+  const provider = root.get('ptcRuntime')
+  assert.equal(provider.executionInstructions, '', 'the plugin must keep execution')
+  assert.equal(provider.retainsState, true, 'the installed composition retains state')
+  // `sourceChanged` is the seam channel the host uses when the original
+  // generation is replaced; the plugin answers it by reconciling the live
+  // attachment, which re-evaluates execution ownership.
+  await provider[Symbol.for('dsh-ptc-plus.execution-seam')]().sourceChanged()
+  assert.equal(provider.executionInstructions, '', 'ownership follows the original provider, not the composition')
+  assert.equal(provider.retainsState, true)
+  await main.dispose()
 })
 
 test('official REPL priority yields execution to the original provider and takes it back', async t => {

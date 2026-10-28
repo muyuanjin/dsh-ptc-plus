@@ -1,4 +1,6 @@
 /** Resolved-spec Cordis execution contract. */
+import { providerRetainsState } from './official-repl-priority.js'
+
 export const EXECUTION_SEAM_SERVICE = 'ptcRuntime'
 
 /** Request-only Cordis execution contract. */
@@ -63,7 +65,24 @@ export function createExecutionSeam(service, serviceName) {
     // Source evaluation form belongs to the provider that actually receives
     // the program. Program-format consumers delegate to the original provider,
     // so this descriptor always follows the original generation.
+    //
+    // Retention is different: while an installed adapter runs the program this
+    // provider keeps a per-session environment, so the answer describes what
+    // this provider does, not what the original would do. The ownership decision
+    // asks the original through `seam.originalRetainsState` instead.
     get programFormat() { requireCompatible(); return service.programFormat ?? 'function-body' },
+    // Retention belongs to the provider that actually receives the program, so
+    // this descriptor follows the original generation exactly like the source
+    // form. A host plugin that reads it must not see a stateful environment
+    // reported as stateless.
+    get retainsState() {
+      requireCompatible()
+      // While the installed adapter runs the program, this provider retains a
+      // per-session environment, whatever the original would do. Reporting the
+      // original's answer here would describe a stateful environment as
+      // stateless to every host plugin that asks.
+      return installed === undefined ? providerRetainsState(service) : true
+    },
     get executionInstructions() { requireCompatible(); return installed === undefined ? service.executionInstructions ?? '' : '' },
     get sandboxMode() { requireCompatible(); return installed === undefined ? service.sandboxMode : undefined },
     get timeout() { requireCompatible(); return installed === undefined ? service.timeout : undefined },
@@ -93,6 +112,12 @@ export function createExecutionSeam(service, serviceName) {
   })
   const seam = Object.freeze({
     serviceName,
+    /**
+     * Whether the original provider retains state per owner. Execution ownership
+     * is decided against the original — the provider that would receive the
+     * program if this attachment stood down — not against the composition.
+     */
+    get originalRetainsState() { requireAvailable(); return providerRetainsState(service) },
     get language() { requireAvailable(); return service.language },
     provider,
     get active() { return installed !== undefined && service.language === installed.language },

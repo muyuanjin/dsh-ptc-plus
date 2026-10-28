@@ -112,6 +112,52 @@ test('records a nested editor and its derived result under the original official
     'official-session-edit')
 })
 
+test('submits a derived edit as one model batch on a host that keeps its transport in an executor', async t => {
+  // This host's registry answers a complete model batch and assigns the
+  // execution identity itself, so the derived edit must arrive as one accepted
+  // batch call and settle from the result the host matched back to it.
+  const session = Session.create('derived-edit-batch-dispatch')
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  session.append('turn/start', { turn: 1 })
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  const singleCall = state.ctx.tools.execute
+  const batches = []
+  state.ctx.tools.selectExecutor = () => ({ describe: () => ({ knownNames: ['run_code'] }) })
+  state.ctx.tools.execute = async options => {
+    if (!Array.isArray(options?.calls)) return singleCall(options)
+    batches.push(options.calls.map(call => call.name))
+    const results = []
+    for (const call of options.calls) {
+      results.push({ callId: call.id, result: await singleCall({ ...options, callId: call.id,
+        name: call.name, arguments: JSON.parse(call.arguments) }) })
+    }
+    return { results }
+  }
+
+  const setup = await state.runDurable(session.id, 'let batchDispatched = 1; return batchDispatched', {},
+    { session, callId: 'batch-dispatch-setup' })
+  assert.equal(setup.value, 1)
+  assert.deepEqual(batches, [], 'a root cell is not a plugin-submitted batch')
+
+  const edit = await runNestedEditCell(state, {
+    session, agent, callId: 'batch-dispatch-edit', signal,
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+  })
+  assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
+  assert.equal(edit.receipt.accepted, true, JSON.stringify(edit.receipt))
+  assert.deepEqual(batches, [['run_code']])
+  assert.match(edit.raw.logs.at(-1), /edit_run_code settled \(target run_code call \d+/)
+  const events = sessionEvents(session)
+  assert.equal(events.findLast(event => event.type === 'tool/ptc-dispatch')?.data.isError, false)
+  assert.equal((await state.runDurable(session.id, 'return ++batchDispatched', {}, { session })).value, 3)
+})
+
 test('background roots after a derived edit read their own official Session observation', async t => {
   const session = Session.create('derived-background-observation')
   const state = fixture()

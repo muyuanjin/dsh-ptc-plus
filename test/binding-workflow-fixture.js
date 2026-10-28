@@ -16,7 +16,7 @@ import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
 import * as ptc from '../index.js'
-import { ptcToolsMode } from '../scripts/dsh-host-contract.mjs'
+import { ptcPresentation } from '../scripts/dsh-host-contract.mjs'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 import { createFixtureExecutionProvider } from './host-fixture.js'
 
@@ -45,11 +45,21 @@ export async function bindingWorkflowHost(t) {
       return { ...request, cwd: request.cwd ?? home, timeoutMs: request.timeoutMs ?? null }
     },
   })))
+  // Presentation is a host decision: a registry configuration field, or the
+  // composition row that selects the host's PTC tool executor.
+  const presentation = ptcPresentation()
+  const registryConfig = presentation.kind === 'registry' ? { mode: presentation.mode } : {}
   for (const plugin of [TypertRegistry, SystemPrompt, SessionStore, AgentRegistry, LlmRuntime,
     SessionProjectionRegistry, SessionQueryEngine, ToolRuntime, CommandRuntime, AgentLoop]) {
-    const config = plugin === ToolRuntime ? { mode: ptcToolsMode() }
+    const config = plugin === ToolRuntime ? registryConfig
       : plugin === SystemPrompt ? { includeHarnessIdentity: false, persona: '' } : undefined
     const fiber = ctx.plugin(plugin, config)
+    fibers.push(fiber)
+    await fiber.await()
+  }
+  if (presentation.kind === 'executor') {
+    const executor = await import('@deepseek-ai/dsh-tool-executor-ptc')
+    const fiber = ctx.plugin(executor.default ?? executor)
     fibers.push(fiber)
     await fiber.await()
   }

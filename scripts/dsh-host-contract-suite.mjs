@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -8,11 +8,11 @@ import { parseArgs } from 'node:util'
 import { createHash } from 'node:crypto'
 import { extractPackFilename } from './npm-pack-filename.mjs'
 import { npmCliCommand } from './npm-cli.mjs'
-import { verifyInstalledHostGraph } from './dsh-dependency-baseline.mjs'
+import { MANIFEST_PATH, OFFICIAL_REGISTRY, readManifest, verifyInstalledChannel } from './host-channel-manifest.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const LATEST_FIXTURE = join(ROOT, 'compat', 'latest')
-const CURRENT_FIXTURE = join(ROOT, 'compat', 'current')
+/** Installed channel hosts are cache, not source: the manifest is the record. */
+const CHANNEL_CACHE = join(ROOT, 'compat', '.channels')
 const HOST_PACKAGES = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/cordis-plugin-loader',
@@ -82,11 +82,16 @@ async function exposeHostPackages(consumer, host) {
   const dshRequire = createRequire(hostRequire.resolve('@deepseek-ai/dsh/package.json'))
   const baseRequire = createRequire(dshRequire.resolve('@deepseek-ai/dsh-base/package.json'))
   const requires = [hostRequire, dshRequire, baseRequire]
+  // An optional peer is optional: the plugin resolves whichever host packages
+  // exist and probes their shapes, so an absent one is not a contract failure.
+  const optional = new Set(Object.entries(manifest.peerDependenciesMeta ?? {})
+    .filter(([, meta]) => meta?.optional === true)
+    .map(([name]) => name))
   const names = [...new Set([...Object.keys(manifest.peerDependencies ?? {}), ...HOST_PACKAGES, ...PROFILE_HOST_PACKAGES])]
   for (const name of names) {
     let targetManifest
     try { targetManifest = resolveHostPackage(requires, name) } catch (error) {
-      if (!lifecycleOnly && PROFILE_HOST_PACKAGES.includes(name)
+      if ((!lifecycleOnly && PROFILE_HOST_PACKAGES.includes(name) || optional.has(name))
         && error.message === `official DSH graph does not provide ${name}`) continue
       throw error
     }
@@ -155,14 +160,48 @@ async function verifyConsumer(consumer, label, host) {
   console.log(`${label}: official DSH ${hostVersion} ${lifecycleOnly ? 'packed lifecycle contract' : executionOnly ? 'packed public execution contract' : 'bounded host contracts'} passed`)
 }
 
-async function installFrozenHost(temporary, label, fixture) {
-  const host = join(temporary, `${label}-host`)
-  await mkdir(host)
-  for (const filename of ['package.json', 'package-lock.json', '.npmrc']) {
-    await copyFile(join(fixture, filename), join(host, filename))
+/**
+ * Install one channel host on demand, from the version the manifest resolved.
+ * A cache hit is proven against the manifest; a miss installs that exact version,
+ * so refreshing a channel never needs a lockfile edit.
+ * @param {object} record - the channel record from the manifest.
+ * @returns {Promise<string>} the installed host root.
+ */
+async function installChannelHost(record) {
+  const host = join(CHANNEL_CACHE, record.channel)
+  try {
+    await verifyInstalledChannel(host, record)
+    console.log(`channel ${record.channel}: reusing @deepseek-ai/dsh@${record.version} from ${CHANNEL_CACHE}`)
+    return host
+  } catch {
+    // Nothing usable is cached; install the resolved version below.
   }
-  npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: host })
-  await verifyInstalledHostGraph(host)
+  await rm(host, { recursive: true, force: true })
+  await mkdir(host, { recursive: true })
+  await writeFile(join(host, 'package.json'), `${JSON.stringify({
+    name: `dsh-ptc-plus-${record.channel}-host-contract`, private: true, type: 'module',
+    dependencies: { '@deepseek-ai/dsh': record.version },
+  }, null, 2)}\n`)
+  // Pin the official registry: a channel record names bytes the official release
+  // published, so the install must come from the same source.
+  await writeFile(join(host, '.npmrc'), `ignore-scripts=true\ninstall-links=true\nregistry=${OFFICIAL_REGISTRY}\n`)
+  npm(['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact'], { cwd: host, timeout: 900_000 })
+  await verifyInstalledChannel(host, record)
+  return host
+}
+
+/**
+ * Use an already-installed host, after proving it is the channel the manifest
+ * resolved. Equality of inputs alone does not prove which packages load, so the
+ * installed versions are checked too.
+ * @param {object} record - the channel record from the manifest.
+ * @param {string} host - installed host root supplied by the caller.
+ * @returns {Promise<string>} the verified host root.
+ */
+async function verifyExistingHost(record, host) {
+  const require = createRequire(join(host, 'package.json'))
+  require.resolve('@deepseek-ai/dsh/package.json')
+  await verifyInstalledChannel(host, record)
   return host
 }
 
@@ -189,29 +228,20 @@ const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   'lifecycle-only': { type: 'boolean', default: false },
   'existing-host': { type: 'string' },
 } })
-const selection = positionals[0] ?? 'all'
 const executionOnly = values['execution-only']
 const lifecycleOnly = values['lifecycle-only']
-if (!['all', 'next', 'latest', 'current'].includes(selection)) {
-  throw new Error('usage: dsh-host-contract-suite.mjs [all|next|latest|current] [--execution-only|--lifecycle-only] [--existing-host <path>]')
+const { channels, document } = await readManifest(ROOT)
+const selection = positionals[0] ?? 'blocking'
+const chosen = selection === 'all' ? [...channels.values()]
+  : selection === 'blocking' || selection === 'channels' ? [...channels.values()].filter(record => record.blocks !== false)
+  : [channels.get(selection)]
+if (chosen.some(record => record === undefined)) {
+  throw new Error(`usage: dsh-host-contract-suite.mjs [all|blocking|${[...channels.keys()].join('|')}] [--execution-only|--lifecycle-only] [--existing-host <path>]`)
 }
-if (positionals.length > 1 || executionOnly && lifecycleOnly || values['existing-host'] && selection !== 'current') throw new Error('invalid host contract selection')
-async function selectedCurrentHost(temporary) {
-  if (!values['existing-host']) return installFrozenHost(temporary, 'current', CURRENT_FIXTURE)
-  const host = resolve(values['existing-host'])
-  for (const filename of ['package.json', 'package-lock.json']) {
-    const actual = await readFile(join(host, filename))
-    const frozen = await readFile(join(CURRENT_FIXTURE, filename))
-    if (!actual.equals(frozen)) throw new Error(`existing Host ${filename} differs from the frozen current cohort`)
-  }
-  // Resolve only through this installed graph; equality of lock inputs alone
-  // does not prove the runtime packages actually loaded from it.
-  const require = createRequire(join(host, 'package.json'))
-  require.resolve('@deepseek-ai/dsh/package.json')
-  await verifyInstalledHostGraph(host)
-  console.log(`existing frozen Host lock SHA256 ${createHash('sha256').update(await readFile(join(host, 'package-lock.json'))).digest('hex')}`)
-  return host
+if (positionals.length > 1 || executionOnly && lifecycleOnly || values['existing-host'] && chosen.length !== 1) {
+  throw new Error('invalid host contract selection')
 }
+console.log(`host channels from ${MANIFEST_PATH}: ${chosen.map(record => `${record.channel}=${record.version}`).join(', ')}`)
 const temporary = await mkdtemp(join(tmpdir(), 'ptc-host-contracts-'))
 try {
   const report = npm(['pack', '--silent', '--json', '--pack-destination', temporary], {
@@ -220,17 +250,13 @@ try {
   })
   const archive = join(temporary, extractPackFilename(JSON.parse(report)))
   console.log(`packed candidate SHA256 ${createHash('sha256').update(await readFile(archive)).digest('hex')}`)
-  if (selection === 'all' || selection === 'next') {
-    await verifyPackedConsumer(temporary, 'next baseline', ROOT, archive)
+  for (const record of chosen) {
+    const host = values['existing-host'] === undefined
+      ? await installChannelHost(record)
+      : await verifyExistingHost(record, resolve(values['existing-host']))
+    await verifyPackedConsumer(temporary, `${record.channel} channel`, host, archive)
   }
-  if (selection === 'all' || selection === 'latest') {
-    const latestHost = executionOnly ? LATEST_FIXTURE : await installFrozenHost(temporary, 'latest', LATEST_FIXTURE)
-    await verifyPackedConsumer(temporary, 'latest baseline', latestHost, archive)
-  }
-  if (selection === 'all' || selection === 'current') {
-    const currentHost = await selectedCurrentHost(temporary)
-    await verifyPackedConsumer(temporary, 'published baseline', currentHost, archive)
-  }
+  console.log(`host contract manifest SHA256 ${createHash('sha256').update(JSON.stringify(document)).digest('hex')}`)
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }

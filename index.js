@@ -13,6 +13,7 @@ import { CapabilityStatisticsStore } from './internal/capability-statistics-stor
 import { createCapabilityEnvironment } from './internal/capability-environment.js'
 import { capabilityCommandReceipt } from './internal/capability-command-receipt.js'
 import { toolSdkSchemas } from './internal/program-bindings.js'
+import { hostTransportDefinition } from './internal/host-tool-sdk.js'
 import { createRuntimeMessageOwner, handBackRuntimeSessions } from './internal/runtime-contexts.js'
 import { createSessionLogOwner } from './internal/session-log-view.js'
 import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
@@ -111,6 +112,15 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
     withDerived(PROMPT_SLOT_IDS.guidanceExecutionWorld, `${recovery}${cordisToolsEnabled ? ` ${cordisRecovery}` : ''}`),
   ]
   return paragraphs.filter(paragraph => paragraph.trim().length > 0).join('\n\n')
+}
+
+/**
+ * The reserved `run_code` transport definition, from whichever surface this
+ * host publishes it on. Session execution is available exactly when one of
+ * those surfaces answers.
+ */
+function runCodeDefinitionFor(tools, scope) {
+  return hostTransportDefinition(tools, scope, RUN_CODE)
 }
 
 /** Register the session-bound REPL runtime. */
@@ -258,14 +268,10 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       if (dispose === undefined) {
         throw new Error('ptc-plus: sessionProjections.register returned neither a disposer nor a handle')
       }
-      // A handle may dispose asynchronously; a rejection there must not surface as
-      // an unhandled rejection during plugin teardown.
-      return () => {
-        try {
-          const pending = dispose()
-          if (typeof pending?.catch === 'function') pending.catch(() => {})
-        } catch {}
-      }
+      // Unregistration failures belong to the caller that is suspending or
+      // reloading the projection: it retries and reports them. Swallowing one
+      // here would turn a failed disposal into a silent duplicate projection.
+      return () => dispose()
     } catch (error) {
       ctx.logger?.warn?.(`ptc-plus: ${label} projection unavailable`, error)
       return undefined
@@ -409,6 +415,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       sessionId,
       toolSchemasForAgent,
       capabilityEnvironment,
+      declaresRunCode: agent => runCodeDefinitionFor(ctx.tools, agent) !== undefined,
       userBindingsForAgent: agent => userBindings.snapshotForAgent(agent),
       setAgentPresentation: (agent, presentation) => (
         userBindings.setAgentPresentation(agent, presentation)
@@ -418,25 +425,25 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       name: 'tools:ptc-plus-repl',
       order: 98,
       text: context => {
-        if (ctx.tools.get(RUN_CODE, context?.scope) === undefined) return ''
+        if (runCodeDefinitionFor(ctx.tools, context?.scope) === undefined) return ''
         return replGuidance(guidancePolicies(activeConfig), resolvePromptTextConfig(activeConfig))
       },
     }))
     disposers.push(ctx.on('system-prompt/assemble', async (assembly, context, next) => {
       const projected = await directSurface.assemble(assembly, context, next)
-      if (ctx.tools.get(RUN_CODE, context?.agent) !== undefined) runtimeBridge.prepareAgent(context?.agent)
+      if (runCodeDefinitionFor(ctx.tools, context?.agent) !== undefined) runtimeBridge.prepareAgent(context?.agent)
       return projected
     }))
     disposers.push(() => capabilityEnvironment.dispose())
     disposers.push(ctx.on('agent/pre-step', (payload, next) => capabilityEnvironment.preStep(payload, next), { prepend: true }))
     disposers.push(ctx.on('agent/created', ({ agent }) => {
-      if (ctx.tools.get(RUN_CODE, agent) !== undefined) {
+      if (runCodeDefinitionFor(ctx.tools, agent) !== undefined) {
         runtimeBridge.prepareAgent(agent)
         editTransport.ensureInstalled(agent)
       }
     }))
     for (const agent of ctx.agents?.list?.() ?? []) {
-      if (ctx.tools.get(RUN_CODE, agent) !== undefined) {
+      if (runCodeDefinitionFor(ctx.tools, agent) !== undefined) {
         runtimeBridge.prepareAgent(agent)
         editTransport.ensureInstalled(agent)
       }
@@ -752,7 +759,9 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   // Execution ownership is a per-attachment property: `owned` installs the
   // session runtime, `deferred` leaves run_code to the official provider.
   const executionShape = nextConfig => (
-    defersToOfficialRepl(nextConfig, seam.provider) ? 'deferred' : 'owned'
+    defersToOfficialRepl(nextConfig, {
+      get retainsState() { return seam.originalRetainsState },
+    }) ? 'deferred' : 'owned'
   )
   const startActivation = record => {
     if (record.cancelled || disposed || activating !== record) {
@@ -940,8 +949,17 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   ctx.effect(() => ctx.on('agent/disposed', ({ agent }) => messageOwner.disposeAgent(agent)), 'ptc-plus message agent disposal')
   ctx.effect(() => () => messageOwner.dispose(), 'ptc-plus dynamic message lifecycle')
   ctx.effect(() => async () => {
-    await controller.dispose()
+    // The model-visible handback states a fact about execution, so it must not
+    // ride on whether every projection unregistered: a failed disposal is
+    // reported by the caller that retries it, and the runtime is gone either way.
+    let disposalFailure
+    try {
+      await controller.dispose()
+    } catch (error) {
+      disposalFailure = error
+    }
     await handBackRuntimeSessions(ctx, handbackOwners)
+    if (disposalFailure !== undefined) throw disposalFailure
   }, 'ptc-plus provider handback')
 
   // The settings section replaces this source after activation; the prompt-text

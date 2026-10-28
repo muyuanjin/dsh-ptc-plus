@@ -36,9 +36,17 @@ async function loadCandidate(specifier) {
   let module
   try {
     module = await import(specifier)
-  } catch {
-    // The package is absent on this host; the caller tries the next candidate.
-    module = undefined
+  } catch (error) {
+    // Absence lets the caller try the next candidate. A package that exists but
+    // fails to initialise is a different fact: treating it as absent silently
+    // substitutes another implementation, and reporting "no package provides this"
+    // hides the real error from the operator.
+    const code = error?.code
+    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+      module = undefined
+    } else {
+      throw new Error(`ptc-plus: host package ${specifier} failed to load: ${error?.message ?? String(error)}`, { cause: error })
+    }
   }
   loaded.set(specifier, module)
   return module

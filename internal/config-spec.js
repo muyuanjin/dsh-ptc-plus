@@ -132,7 +132,7 @@ export const CONFIG_FIELDS = Object.freeze([
     default: 'stateful',
     label: '允许重声明和覆盖',
     labelEn: 'Allow redeclarations and overrides',
-    description: '同一作用域的声明和赋值可更新变量、函数、类及导入。关闭后检测跨 cell 重声明，并保护新建的 const 和 import；静态 import/export 始终可用。',
+    description: '同一作用域的声明和赋值可更新变量、函数、类及导入。选“启用名称保护”时改为检测跨 cell 重声明，并保护新建的 const 和 import；静态 import/export 始终可用。',
     descriptionEn: 'Declarations and assignments update variables, functions, classes and imports in the same scope. Disabling detects cross-cell redeclarations and protects newly created const and import bindings; static import/export remains available.',
   },
   {

@@ -25,7 +25,10 @@ const LITERAL = /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b/
 // A host identifier in the spellings a check is written with: `dsh`, `dshVersion`,
 // `DSH_VERSION`, `hostVersion`, `@deepseek-ai/dsh`. A plain `hostname` is not one,
 // and neither is `Node` — the engine floor is somebody else's contract.
-const HOST = /@deepseek-ai\/dsh|\b(?:dsh|host)\b|\b(?:dsh|host)_?[A-Za-z0-9]*?version\b/i
+// `dsh` and `host` prefix the identifiers a version check is written with:
+// `dshVersion`, `hostFloor`, `HOST_FLOOR`, `dshPkg.version`, `hostVersionAtLeast`.
+// `hostname` is the one prefix that is not a host; it is excluded by name.
+const HOST = /@deepseek-ai\/dsh\b|\b(?:dsh|host)(?!name)[A-Za-z0-9_]*/i
 // A line may mention a version only as part of a host package specifier used in
 // an error message for humans; behaviour still may not compare against it.
 const ALLOW = [/^\s*\*/m, /^\s*\/\//m]

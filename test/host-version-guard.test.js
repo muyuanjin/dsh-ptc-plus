@@ -9,6 +9,11 @@ test('a host version compared with any spelling is a violation', () => {
     "if (DSH_VERSION >= '0.2.2') enable()",
     "const pinned = '@deepseek-ai/dsh-tool-executor-ptc@0.2.2-alpha.2'",
     "if (dsh >= '0.2.2-alpha.2') enable()",
+    "if (hostEngine >= '0.2.1') enable()",
+    "if (hostFloor <= '0.2.1') settleLegacy()",
+    "const HOST_FLOOR = '0.2.1'",
+    "if (dshPkg.version < '0.2.1') settleLegacy()",
+    "if (ctx.tools?.hostVersionAtLeast?.('0.2.1')) enable()",
   ]) {
     assert.notDeepEqual(hostVersionLiteralViolations(line), [], line)
   }

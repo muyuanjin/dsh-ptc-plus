@@ -54,7 +54,7 @@ Capabilities select behavior, never a release number. Historical fixture success
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.5.1
+dsh plugin --profile <profile> add dsh-ptc-plus@0.5.3
 dsh --profile <profile> --dump-config
 ```
 
@@ -91,7 +91,7 @@ pnpm dsh --profile <profile> --dump-config
 
 ```sh
 npm pack
-dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.5.1.tgz
+dsh plugin --profile <profile> add /absolute/path/to/dsh-ptc-plus-0.5.3.tgz
 dsh --profile <profile> --dump-config
 ```
 

@@ -161,6 +161,7 @@ export function createRuntimeBridgeOwner({
   userBindingDraftForAgent,
   bindingSubmissionForAgent,
   capabilityEnvironment,
+  readPromptText = () => undefined,
 }) {
   const scope = new AsyncLocalStorage()
   const childScope = new AsyncLocalStorage()
@@ -403,6 +404,18 @@ export function createRuntimeBridgeOwner({
       throw new Error('ptc-plus: run_code definition has no output projection')
     }
     if (patchedDefinitions.has(definition)) return
+    // A host that declares its own model-facing tools never hands this plugin a
+    // tools array to adapt, so the editable prompt slots reach the model only on
+    // the definition the executor projects. A definition of another shape keeps
+    // its own text: adapting is an improvement here, never a reason to fail.
+    try {
+      const promptText = readPromptText()
+      if (promptText !== undefined) {
+        const adapted = adaptRunCodeSchema(definition, promptText)
+        definition.description = adapted.description
+        definition.parameters = adapted.parameters
+      }
+    } catch {}
     const output = definition.output
     const ownPresentationMeta = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
     const patchedPresentationMeta = (args, value) => {

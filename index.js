@@ -124,6 +124,8 @@ function runCodeDefinitionFor(tools, scope) {
 }
 
 /** Register the session-bound REPL runtime. */
+let readPromptTextRef
+
 function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, settingsForCommand) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
@@ -383,6 +385,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
       seam,
+      readPromptText: () => readPromptTextRef?.(),
       observeSession: id => observationInterest.has(id),
       readSessionLog: sessionLog.read,
       sessionConfig: activeConfig,
@@ -933,6 +936,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   // never read two different prompt-text documents. Read lazily: the settings section
   // replaces `configSource` after activation.
   const currentPromptText = () => resolvePromptTextConfig(configSource())
+readPromptTextRef = currentPromptText
   const messageOwner = createRuntimeMessageOwner(context => (
     committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
   ), sessionLog.project, () => committed !== undefined && committed.retiring !== true, handbackOwners.sessionQuery,

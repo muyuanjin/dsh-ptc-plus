@@ -27,7 +27,7 @@ const INVALID_TOOL_JSON_FAILURE = Object.freeze({
 const MALFORMED_TOOL_REJECTION_ID = 'dsh-ptc-plus-malformed-tool-json'
 const MALFORMED_TOOL_REJECTION_ARGUMENTS = '{"dsh_ptc_plus_malformed_tool_json":'
 
-function adaptRunCodeSchema(tool, promptText) {
+export function adaptRunCodeSchema(tool, promptText) {
   const parameters = tool.parameters
   const properties = isRecord(parameters) ? parameters.properties : undefined
   const code = isRecord(properties) ? properties.code : undefined

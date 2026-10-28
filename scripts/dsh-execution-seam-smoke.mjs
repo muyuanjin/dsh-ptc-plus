@@ -99,7 +99,7 @@ async function main() {
   assert.equal(adapterRow.config.serviceName, seamService)
   adapterRow.name = pathToFileURL(require.resolve(adapterRow.name)).href
   mainRow.name = pathToFileURL(require.resolve(pluginSpecifier)).href
-  mainRow.config = { userBindingsEnabled: false, cordisToolsEnabled: false }
+  mainRow.config = { userBindingsEnabled: true, cordisToolsEnabled: false }
   const root = new Context()
   const profile = await mkdtemp(join(tmpdir(), 'ptc-execution-profile-'))
   let agentScope
@@ -304,6 +304,16 @@ async function main() {
     assert.deepEqual(Object.getOwnPropertyDescriptors(state.original), state.descriptors)
     for (const record of state.originals) assert.deepEqual(Object.getOwnPropertyDescriptors(record.original), record.descriptors)
     session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    // Session projections are published only by the registry, and the registry
+    // answers registration differently on each line: a disposer one line, an
+    // awaitable handle the next. Both must leave the same units registered, so
+    // the installed registry's own checkpoint is the observable.
+    const projections = root.get('sessionProjections')
+    const projectionKeys = () => Object.keys(projections.checkpoint(session))
+    for (const key of ['ptcPlusSessionLog', 'ptcPlusRepl', 'ptcPlusBindingDraft']) {
+      assert.ok(projectionKeys().includes(key),
+        `the ${key} projection must register on the installed registry (registered: ${projectionKeys().join(', ') || 'none'})`)
+    }
     await agentScope.dispose()
     await profileTree.resolve('ptc-plus').update({ disabled: true })
     await root.loader.await()

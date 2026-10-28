@@ -13,9 +13,9 @@ import { CapabilityStatisticsStore } from './internal/capability-statistics-stor
 import { createCapabilityEnvironment } from './internal/capability-environment.js'
 import { capabilityCommandReceipt } from './internal/capability-command-receipt.js'
 import { toolSdkSchemas } from './internal/program-bindings.js'
-import { hostTransportDefinition } from './internal/host-tool-sdk.js'
+import { hostTransportDefinition, hostTransportUnreadable } from './internal/host-tool-sdk.js'
 import { createRuntimeMessageOwner, handBackRuntimeSessions } from './internal/runtime-contexts.js'
-import { createSessionLogOwner } from './internal/session-log-view.js'
+import { createSessionLogOwner, projectionRegistrationDisposer } from './internal/session-log-view.js'
 import { PTC_DELIVERY_CONTEXT } from './internal/runtime-messages.js'
 import { createCordisToolsOwner } from './internal/cordis-tools-owner.js'
 import { createEditTransportOwner, EDIT_RUN_CODE } from './internal/edit-transport-owner.js'
@@ -124,9 +124,7 @@ function runCodeDefinitionFor(tools, scope) {
 }
 
 /** Register the session-bound REPL runtime. */
-let readPromptTextRef
-
-function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, settingsForCommand) {
+function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, settingsForCommand, readPromptText) {
   const presentationGeneration = randomUUID()
   const replMemoryProjection = createReplMemoryProjection(presentationGeneration)
   const userBindingDraftProjection = createUserBindingDraftProjection(presentationGeneration)
@@ -260,13 +258,10 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
   const cancelCordisActivation = () => pendingCordisActivation?.cancel()
   const registerProjection = (projection, label) => {
     try {
-      const registration = projectionService?.register?.(projection)
       // A newer host returns a ProjectionHandle (`stateOf`/`readerFor`/`dispose`,
       // possibly async); earlier hosts returned a disposer. Accept either shape so
       // the projection is not silently dropped on the newer contract.
-      const dispose = typeof registration === 'function'
-        ? registration
-        : typeof registration?.dispose === 'function' ? () => registration.dispose() : undefined
+      const dispose = projectionRegistrationDisposer(projectionService?.register?.(projection))
       if (dispose === undefined) {
         throw new Error('ptc-plus: sessionProjections.register returned neither a disposer nor a handle')
       }
@@ -385,7 +380,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,
       seam,
-      readPromptText: () => readPromptTextRef?.(),
+      readPromptText,
       observeSession: id => observationInterest.has(id),
       readSessionLog: sessionLog.read,
       sessionConfig: activeConfig,
@@ -432,9 +427,17 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
         return replGuidance(guidancePolicies(activeConfig), resolvePromptTextConfig(activeConfig))
       },
     }))
+    let unreadableTransportReported = false
     disposers.push(ctx.on('system-prompt/assemble', async (assembly, context, next) => {
       const projected = await directSurface.assemble(assembly, context, next)
       if (runCodeDefinitionFor(ctx.tools, context?.agent) !== undefined) runtimeBridge.prepareAgent(context?.agent)
+      else if (!unreadableTransportReported && hostTransportUnreadable(ctx.tools, context?.agent)) {
+        // The host declares the reserved transport and this plugin cannot read it.
+        // Every gate that needs execution answers "unavailable", so the operator is
+        // told which of the two facts holds instead of finding the features gone.
+        unreadableTransportReported = true
+        ctx.logger?.warn?.('ptc-plus: the host tool executor declares run_code but publishes no transport definition this plugin can read; session execution stays unavailable')
+      }
       return projected
     }))
     disposers.push(() => capabilityEnvironment.dispose())
@@ -778,7 +781,7 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     try {
       candidate = record.shape === 'deferred'
         ? createDeferredRuntime()
-        : installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, () => settingsWriter)
+        : installPtCRuntime(ctx, record.config, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, () => settingsWriter, currentPromptText)
       record.runtime = candidate
     } catch (error) {
       const failedRuntime = error?.[INSTALL_CLEANUP]
@@ -933,10 +936,11 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
   const handbackOwners = Object.fromEntries(['sessions', 'sessionPersistence', 'sessionQuery'].map(name => [name, ctx.get(name)]))
   // One spelling of "the current document": the same resolved configuration the
   // reconciliation loop applies, so a delivered message and the assembled prompt can
-  // never read two different prompt-text documents. Read lazily: the settings section
-  // replaces `configSource` after activation.
+  // never read two different prompt-text documents. One holder per attachment, handed
+  // to the runtime it installs, so two attachments in one process keep their own
+  // document. Read lazily: the settings section replaces `configSource` after
+  // activation.
   const currentPromptText = () => resolvePromptTextConfig(configSource())
-readPromptTextRef = currentPromptText
   const messageOwner = createRuntimeMessageOwner(context => (
     committed?.retiring ? [] : committed?.runtime.contextsForRequest(context) ?? []
   ), sessionLog.project, () => committed !== undefined && committed.retiring !== true, handbackOwners.sessionQuery,

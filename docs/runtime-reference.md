@@ -63,6 +63,12 @@ Discovery covers current `tools` plus the advanced `repl` and `code` namespaces.
 
 For commands, prefer project-declared scripts and use an available typed tool. When direct host process access is more appropriate, inspect the executable that is actually installed and invoke it through Node.js `child_process`. Child processes inherit the recorded cell execution cwd when `options.cwd` is omitted, while an explicit `cwd` remains authoritative; the worker preserves the host execution environment needed to resolve package runners and shells. Add a shell or package runner only when the command requires its syntax or resolution; do not assume a particular shell exists.
 
+## Host Surfaces
+
+The reserved `run_code` definition is resolved from whichever surface publishes it: the tool registry answers `tools.get('run_code', scope)`, and a host that keeps the definition inside its tool executor publishes it through one of three contracted readers, `requirePtcTransport()`, `requireTransport()` or `transport()`. Those readers and the executor's own declaration reader `describe([])` are the only members invoked: an executor's remaining methods are host code this plugin does not own, and a probe that called them could dispose, stop or start host state during prompt assembly. An executor that declares the name in `describe([])` and publishes no definition through those readers is *declared but unreadable*: the plugin reports one warning and keeps session execution unavailable, which is a different fact from a host without an executor. See [ADR 0050](adr/0050-read-host-surfaces-through-their-published-contract.md).
+
+The editable prompt slots (`runCode.description`, the `code` and `description` parameter texts) are written onto that definition as owned properties, and the host descriptors they replaced are restored when the attachment is disposed. A host that publishes the slots as getter-only accessors therefore receives the delivered text, and a definition whose slots cannot be replaced keeps its own text instead of half of the plugin's.
+
 ## Configuration
 
 Capability management is experimental and defaults to off. These inputs are frozen per session; saved changes apply to new sessions or `/capabilities refresh`:

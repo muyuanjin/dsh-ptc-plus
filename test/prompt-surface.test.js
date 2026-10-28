@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { renderToolsSdk } from '@deepseek-ai/dsh-tools'
 import { fixture, orderedSurfaceSession, ptcAgent } from './plugin-fixture.js'
-import { PROMPT_SLOTS } from '../internal/prompt-text.js'
+import { PROMPT_SLOTS, PROMPT_TEXT_SCHEMA } from '../internal/prompt-text.js'
 import { ANCHOR_ASSETS, KNOWN_GAPS } from './prompt-surface-map.js'
 import { PROMPT_ANCHORS, PROMPT_CHANNELS } from '../internal/prompt-text.js'
 import { LANES } from './prompt-surface-lanes.js'
@@ -49,7 +49,11 @@ async function capture(t, { canary = false } = {}) {
   const id = `prompt-surface-${Math.random().toString(36).slice(2)}`
   const agent = ptcAgent(id, orderedSurfaceSession(id))
   const baselineSections = [{ name: 'tools:sdk', text: renderToolsSdk([]) }]
-  const baselineTools = [state.runCodeDefinition]
+  // The host definition is a live object: the plugin adapts the editable slots onto
+  // the same object the executor projects, so a reference would describe the
+  // delivered bytes instead of the bytes the host passed in. The baseline is a
+  // snapshot taken before assembly for exactly that reason.
+  const baselineTools = [structuredClone(state.runCodeDefinition)]
   const pluginSection = state.sections[0]
   const text = pluginSection.text({})
   const assembled = await state.assemble({
@@ -269,6 +273,130 @@ test('the surface gate reacts to text that no owner registered', async t => {
     'a sentence appended to a claimed block must change its hash')
   assert.equal(captured.addedSections[0].anchor, SURFACE.addedSections[0].anchor)
 })
+
+test('the editable run_code slots reach the model on either host definition shape', async t => {
+  // A host publishes the definition it dispatches through either as writable data or
+  // as getter-only accessors over its own text. The plugin owns the delivered slots,
+  // so both shapes must carry them while the attachment lives, and both must give the
+  // host its own text back when the attachment is disposed.
+  const hostText = {
+    description: 'Host text for the transport.',
+    parameters: { type: 'object', additionalProperties: false,
+      properties: {
+        code: { type: 'string', description: 'Host parameter text.' },
+        description: { type: 'string', description: 'Host summary text.' },
+      },
+      required: ['code', 'description'] },
+  }
+  for (const shape of ['writable', 'accessor', 'inherited', 'refused', 'half-refused', 'frozen-after-write']) {
+    await t.test(shape, async t => {
+      const state = fixture({})
+      t.after(() => state.dispose())
+      const definition = { name: 'run_code', output: { schema: {}, render: () => [] }, async execute() {} }
+      if (shape === 'inherited') {
+        // The host keeps its slot texts on the shape every definition inherits, so the
+        // plugin must add own properties and remove them again on disposal.
+        const base = { get description() { return hostText.description },
+          get parameters() { return hostText.parameters } }
+        Object.setPrototypeOf(definition, base)
+      } else {
+        for (const key of ['description', 'parameters']) {
+          if (shape === 'writable' || shape === 'refused' || shape === 'half-refused'
+            || shape === 'frozen-after-write') definition[key] = hostText[key]
+          else Object.defineProperty(definition, key, {
+            configurable: true, enumerable: true, get: () => hostText[key],
+          })
+        }
+      }
+      if (shape === 'refused') {
+        // A slot the host published unconfigurable cannot be replaced at all, so the
+        // definition keeps all of its own text rather than half of the plugin's.
+        Object.defineProperty(definition, 'parameters', {
+          configurable: false, enumerable: true, writable: false, value: hostText.parameters,
+        })
+      }
+      if (shape === 'half-refused') {
+        // Only the parameters can be replaced; a definition that cannot carry both
+        // keeps its own text instead of ending up with half of the plugin's.
+        Object.defineProperty(definition, 'description', {
+          configurable: false, enumerable: true, writable: false, value: hostText.description,
+        })
+      }
+      state.ctx.tools.get = name => (name === 'run_code' ? definition : undefined)
+      const id = `prompt-slots-${shape}-${Math.random().toString(36).slice(2)}`
+      const agent = ptcAgent(id, orderedSurfaceSession(id))
+      const assembly = { sections: [], contexts: [], variables: {}, tools: [definition] }
+      await state.assemble(assembly, { agent, scope: agent })
+      if (shape === 'refused' || shape === 'half-refused') {
+        assert.equal(definition.description, hostText.description,
+          'a slot that cannot be replaced keeps the host text rather than half of ours')
+        assert.deepEqual(definition.parameters, hostText.parameters)
+        return
+      }
+      assert.notEqual(definition.description, hostText.description,
+        'the delivered description must be the plugin text for this attachment')
+      assert.match(definition.description, /session-bound persistent REPL/u)
+      assert.notDeepEqual(definition.parameters, hostText.parameters,
+        'the delivered parameter texts must be the plugin text for this attachment')
+      assert.match(JSON.stringify(definition.parameters), /PTC/u)
+      // The prompt document can change while the definition stays the same object, so
+      // a second assembly re-applies the slots without mistaking them for the host's.
+      await state.assemble(assembly, { agent, scope: agent })
+      assert.match(definition.description, /session-bound persistent REPL/u)
+      if (shape === 'frozen-after-write') {
+        // A host that freezes the slot after delivery keeps the text this attachment
+        // already wrote; the restore cannot be forced and must not throw on disposal.
+        Object.defineProperty(definition, 'description', {
+          configurable: false, enumerable: true, writable: false, value: definition.description,
+        })
+        await state.dispose()
+        assert.match(definition.description, /session-bound persistent REPL/u)
+        assert.deepEqual(definition.parameters, hostText.parameters)
+        return
+      }
+      await state.dispose()
+      assert.equal(definition.description, hostText.description,
+        'disposal must give the host its own description back')
+      assert.deepEqual(definition.parameters, hostText.parameters,
+        'disposal must give the host its own parameter texts back')
+      if (shape === 'accessor') {
+        const descriptor = Object.getOwnPropertyDescriptor(definition, 'description')
+        assert.equal(typeof descriptor.get, 'function', 'the host accessor is restored, not replaced by data')
+        assert.equal(definition.description, hostText.description)
+      }
+      if (shape === 'inherited') {
+        assert.equal(Object.hasOwn(definition, 'description'), false,
+          'a slot the host inherited is removed again, so the inherited text is what the model reads')
+        assert.equal(definition.description, hostText.description)
+      }
+    })
+  }
+})
+test('two attachments in one process each deliver their own prompt document', async t => {
+  // The prompt document is configuration, so it belongs to the attachment that
+  // applied it. A process-wide holder would make the first attachment's delivery read
+  // whichever document the last one installed.
+  const slot = 'runCode.description'
+  const stateFor = (text) => fixture({ promptText: JSON.stringify({
+    schema: PROMPT_TEXT_SCHEMA, overrides: { [slot]: text },
+  }) })
+  const first = stateFor('First attachment text for the transport.')
+  const second = stateFor('Second attachment text for the transport.')
+  t.after(async () => { await Promise.all([first.dispose(), second.dispose()]) })
+  for (const [state, own, other] of [
+    [first, /First attachment text/u, /Second attachment text/u],
+    [second, /Second attachment text/u, /First attachment text/u],
+  ]) {
+    const id = `prompt-attachment-${Math.random().toString(36).slice(2)}`
+    const agent = ptcAgent(id, orderedSurfaceSession(id))
+    await state.assemble({ sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+      { agent, scope: agent })
+    assert.match(state.runCodeDefinition.description, own)
+    assert.doesNotMatch(state.runCodeDefinition.description, other,
+      'an attachment must never deliver another attachment\'s document')
+  }
+})
+
 test('every registered slot belongs to a registry anchor', () => {
   const claimed = new Set(Object.values(ANCHOR_ASSETS).flat())
   for (const slot of PROMPT_SLOTS) {

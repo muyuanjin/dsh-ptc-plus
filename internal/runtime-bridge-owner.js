@@ -25,7 +25,7 @@ import {
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
 import { adaptRunCodeSchema } from './direct-surface-owner.js'
-import { hostTransportDefinition } from './host-tool-sdk.js'
+import { hostTransportDefinition, isBatchSubmission } from './host-tool-sdk.js'
 import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { POST_EDIT_KEY } from './session-journal-schema.js'
@@ -188,6 +188,8 @@ export function createRuntimeBridgeOwner({
   })
   let currentConfig = sessions.config
   const patchedDefinitions = new Map()
+  /** The host descriptors this attachment replaced on each definition's slots. */
+  const slotPatches = new Map()
   const pending = new WeakMap()
   const nativeRunCodeHandoffs = new Set()
   let active = true
@@ -397,11 +399,53 @@ export function createRuntimeBridgeOwner({
   }
 
 /**
+ * Write one editable run_code slot onto the host's definition.
+ *
+ * A host may publish the slot as writable data or as a getter-only accessor over
+ * its own text, and strict-mode assignment throws on the latter. An owned property
+ * definition reaches both shapes, so the plugin never fails silently to deliver the
+ * text it was asked to deliver.
+ * @param {object} definition - the host's live run_code definition.
+ * @param {string} key - the definition field being replaced.
+ * @param {unknown} value - the text the plugin owns.
+ * @returns {boolean} whether the field now holds that value.
+ */
+function writeSlot(definition, key, value) {
+  const own = Object.getOwnPropertyDescriptor(definition, key)
+  try {
+    Object.defineProperty(definition, key, {
+      configurable: own?.configurable ?? true,
+      enumerable: own?.enumerable ?? true,
+      writable: true,
+      value,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Put one slot back to the descriptor the host published before this plugin. */
+function restoreSlot(definition, key, descriptor) {
+  try {
+    if (descriptor === undefined) delete definition[key]
+    else Object.defineProperty(definition, key, descriptor)
+  } catch {
+    // A host that made the slot non-configurable after the plugin replaced it keeps
+    // the last written text; the restore cannot be forced, and the caller that
+    // rewrote it owns the consequence.
+  }
+}
+
+/**
  * The editable run_code slots have to reach whichever definition the host lets this
  * plugin own. Two writes, one decision: if the host's parameter texts cannot be
- * replaced, the definition keeps all of its own text rather than half of ours.
+ * replaced, the definition keeps all of its own text rather than half of ours. The
+ * descriptors the write replaced are recorded once, so re-applying the current
+ * prompt document on every request can never mistake the plugin's own text for the
+ * host's, and disposal can restore what the host still publishes.
  */
-function applyEditableSlots(definition, promptText) {
+function applyEditableSlots(definition, promptText, slotPatches) {
   if (promptText === undefined) return
   let adapted
   try {
@@ -409,14 +453,24 @@ function applyEditableSlots(definition, promptText) {
   } catch {
     return
   }
-  const hadParameters = Object.hasOwn(definition, 'parameters')
-  try {
-    definition.parameters = adapted.parameters
-    definition.description = adapted.description
-  } catch {
-    if (!hadParameters) delete definition.parameters
+  const recorded = slotPatches.get(definition)
+  if (recorded !== undefined) {
+    // Re-applied on every request: the descriptors recorded by the first write are
+    // the ones disposal restores, so a later application can never mistake the
+    // plugin's own text for the host's. A slot the host has since made unreplaceable
+    // keeps the text this attachment already delivered.
+    writeSlot(definition, 'parameters', adapted.parameters)
+    writeSlot(definition, 'description', adapted.description)
     return
   }
+  const ownParameters = Object.getOwnPropertyDescriptor(definition, 'parameters')
+  const ownDescription = Object.getOwnPropertyDescriptor(definition, 'description')
+  if (!writeSlot(definition, 'parameters', adapted.parameters)) return
+  if (!writeSlot(definition, 'description', adapted.description)) {
+    restoreSlot(definition, 'parameters', ownParameters)
+    return
+  }
+  slotPatches.set(definition, new Map([['parameters', ownParameters], ['description', ownDescription]]))
 }
 
   const patchRunCodeDefinition = (agent) => {
@@ -431,7 +485,7 @@ function applyEditableSlots(definition, promptText) {
     // tools array to adapt, so the editable prompt slots reach the model only on
     // the definition the executor projects. Re-applied on every request, because
     // the prompt document can change while the definition stays the same object.
-    applyEditableSlots(definition, readPromptText())
+    applyEditableSlots(definition, readPromptText(), slotPatches)
     if (patchedDefinitions.has(definition)) return
     const output = definition.output
     const ownPresentationMeta = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
@@ -494,10 +548,10 @@ function applyEditableSlots(definition, promptText) {
       // nested success. Capture its canonical value before policy; the private
       // relation is admitted only if policy retains that same frozen value.
       if (current?.deferredSettlement?.current === current && derived !== undefined
-        && current.exec === exec && exec.token !== undefined && exec.parent !== undefined
+        && current.exec === exec && exec.token !== undefined
         && current.id === sessionId(exec.agent) && derived.agent === exec.agent
-        && derived.callId === exec.callId && derived.rootCallId === exec.rootCallId
-        && derived.parent === exec.parent && deepEqualJson(derived.arguments, exec.arguments)
+        && isDerivedExecution(derived, exec)
+        && deepEqualJson(derived.arguments, exec.arguments)
         && current.presentationMetaCalls === undefined && result.isError === false
         && result.value !== null && typeof result.value === 'object'
         && Object.isFrozen(result.value) && result.meta?.[JOURNAL_KEY] === undefined
@@ -641,13 +695,30 @@ function applyEditableSlots(definition, promptText) {
 
   const releaseSeam = seam.installExecute(patchedRun)
 
+  /**
+   * Whether this execution is the derived execution the edit transport submitted.
+   *
+   * A registry host runs the very object the plugin built, so the call id, the root
+   * call and the parent token it carries all prove the relation. The batch contract
+   * assigns its own identity instead: the parent token is the host's own and the
+   * root call is whichever call that host treats as direct. What survives there is
+   * the call id this plugin chose, which the host matched the batch result back to,
+   * together with the dispatch record; the derived source is compared beside it.
+   */
+  const isDerivedExecution = (derived, exec) => {
+    if (derived === null || typeof derived !== 'object' || exec === null || typeof exec !== 'object') return false
+    if (derived.callId !== exec.callId) return false
+    if (isBatchSubmission(derived)) return true
+    return exec.parent !== undefined
+      && derived.rootCallId === exec.rootCallId && derived.parent === exec.parent
+  }
+
   const ownedDerivedScope = (exec, executionArguments = exec.arguments) => {
     const inherited = scope.getStore()
     const derived = inherited?.derivedExecution
     if (inherited?.deferredSettlement === undefined
       || inherited.id !== sessionId(exec.agent) || derived?.agent !== exec.agent
-      || derived.callId !== exec.callId || derived.rootCallId !== exec.rootCallId
-      || derived.parent !== exec.parent || exec.name !== RUN_CODE
+      || !isDerivedExecution(derived, exec) || exec.name !== RUN_CODE
       || !deepEqualJson(derived.arguments, executionArguments)) return undefined
     return inherited
   }
@@ -831,8 +902,7 @@ function applyEditableSlots(definition, promptText) {
       const derived = current.derivedExecution
       const privateMetadata = projection !== undefined && projection.exec === exec
         && deferred.current === current && current.exec === exec && current.id === id
-        && derived?.agent === exec.agent && derived.callId === exec.callId
-        && derived.rootCallId === exec.rootCallId && derived.parent === exec.parent
+        && derived?.agent === exec.agent && isDerivedExecution(derived, exec)
         && deepEqualJson(derived.arguments, exec.arguments)
         && projection.token === exec.token && projection.value === result?.value
         && result.isError === false && deepEqualJson(projection.meta, result.meta)
@@ -899,6 +969,10 @@ function applyEditableSlots(definition, promptText) {
         }
       }
       patchedDefinitions.clear()
+      for (const [definition, recorded] of slotPatches) {
+        for (const [key, descriptor] of recorded) restoreSlot(definition, key, descriptor)
+      }
+      slotPatches.clear()
       try {
         await sessions.dispose()
       } catch (error) {

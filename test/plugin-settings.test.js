@@ -777,7 +777,7 @@ test('degrades an incompatible session projection and releases its callable inje
   assert.equal(host.projectionInjections.length, 2)
   assert.match(
     String(host.ctx.logger.warnings[0]?.[1]?.message),
-    /sessionProjections\.register did not return a disposer/,
+    /sessionProjections\.register returned neither a disposer nor a handle/,
   )
   for (const cleanup of host.cleanups.reverse()) await cleanup()
   assert.equal(executionInstalled(host.runtime), false)
@@ -1052,7 +1052,7 @@ test('handles projection registration through the real asynchronous Cordis injec
   assert.ok(host.listeners.has('tools/execute'))
   assert.match(
     String(host.ctx.logger.warnings[0]?.[1]?.message),
-    /sessionProjections\.register did not return a disposer/,
+    /sessionProjections\.register returned neither a disposer nor a handle/,
   )
 
   for (const cleanup of host.cleanups.reverse()) await cleanup()

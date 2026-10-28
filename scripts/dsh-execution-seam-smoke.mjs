@@ -102,6 +102,12 @@ async function main() {
   mainRow.config = { userBindingsEnabled: true, cordisToolsEnabled: false }
   const root = new Context()
   const profile = await mkdtemp(join(tmpdir(), 'ptc-execution-profile-'))
+  // The global binding store is part of the session environment, so the proof has to
+  // own it: with the feature enabled the default store resolves under DSH_HOME, and
+  // an inherited maintainer store would put unmanaged local entries into every cell
+  // this smoke asserts on. The temporary profile keeps the proof a statement about
+  // the plugin rather than about the machine that ran it.
+  process.env.DSH_HOME = join(profile, 'dsh-home')
   let agentScope
   try {
     root.effect(() => root.provide('agents', { list: () => [] }))

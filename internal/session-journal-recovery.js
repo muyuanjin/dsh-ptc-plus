@@ -108,20 +108,24 @@ function reachableFrom(nodes, head) {
 }
 
 /**
- * Binding names a node recorded.
+ * Binding names a settlement journal recorded.
  *
  * The recorded values are the only evidence that names a durable binding today;
  * `unrecordedBindings` names the ones the codec could not transfer, and a
  * `kind: "binding"` save names one explicitly. A checkpoint save never counts.
  */
-function recordedBindingNames(node) {
-  const journal = node?.journal
+function journalBindingNames(journal) {
   if (journal === undefined) return []
   return [...new Set([
     ...(journal.values ?? []).map(value => value.name),
     ...(journal.unrecordedBindings ?? []),
     ...bindingNamesOfOperations(journal.operations),
   ].filter(name => typeof name === 'string'))]
+}
+
+/** Binding names an installed node recorded. */
+function recordedBindingNames(node) {
+  return journalBindingNames(node?.journal)
 }
 
 function applyOperations(state, operations, nodeIndex) {
@@ -146,6 +150,117 @@ function applyOperations(state, operations, nodeIndex) {
   if (transition.restored) {
     state.trusted = true
     state.volatileSuffix.length = 0
+  }
+}
+
+/**
+ * Adopt the relation a record states about the cell it revised.
+ *
+ * The relation belongs to the fold, because only the fold knows the path that
+ * builds the environment. An accepted edit claims the revision *replaces* the cell
+ * it edited, so the revision takes that cell's place in the recorded order: it
+ * continues from the target's parent and every cell that followed the target
+ * continues from the revision. Appending the revision after those cells instead
+ * leaves them replaying an environment the edit already rewrote, with the
+ * declarations they read gone and the revision not yet in place.
+ *
+ * `installed` says whether this settlement puts a cell on the path. A contracted
+ * revision installs nothing, so the cells that followed the target bridge to the
+ * target's parent, and only a head that was the target itself has to move.
+ *
+ * The returned record of what changed is what lets a rejected settlement put the
+ * path back: nothing this adoption did survives a settlement the fold refuses.
+ */
+function adoptSupersession(state, record, { installed }) {
+  const superseded = state.editRewritesHistory && record.supersedes !== undefined
+    ? state.nodes.findIndex(node => node.callSeq === record.supersedes) : -1
+  const adoption = {
+    superseded,
+    previousHead: state.head,
+    supersededBindings: new Set(state.supersededBindings),
+    supersessions: state.supersessions.length,
+    children: [],
+    parent: state.head,
+    head: undefined,
+  }
+  if (superseded < 0) {
+    // No relation: the settlement appends to the head, as it always has.
+    adoption.head = installed ? undefined : state.head
+    return adoption
+  }
+  const parent = state.nodes[superseded].parent
+  adoption.parent = parent
+  for (let child = 0; child < state.nodes.length; child += 1) {
+    if (state.nodes[child].parent === superseded) adoption.children.push(child)
+  }
+  // The head is the last recorded cell. It keeps its place when the target is on
+  // its path behind other cells, because those cells now reach the same head
+  // through the revision; otherwise the revision is the newest cell and the head.
+  const targetOnPath = reachableFrom(state.nodes, state.head).has(superseded)
+  if (installed) adoption.head = targetOnPath && state.head !== superseded ? state.head : undefined
+  else adoption.head = state.head === superseded ? parent : state.head
+  return adoption
+}
+
+/**
+ * Record the relation as the fact the model is owed.
+ *
+ * Only names the record proves count. A durable declaration that the replay
+ * re-establishes is not evidence about the superseded cell, and claiming it
+ * would report a binding this fold cannot see. What the revision supplies is the
+ * caller's answer, because a settlement the fold refused to install supplies
+ * nothing; a cell the fold installs supplies the names its journal recorded.
+ */
+function recordSupersession(state, record, adoption, suppliedNames) {
+  if (adoption.superseded < 0) return
+  const supplied = new Set(suppliedNames)
+  for (const name of recordedBindingNames(state.nodes[adoption.superseded])) {
+    if (!supplied.has(name)) state.supersededBindings.add(name)
+  }
+  state.supersessions.push(Object.freeze({
+    supersededCallSeq: record.supersedes,
+    supersedingCallSeq: record.call.seq,
+  }))
+}
+
+/**
+ * Fold one accepted record as a settlement of the recorded path.
+ *
+ * `installed` is false for a settlement the fold contracts: it puts no cell on the
+ * path and supplies no name, while the relation it states is still the log's fact.
+ * Either way the relation is adopted first and the state operations are applied
+ * last, so a settlement that throws leaves the path, the children it re-parented
+ * and the relation it recorded exactly as it found them.
+ */
+function applyAdoptedRecord(state, record, { journal, installed = true, restoredFromRecord = false }) {
+  const adoption = adoptSupersession(state, record, { installed })
+  const index = installed
+    ? state.nodes.push(Object.freeze({
+      code: record.code,
+      journal,
+      callSeq: record.call.seq,
+      parent: adoption.parent,
+      ...(restoredFromRecord ? { restoredFromRecord: true } : {}),
+      ...(record.result.userBindings === undefined ? {} : { userBindings: record.result.userBindings }),
+    })) - 1
+    : undefined
+  const inherited = installed ? index : adoption.parent
+  for (const child of adoption.children) {
+    state.nodes[child] = Object.freeze({ ...state.nodes[child], parent: inherited })
+  }
+  state.head = adoption.head === undefined ? index : adoption.head
+  try {
+    recordSupersession(state, record, adoption, installed ? journalBindingNames(journal) : [])
+    applyOperations(state, journal.operations, index)
+  } catch (error) {
+    if (index !== undefined) state.nodes.pop()
+    state.head = adoption.previousHead
+    for (const child of adoption.children) {
+      state.nodes[child] = Object.freeze({ ...state.nodes[child], parent: adoption.superseded })
+    }
+    state.supersededBindings = adoption.supersededBindings
+    state.supersessions.length = adoption.supersessions
+    throw error
   }
 }
 
@@ -216,17 +331,10 @@ function applyRecord(state, record, invalidCallSeqs) {
     // the owner that read `Date.now()` or `process.pid` is gone, and the next
     // environment inherits the durable computation, not the live cache.
     if (!state.liveOnlyLost && journal.values !== undefined && journal.values.length > 0) {
-      const node = Object.freeze({
-        code,
-        journal,
-        callSeq: call.seq,
-        parent: state.head,
-        restoredFromRecord: true,
-        ...(result.userBindings === undefined ? {} : { userBindings: result.userBindings }),
-      })
-      const index = state.nodes.push(node) - 1
-      state.head = index
-      applyOperations(state, journal.operations, index)
+      // The relation is adopted for this settlement too: an accepted revision that
+      // settled volatile is still the revision the record names, so it replaces its
+      // target on the path and installs its own recorded values.
+      applyAdoptedRecord(state, record, { journal, restoredFromRecord: true })
       return
     }
     // A released live environment is reported as a contracted cell: the model
@@ -240,7 +348,12 @@ function applyRecord(state, record, invalidCallSeqs) {
         : journal.volatileReason ?? 'volatile cell',
       ...(volatileBindings.length === 0 || state.liveOnlyLost === true ? {} : { bindings: volatileBindings }),
     })
-    applyOperations(state, journal.operations, undefined)
+    // A contracted revision still replaces the cell it edited. Leaving the target
+    // on the path would keep building an environment the accepted edit already
+    // ended, and the relation is what tells the model those names are withdrawn
+    // rather than lost. The settlement installs nothing, so it supplies no name:
+    // every name the target recorded is withdrawn by this record.
+    applyAdoptedRecord(state, record, { journal, installed: false })
     return
   }
   if (!state.trusted && !state.surfaceContracted) {
@@ -248,54 +361,9 @@ function applyRecord(state, record, invalidCallSeqs) {
     state.volatileSuffix.length = 0
   }
   // A record may declare that it is the revision of an earlier cell. Adoption of
-  // that relation belongs to the fold, because only the fold knows the path that
-  // builds the environment: the superseded cell keeps its place in the record and
-  // leaves the path, and the cells that followed it continue from its parent.
-  const superseded = state.editRewritesHistory && record.supersedes !== undefined
-    ? state.nodes.findIndex(node => node.callSeq === record.supersedes) : -1
-  const previousHead = state.head
-  const supersededBindings = new Set(state.supersededBindings)
-  const supersessions = state.supersessions.length
-  const repaired = []
-  if (superseded >= 0) {
-    const parent = state.nodes[superseded].parent
-    for (let child = 0; child < state.nodes.length; child += 1) {
-      if (state.nodes[child].parent !== superseded) continue
-      state.nodes[child] = Object.freeze({ ...state.nodes[child], parent })
-      repaired.push(child)
-    }
-  }
-  const node = Object.freeze({
-    code,
-    journal,
-    callSeq: call.seq,
-    parent: previousHead,
-    ...(result.userBindings === undefined ? {} : { userBindings: result.userBindings }),
-  })
-  const index = state.nodes.push(node) - 1
-  state.head = index
-  if (superseded >= 0) {
-    // Only names the record proves count. A durable declaration that the replay
-    // re-establishes is not evidence about the superseded cell, and claiming it
-    // would report a binding this fold cannot see.
-    const supplied = new Set(recordedBindingNames(node))
-    for (const name of recordedBindingNames(state.nodes[superseded])) {
-      if (!supplied.has(name)) state.supersededBindings.add(name)
-    }
-    state.supersessions.push(Object.freeze({
-      supersededCallSeq: record.supersedes,
-      supersedingCallSeq: record.call.seq,
-    }))
-  }
-  try {
-    applyOperations(state, journal.operations, index)
-  } catch (error) {
-    state.nodes.pop()
-    state.head = previousHead
-    state.supersededBindings = supersededBindings
-    state.supersessions.length = supersessions
-    throw error
-  }
+  // that relation, its re-parented children and the node this record puts on the
+  // path are one settlement: a record the fold refuses leaves none of them behind.
+  applyAdoptedRecord(state, record, { journal })
 }
 
 function recordEventSeq(record) {
@@ -1502,6 +1570,12 @@ function normalizePostEditFact(facts, call, resultEvent, result, replayPostEdit,
   let derived
   try {
     derived = normalizeDeferredEditSettlement(post.meta, target?.callSeq)
+    // The derived metadata is a published settlement of its own, so it carries the
+    // same proof the root journal does. Comparing the two recorded journal copies
+    // proves only that they agree with each other; an edit that changed both and
+    // left this proof behind no longer reproduces the settlement it published, and
+    // its journal is then not evidence for the bindings the revision declares.
+    requireRecordedSettlementProof(post.meta, derived.journal)
   } catch (error) {
     return fail(error.message)
   }
@@ -1879,9 +1953,14 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
             }
             requireRecordedDiagnosticWording(meta, journal)
             // The Host states the outcome of the cell it settled; a record whose
-            // completion or status contradicts it was edited after publication.
-            requireRecordedSettlementProof(meta, journal, typeof event.data?.isError === 'boolean'
-              ? event.data.isError : undefined)
+            // completion or status contradicts it was edited after publication. The
+            // Host records that outcome on the result message it appends, so the
+            // message is read first; a log that carries it on the event instead is
+            // read the same way.
+            const hostIsError = typeof event.data?.message?.isError === 'boolean'
+              ? event.data.message.isError
+              : typeof event.data?.isError === 'boolean' ? event.data.isError : undefined
+            requireRecordedSettlementProof(meta, journal, hostIsError)
             let postEdit
             try {
               postEdit = normalizePostEditFact(state.eventFacts, call, event, normalized, undefined, state.executableCalls)

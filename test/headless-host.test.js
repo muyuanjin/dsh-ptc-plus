@@ -419,6 +419,26 @@ test('checks generated tools settings against the public Host schema, independen
   assert.throws(() => validateHeadlessRuntimeConfig(rows, 'invalid tools settings', runtime), /public DSH tools config/)
 })
 
+test('a host that publishes no tools config schema reports no schema fault', async t => {
+  // The composition row is the only tools configuration such a host owns, so the
+  // schema check has nothing to validate. Reporting the missing schema as an invalid
+  // configuration tells the operator their settings are wrong when the harness is.
+  const root = await mkdtemp(join(tmpdir(), 'ptc-schema-less-host-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const tools = join(root, 'node_modules', '@deepseek-ai', 'dsh-tools')
+  await mkdir(tools, { recursive: true })
+  await writeFile(join(tools, 'package.json'),
+    JSON.stringify({ name: '@deepseek-ai/dsh-tools', version: '0.0.0-fixture', main: 'index.js' }))
+  await writeFile(join(tools, 'index.js'), 'exports.ToolRuntime = class ToolRuntime {}\n')
+  await writeFile(join(root, 'entry.cjs'), '')
+  const schemaLess = { ...runtime, dshEntry: join(root, 'entry.cjs') }
+  const rows = parseConfigDump(headlessConfigPatch(configRows(), schemaLess))
+  assert.equal(validateHeadlessRuntimeConfig(rows, 'schema-less Host', schemaLess), true)
+  const wrong = rows.map(row => (row.id === 'tool-executor-ptc' ? { ...row, disabled: true } : row))
+  assert.throws(() => validateHeadlessRuntimeConfig(wrong, 'schema-less Host', schemaLess),
+    /does not enable tool-executor-ptc/)
+})
+
 test('replaces both parts of the split host persona while retaining legacy configuration', () => {
   const rows = configRows()
   const prompt = rows.find(row => row.id === 'system-prompt').config

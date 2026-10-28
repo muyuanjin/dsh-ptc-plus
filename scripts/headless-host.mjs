@@ -523,10 +523,17 @@ export function validateHeadlessRuntimeConfig(rows, label, runtime) {
   const toolsRow = policy.presentation.kind === 'registry'
     ? configRow(rows, 'tools', label)
     : rows.find(row => row.id === 'tools') ?? { id: 'tools' }
-  try {
-    hostToolRuntime(runtime.dshEntry).Config(structuredClone(toolsRow.config ?? {}))
-  } catch (error) {
-    throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} violates the public DSH tools config: ${error.message}`, { cause: error })
+  const tools = hostToolRuntime(runtime.dshEntry)
+  // A host whose tool runtime publishes no configuration schema owns no tools
+  // configuration at all: the same shape decision that selects the composition row
+  // above. Validating a row against a schema the host never published reports a shape
+  // difference as a configuration fault, and hides the real answer from the operator.
+  if (typeof tools?.Config === 'function') {
+    try {
+      tools.Config(structuredClone(toolsRow.config ?? {}))
+    } catch (error) {
+      throw new Error(`${HEADLESS_CONFIG_CODE}: ${label} violates the public DSH tools config: ${error.message}`, { cause: error })
+    }
   }
   // The presentation must be expressed in the shape the installed host
   // declared: a registry field, or the composition row that selects its

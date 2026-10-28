@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   dispatchToolCall,
   hostToolExecutor,
+  hostTransportUnreadable,
   resolveHostExport,
   sessionExecutionAvailable,
 } from '../internal/host-tool-sdk.js'
@@ -117,30 +118,54 @@ test('an undescribable executor is treated as owning nothing, not as a failure',
   assert.equal(hostToolExecutor(registryHost(undefined).tools, {}), undefined)
 })
 
-test('a throwing accessor does not stop the search for the published definition', () => {
+test('a throwing reader does not stop the search for the published definition', () => {
   const transport = definition()
   class PartialExecutor {
     describe() { return { schemas: [], knownNames: [RUN_CODE] } }
-    unavailable() { throw new Error('runtime generation is gone') }
+    requireTransport() { throw new Error('runtime generation is gone') }
     transport() { return transport }
   }
   assert.equal(sessionExecutionAvailable(executorHost(new PartialExecutor()).tools, {}), true)
 })
 
 test('a transport-owning executor that publishes no definition proves nothing', () => {
-  // `describe` declares the reserved name, but every zero-argument reader returns
-  // a lookalike: half a definition, a non-callable renderer, a non-object, or
-  // nothing at all. The surface then answers "unknown", so no caller mistakes a
-  // lookalike for this host's transport.
+  // `describe` declares the reserved name, but both contracted readers answer with
+  // a lookalike: half a definition, a non-callable renderer, a non-object. The
+  // surface then answers "unknown", so no caller mistakes a lookalike for this
+  // host's transport.
   class DeclaredExecutorWithoutDefinition {
     describe() { return { schemas: [], knownNames: [RUN_CODE] } }
-    halfDefinition() { return { name: RUN_CODE, execute() {} } }
-    rendererWithoutCall() { return { name: RUN_CODE, execute() {}, output: { schema: {}, render: [] } } }
-    outputWithoutRenderer() { return { name: RUN_CODE, execute() {}, output: { schema: {} } } }
-    scalar() { return RUN_CODE }
-    empty() { return undefined }
+    requireTransport() { return { name: RUN_CODE, execute() {} } }
+    transport() { return RUN_CODE }
   }
   assert.equal(sessionExecutionAvailable(executorHost(new DeclaredExecutorWithoutDefinition()).tools, {}), false)
+})
+
+test('a declared transport this plugin cannot read is reported, not called away', () => {
+  // The executor declares the reserved name and publishes the definition through a
+  // reader that needs an argument this plugin does not have. Only the contracted
+  // reader is asked: no other member is invoked, the miss is cached, and the gate
+  // answers "declared but unreadable" instead of "this host has no executor".
+  const invoked = []
+  class ArgumentReader {
+    describe() { return { schemas: [], knownNames: [RUN_CODE] } }
+    requireTransport(scope) {
+      invoked.push('requireTransport')
+      if (scope === undefined) throw new TypeError('the reading scope is required')
+      return definition()
+    }
+    cancel() { invoked.push('cancel') }
+    flush() { invoked.push('flush') }
+  }
+  const host = executorHost(new ArgumentReader())
+  assert.equal(sessionExecutionAvailable(host.tools, {}), false)
+  assert.equal(hostTransportUnreadable(host.tools, {}), true)
+  assert.deepEqual(invoked, ['requireTransport'])
+  assert.equal(sessionExecutionAvailable(host.tools, {}), false)
+  assert.equal(hostTransportUnreadable(host.tools, {}), true)
+  assert.deepEqual(invoked, ['requireTransport', 'requireTransport'],
+    'only the contracted reader is asked, and a scope that mounts it later can still answer')
+  assert.equal(hostTransportUnreadable(registryHost(undefined).tools, {}), false)
 })
 
 test('a host that publishes no tool-schema renderers fails the load with its diagnostic', async () => {

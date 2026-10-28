@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
 import { parse as parseJavaScript } from '@babel/parser'
-import { isHostServicePackageName, manifestDigest, probePackages, readManifest, refreshDevelopmentGraph, resolveChannel, serializeManifest, validateManifest, verifyInstalledChannel, verifyInstalledHostGraph } from '../scripts/host-channel-manifest.mjs'
+import { isHostServicePackageName, manifestDigest, probePackages, readManifest, refreshDevelopmentGraph, resolveChannel, satisfiesRange, serializeManifest, validateManifest, verifyInstalledChannel, verifyInstalledHostGraph, describeDevelopmentGraph } from '../scripts/host-channel-manifest.mjs'
 
 const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-atomic-write',
@@ -305,33 +305,90 @@ test('generates one channel manifest from dist-tags and installs it on demand', 
   assert.match(hostSuite, /exposePluginDependencies\(consumer\)/)
 })
 
-test('resolves each channel from its own dist-tag and records off-train packages apart', () => {
-  const packages = ['@deepseek-ai/dsh', '@deepseek-ai/dsh-tools', '@deepseek-ai/cordis']
-  const packument = (tags, versions) => ({ 'dist-tags': tags, versions: Object.fromEntries(
-    versions.map(version => [version, { version, dist: { integrity: `sha512-${version}` } }]),
+test('the declared range a channel install resolves is read the way npm reads it', () => {
+  const cases = [
+    ['4.0.5', '~4.0.5', true],
+    ['4.1.0', '~4.0.5', false],
+    ['4.0.4', '~4.0.5', false],
+    ['4.0.5', '4.0.5', true],
+    ['4.0.5', '=4.0.5', true],
+    ['4.0.5', '4.0.6', false],
+    ['4.0.6', '>4.0.5', true],
+    ['4.0.5', '>4.0.5', false],
+    ['4.0.5', '<=4.0.5', true],
+    ['4.0.4', '<4.0.5', true],
+    ['4.5.0', '^4.0.5', true],
+    ['4.0.4', '^4.0.5', false],
+    ['0.2.1', '^0.2.0', true],
+    ['0.3.0', '^0.2.0', false],
+    ['0.0.2', '^0.0.2', true],
+    ['0.0.3', '^0.0.2', false],
+    ['3.0.0', '*', true],
+    ['3.0.0', 'x', true],
+    ['3.0.0', '>=2.0.0 <4.0.0', true],
+    ['4.0.0', '>=2.0.0 <4.0.0', false],
+    ['2.5.0', '^3.0.0 || ^2.0.0', true],
+    // A prerelease only joins a range that names a prerelease of the same release.
+    ['4.0.6-alpha.1', '~4.0.5', false],
+    ['4.0.6-alpha.2', '~4.0.6-alpha.1', true],
+    ['4.0.6-beta.1', '~4.0.6-alpha.1', true],
+    ['4.0.6', '~4.0.6-alpha.1', true],
+    ['4.1.0-alpha.1', '~4.0.6-alpha.1', false],
+    ['4.0.6-alpha', '~4.0.6-alpha.1', false],
+    ['4.0.6-alpha.1', '~4.0.6-alpha', true],
+    ['4.0.6-2', '~4.0.6-alpha', false],
+  ]
+  for (const [version, range, expected] of cases) {
+    assert.equal(satisfiesRange(version, range), expected, `${version} against ${range}`)
+  }
+  // A range this file cannot read must not silently pin the wrong bytes.
+  assert.throws(() => satisfiesRange('4.0.5', '^4'), /not a semantic version/)
+  assert.throws(() => satisfiesRange('not-a-version', '*'), /not a semantic version/)
+})
+
+test('resolves each channel from its own dist-tag and pins the off-train packages it installs', () => {
+  const packages = ['@deepseek-ai/dsh', '@deepseek-ai/dsh-tools', '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-tool-executor-ptc']
+  const packument = (tags, versions, extra = () => ({})) => ({ 'dist-tags': tags, versions: Object.fromEntries(
+    versions.map(version => [version, { version, dist: { integrity: `sha512-${version}` }, ...extra(version) }]),
   ) })
   const packuments = {
+    // The release declares the cordis range an install of this channel resolves.
     '@deepseek-ai/dsh': packument({ latest: '7.0.0', next: '8.0.0-beta.3', alpha: '9.0.0-alpha.1' },
-      ['7.0.0', '8.0.0-beta.3', '9.0.0-alpha.1']),
+      ['7.0.0', '8.0.0-beta.3', '9.0.0-alpha.1'],
+      () => ({ dependencies: { '@deepseek-ai/cordis': '~4.0.5' } })),
     // A package whose own dist-tags lag the release train joins at the release version.
     '@deepseek-ai/dsh-tools': packument({ latest: '0.0.1-rc.1', next: '0.0.1-rc.1' }, ['0.0.1-rc.1', '8.0.0-beta.3']),
-    // A package outside the release train is named, not pinned.
-    '@deepseek-ai/cordis': packument({ latest: '4.0.5', next: '4.0.6-alpha.1' }, ['4.0.5', '4.0.6-alpha.1']),
+    // A package outside the release train is pinned at the version that range resolves to.
+    '@deepseek-ai/cordis': packument({ latest: '4.0.6-alpha.2', next: '4.0.6-alpha.2' },
+      ['4.0.5', '4.0.6-alpha.1', '4.0.6-alpha.2']),
+    // A package the release neither publishes nor depends on is not part of an install.
+    '@deepseek-ai/dsh-tool-executor-ptc': packument({ latest: '9.0.0-alpha.1' }, ['9.0.0-alpha.1']),
   }
   const alpha = resolveChannel(packuments, { channel: 'alpha', distTag: 'alpha', blocks: false }, packages)
   assert.deepEqual(alpha, {
     channel: 'alpha', distTag: 'alpha', blocks: false, version: '9.0.0-alpha.1',
-    packages: { '@deepseek-ai/dsh': { version: '9.0.0-alpha.1', integrity: 'sha512-9.0.0-alpha.1' } },
-    offTrain: ['@deepseek-ai/cordis', '@deepseek-ai/dsh-tools'],
+    packages: {
+      '@deepseek-ai/dsh': { version: '9.0.0-alpha.1', integrity: 'sha512-9.0.0-alpha.1' },
+      '@deepseek-ai/dsh-tool-executor-ptc': { version: '9.0.0-alpha.1', integrity: 'sha512-9.0.0-alpha.1' },
+    },
+    offTrain: { '@deepseek-ai/cordis': { version: '4.0.5', integrity: 'sha512-4.0.5' } },
+    absent: ['@deepseek-ai/dsh-tools'],
   })
   const next = resolveChannel(packuments, { channel: 'next', distTag: 'next', blocks: true }, packages)
   assert.deepEqual(Object.keys(next.packages), ['@deepseek-ai/dsh', '@deepseek-ai/dsh-tools'])
-  assert.deepEqual(next.offTrain, ['@deepseek-ai/cordis'])
+  assert.deepEqual(next.offTrain, { '@deepseek-ai/cordis': { version: '4.0.5', integrity: 'sha512-4.0.5' } })
+  assert.deepEqual(next.absent, ['@deepseek-ai/dsh-tool-executor-ptc'])
   assert.throws(() => resolveChannel(packuments, { channel: 'beta', distTag: 'beta', blocks: true }, packages),
     /publishes no "beta" dist-tag/)
   assert.throws(() => resolveChannel({ ...packuments,
     '@deepseek-ai/dsh': packument({}, []) }, { channel: 'latest', distTag: 'latest', blocks: true }, packages),
   /publishes no "latest" dist-tag/)
+  // An off-train range no published version satisfies is a supply defect, not a pin.
+  assert.throws(() => resolveChannel({ ...packuments,
+    '@deepseek-ai/cordis': packument({}, ['3.9.0']) },
+  { channel: 'latest', distTag: 'latest', blocks: true }, packages),
+  /no version satisfying the latest release range "~4\.0\.5"/)
 })
 
 test('refresh is idempotent and rejects a manifest that drops a probed package', () => {
@@ -339,8 +396,10 @@ test('refresh is idempotent and rejects a manifest that drops a probed package',
   const packages = ['@deepseek-ai/dsh', '@deepseek-ai/cordis']
   const packuments = {
     '@deepseek-ai/dsh': { 'dist-tags': { latest: '7.0.0' },
-      versions: { '7.0.0': { dist: { integrity: 'sha512-dsh' } } } },
-    '@deepseek-ai/cordis': { 'dist-tags': { latest: '4.0.5' }, versions: {} },
+      versions: { '7.0.0': { dist: { integrity: 'sha512-dsh' },
+        dependencies: { '@deepseek-ai/cordis': '~4.0.5' } } } },
+    '@deepseek-ai/cordis': { 'dist-tags': { latest: '4.0.5' },
+      versions: { '4.0.5': { version: '4.0.5', dist: { integrity: 'sha512-cordis' } } } },
   }
   const record = resolveChannel(packuments, definition, packages)
   const document = serializeManifest(new Map([
@@ -363,6 +422,19 @@ test('refresh is idempotent and rejects a manifest that drops a probed package',
     ...JSON.parse(document).channels,
     latest: { ...record, blocks: false },
   } }, packages), /does not match its declared dist-tag or blocking role/)
+  // An off-train pin is a record of the bytes an install receives, so it must carry
+  // both halves.
+  for (const [mutate, message] of [
+    [entry => ({ ...entry, version: '' }), /records no version for off-train @deepseek-ai\/cordis/],
+    [entry => ({ ...entry, integrity: '' }), /records no integrity for off-train @deepseek-ai\/cordis/],
+  ]) {
+    const stored = structuredClone(record)
+    stored.offTrain['@deepseek-ai/cordis'] = mutate(stored.offTrain['@deepseek-ai/cordis'])
+    assert.throws(() => validateManifest({ schema: 'dsh-host-channels/v1', channels: {
+      ...JSON.parse(document).channels,
+      latest: stored,
+    } }, packages), message)
+  }
   assert.throws(() => validateManifest({ schema: 'dsh-other/v1', channels: {} }, packages), /must declare schema/)
 })
 
@@ -409,27 +481,117 @@ test('the development graph refresh keeps the channel declarations it started fr
 test('an installed channel is proven against the manifest that selected it', async t => {
   const root = await mkdtempUnderTmp('ptc-channel-install-')
   t.after(() => rm(root, { recursive: true, force: true }))
-  const record = { channel: 'latest', version: '7.0.0', offTrain: [],
-    packages: { '@deepseek-ai/dsh': { version: '7.0.0', integrity: 'sha512-7.0.0' } } }
+  const record = { channel: 'latest', version: '7.0.0',
+    packages: { '@deepseek-ai/dsh': { version: '7.0.0', integrity: 'sha512-7.0.0' } },
+    offTrain: { '@deepseek-ai/cordis': { version: '4.0.5', integrity: 'sha512-4.0.5' } },
+    absent: [] }
   const install = async version => {
     await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true })
     await writeFile(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
       JSON.stringify({ name: '@deepseek-ai/dsh', version }))
   }
   const integrity = 'sha512-7.0.0'
-  const writeInstallRecord = async value => writeFile(
+  const writeInstallRecord = async (value, cordis = { version: '4.0.5', integrity: 'sha512-4.0.5' }) => writeFile(
     join(root, 'node_modules', '.package-lock.json'),
-    JSON.stringify({ lockfileVersion: 3, packages: { 'node_modules/@deepseek-ai/dsh': { version: '7.0.0', integrity: value } } }),
+    JSON.stringify({ lockfileVersion: 3, packages: {
+      'node_modules/@deepseek-ai/dsh': { version: '7.0.0', integrity: value },
+      'node_modules/@deepseek-ai/cordis': cordis,
+    } }),
   )
+  const installCordis = async version => {
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'cordis'), { recursive: true })
+    await writeFile(join(root, 'node_modules', '@deepseek-ai', 'cordis', 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/cordis', version }))
+  }
   await install('7.0.0')
+  await installCordis('4.0.5')
   await writeInstallRecord(integrity)
-  assert.deepEqual(await verifyInstalledChannel(root, record), [{ name: '@deepseek-ai/dsh', version: '7.0.0' }])
+  assert.deepEqual(await verifyInstalledChannel(root, record), [
+    { name: '@deepseek-ai/dsh', version: '7.0.0' },
+    { name: '@deepseek-ai/cordis', version: '4.0.5' },
+  ])
   // The recorded digest is the identity of the pinned bytes, not a note.
   await writeInstallRecord('sha512-someone-elses-tarball')
   await assert.rejects(() => verifyInstalledChannel(root, record), /manifest records sha512-7\.0\.0/)
   await writeInstallRecord(integrity)
   await install('0.0.0-stale')
   await assert.rejects(() => verifyInstalledChannel(root, record), /installed @deepseek-ai\/dsh@0\.0\.0-stale/)
+  await install('7.0.0')
+  // An off-train package is proved the same way: the host range resolves it, so a
+  // publish inside that range changes the bytes an install receives.
+  await installCordis('4.0.6')
+  await assert.rejects(() => verifyInstalledChannel(root, record),
+    /installed @deepseek-ai\/cordis@4\.0\.6, manifest records 4\.0\.5/)
+  await installCordis('4.0.5')
+  await writeInstallRecord(integrity, { version: '4.0.5', integrity: 'sha512-other-cordis' })
+  await assert.rejects(() => verifyInstalledChannel(root, record),
+    /installed @deepseek-ai\/cordis with integrity sha512-other-cordis, manifest records sha512-4\.0\.5/)
+  // A package recorded as absent is a claim about the install too: the channel does
+  // not receive it, and only the installed graph can prove that.
+  await writeInstallRecord(integrity)
+  const absentRecord = { ...record, absent: ['@deepseek-ai/dsh-tool-executor-ptc'] }
+  assert.equal((await verifyInstalledChannel(root, absentRecord)).length, 2)
+  await writeInstallRecord(integrity, { version: '4.0.5', integrity: 'sha512-4.0.5' })
+  await writeFile(join(root, 'node_modules', '.package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: {
+    'node_modules/@deepseek-ai/dsh': { version: '7.0.0', integrity },
+    'node_modules/@deepseek-ai/cordis': { version: '4.0.5', integrity: 'sha512-4.0.5' },
+    'node_modules/@deepseek-ai/dsh-tool-executor-ptc': { version: '0.2.1-rc.2', integrity: 'sha512-executor' },
+  } }))
+  await assert.rejects(() => verifyInstalledChannel(root, absentRecord),
+    /records @deepseek-ai\/dsh-tool-executor-ptc as absent, but the install contains 0\.2\.1-rc\.2/)
+  await writeInstallRecord(integrity)
+})
+
+test('a channel record labelled with another channel is rejected', async () => {
+  // The record carries its own channel name because an installed graph is described
+  // by the record, not by the key it was stored under. A document whose key says one
+  // channel and whose record says another describes two supplies, and reading only
+  // the key would install the bytes of one while reporting the other.
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const packages = probePackages(manifest)
+  const tracked = JSON.parse(await readFile(new URL('../compat/channels.json', import.meta.url), 'utf8'))
+  assert.deepEqual([...validateManifest(tracked, packages).keys()], ['latest', 'next', 'alpha'])
+  for (const channel of ['latest', 'next', 'alpha']) {
+    const mislabelled = structuredClone(tracked)
+    mislabelled.channels[channel].channel = channel === 'next' ? 'latest' : 'next'
+    assert.throws(() => validateManifest(mislabelled, packages),
+      new RegExp(`channel ${channel} does not match its declared dist-tag or blocking role`, 'u'), channel)
+  }
+  // The label is compared with the key, so relabelling every record consistently is
+  // still a document that answers for another channel.
+  const relabelled = structuredClone(tracked)
+  relabelled.channels.alpha.channel = 'alpha'
+  relabelled.channels.alpha.distTag = 'next'
+  assert.throws(() => validateManifest(relabelled, packages),
+    /channel alpha does not match its declared dist-tag or blocking role/u)
+})
+
+test('a development install that differs from its lock is refused', async t => {
+  const root = await mkdtempUnderTmp('ptc-development-describe-')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const channels = new Map([['next', { channel: 'next', version: '9.0.0' }]])
+  const lock = async version => writeFile(join(root, 'package-lock.json'),
+    JSON.stringify({ packages: { 'node_modules/@deepseek-ai/dsh': { version } } }, null, 2) + '\n')
+  const install = async version => {
+    await mkdir(join(root, 'node_modules', '@deepseek-ai', 'dsh'), { recursive: true })
+    await writeFile(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'),
+      JSON.stringify({ name: '@deepseek-ai/dsh', version }))
+  }
+  await lock('9.0.0')
+  await install('9.0.0')
+  assert.equal(await describeDevelopmentGraph(channels, root),
+    '@deepseek-ai/dsh@9.0.0 (the next channel; materialized as locked)')
+  // A release no channel resolves to is a materialization fact the graph reports
+  // rather than a manifest error, so the same version on both sides still describes.
+  await lock('9.5.0')
+  await install('9.5.0')
+  assert.equal(await describeDevelopmentGraph(channels, root),
+    '@deepseek-ai/dsh@9.5.0 (no channel resolves to this release; host:channels:graph moves it onto next; materialized as locked)')
+  // An install that disagrees with the lock is not the graph the lock describes, and
+  // no channel claim derived from that lock is true of the host the gates run on.
+  await install('8.0.0')
+  await assert.rejects(() => describeDevelopmentGraph(channels, root),
+    /installed @deepseek-ai\/dsh@8\.0\.0 differs from package-lock\.json \(9\.5\.0\); run npm ci/u)
 })
 
 test('keeps npm release authority stage-only and bound to a verified tag', async () => {

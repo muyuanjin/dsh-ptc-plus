@@ -1316,8 +1316,20 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const state = stateFor(agent)
       const sourceSettings = state?.snapshot.sourceSettings ?? state?.snapshot.settings
         ?? capabilityConfiguration(currentConfig)
+      // A global choice is recorded either as a legacy override or as a rule in the
+      // policy this owner writes for `/capabilities set global`, so both spellings
+      // prove the same save.
+      const capability = state?.snapshot.capabilities.find(item => item.id === id)
+      const recorded = capability === undefined || sourceSettings.policy === undefined
+        ? undefined : capabilityRule(sourceSettings.policy, capability)
       const saved = Object.hasOwn(sourceSettings.manual?.overrides ?? {}, id)
-      const listed = state !== undefined && state.snapshot.plan.entries.some(entry => entry.id === id)
+        || recorded?.availabilitySource === `item:${id}`
+        || recorded?.disclosureSource === `item:${id}`
+      // Delivery is a statement about the model-visible catalog. A plan that holds an
+      // entry whose choice is closed describes an entry the catalog does not list, so
+      // holding it proves nothing was delivered.
+      const entry = state?.snapshot.plan.entries.find(item => item.id === id)
+      const listed = entry !== undefined && entry.selection !== 'closed'
       const delivery = !listed ? 'absent'
         : state.message === undefined || planCommitted(agent, state.message) ? 'delivered' : 'pending'
       return normalizeCapabilityProof({

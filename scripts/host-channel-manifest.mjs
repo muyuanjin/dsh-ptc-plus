@@ -19,7 +19,7 @@ import { spawnSync } from 'node:child_process'
 import { readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { npmCliCommand } from './npm-cli.mjs'
+import { npmCliCommand, spawnFailure } from './npm-cli.mjs'
 
 export const SCHEMA = 'dsh-host-channels/v1'
 export const MANIFEST_PATH = 'compat/channels.json'
@@ -66,14 +66,122 @@ async function officialRegistry() {
 }
 
 /**
+ * Parse one registry version into the components a range comparator reads.
+ * @param {string} version - a published semver version.
+ * @returns {{major: number, minor: number, patch: number, prerelease: string[]}}
+ */
+function parseVersion(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(String(version))
+  if (match === null) throw new Error(`host channel version ${JSON.stringify(version)} is not a semantic version`)
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] === undefined ? [] : match[4].split('.'),
+  }
+}
+
+/** Total order over parsed versions, prereleases below their release. */
+function compareVersions(left, right) {
+  for (const key of ['major', 'minor', 'patch']) {
+    if (left[key] !== right[key]) return left[key] < right[key] ? -1 : 1
+  }
+  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+    return left.prerelease.length === right.prerelease.length ? 0 : (left.prerelease.length === 0 ? 1 : -1)
+  }
+  for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+    const leftPart = left.prerelease[index]
+    const rightPart = right.prerelease[index]
+    if (leftPart === undefined) return -1
+    if (rightPart === undefined) return 1
+    if (leftPart === rightPart) continue
+    const leftNumber = /^\d+$/.test(leftPart)
+    const rightNumber = /^\d+$/.test(rightPart)
+    if (leftNumber && rightNumber) return Number(leftPart) < Number(rightPart) ? -1 : 1
+    if (leftNumber !== rightNumber) return leftNumber ? -1 : 1
+    return leftPart < rightPart ? -1 : 1
+  }
+  return 0
+}
+
+/**
+ * One range comparator: which versions it admits and the upper bound it implies.
+ *
+ * The ranges this file resolves are the ones a host release declares on the packages
+ * an install receives, so the operators that occur there — a caret, a tilde, a bare
+ * version and the four ordered comparisons — are the ones implemented. Anything else
+ * throws: a range this script cannot read must not silently pin the wrong bytes.
+ */
+function comparator(token) {
+  if (token === '' || token === '*' || token === 'x') return () => true
+  const match = /^(>=|<=|>|<|=|\^|~)?(.+)$/.exec(token)
+  const operator = match[1] ?? '='
+  const base = parseVersion(match[2])
+  switch (operator) {
+    case '=': return version => compareVersions(version, base) === 0
+    case '>': return version => compareVersions(version, base) > 0
+    case '>=': return version => compareVersions(version, base) >= 0
+    case '<': return version => compareVersions(version, base) < 0
+    case '<=': return version => compareVersions(version, base) <= 0
+    case '~': return version => compareVersions(version, base) >= 0
+      && version.major === base.major && version.minor === base.minor
+    // `^` is the one operator the pattern above can produce that is not listed here;
+    // a range spelling anything else fails in parseVersion before this point.
+    default: return version => compareVersions(version, base) >= 0 && (base.major > 0
+      ? version.major === base.major
+      : base.minor > 0
+        ? version.major === 0 && version.minor === base.minor
+        : version.major === 0 && version.minor === 0 && version.patch === base.patch)
+  }
+}
+
+/**
+ * Whether a published version satisfies a declared range.
+ *
+ * A prerelease only satisfies a range that itself names a prerelease of the same
+ * release, which is how npm keeps an in-flight line from entering a settled one.
+ * @param {string} version - the published version being considered.
+ * @param {string} range - the range the host release declares.
+ * @returns {boolean} whether an install of that range could receive this version.
+ */
+export function satisfiesRange(version, range) {
+  const candidate = parseVersion(version)
+  return String(range).split('||').some(alternative => {
+    const tokens = alternative.trim().split(/\s+/).filter(token => token.length > 0)
+    if (!tokens.every(token => comparator(token)(candidate))) return false
+    if (candidate.prerelease.length === 0) return true
+    return tokens.some(token => {
+      // A wildcard names no release, so it admits no prerelease — and it has no
+      // version to parse either.
+      if (token === '*' || token === 'x') return false
+      const base = parseVersion(/^(?:>=|<=|>|<|=|\^|~)?(.+)$/.exec(token)[1])
+      return base.prerelease.length > 0 && base.major === candidate.major
+        && base.minor === candidate.minor && base.patch === candidate.patch
+    })
+  })
+}
+
+/** The highest published version of a package that satisfies a declared range. */
+function highestSatisfying(packument, range) {
+  const versions = Object.keys(packument?.versions ?? {})
+    .filter(version => satisfiesRange(version, range))
+    .map(version => ({ version, parsed: parseVersion(version) }))
+  if (versions.length === 0) return undefined
+  versions.sort((left, right) => compareVersions(left.parsed, right.parsed))
+  return versions.at(-1).version
+}
+
+/**
  * Resolve one channel from its dist-tag.
  *
  * The host release is the `@deepseek-ai/dsh` version that tag names. Packages
- * published in that same release join the channel at that exact version, which
- * is what identifies their bytes. A probe package that publishes no such version
- * is not on the release train — its dist-tag tracks its own versioning — so the
- * channel names it as off-train instead of pinning a version the release never
- * declared.
+ * published in that same release join the channel at that exact version, which is
+ * what identifies their bytes. A probe package that publishes no such version is
+ * not on the release train — its dist-tag tracks its own versioning — so the
+ * channel records the version that host release's own dependency range resolves
+ * to, with that tarball's integrity. A probed package the release neither publishes
+ * nor depends on is not part of an install of that channel at all, which is a
+ * different fact from a pinned one and is recorded as absent.
  * @param {object} packuments - one packument per probe package.
  * @param {object} definition - the channel definition from {@link CHANNELS}.
  * @param {string[]} packages - probe package names.
@@ -84,12 +192,28 @@ export function resolveChannel(packuments, definition, packages) {
   if (typeof version !== 'string' || version.length === 0) {
     throw new Error(`@deepseek-ai/dsh publishes no ${JSON.stringify(definition.distTag)} dist-tag`)
   }
+  const cohort = packuments[COHORT_PACKAGE]?.versions?.[version]
   const entries = []
   const offTrain = []
+  const absent = []
   for (const name of packages) {
     const published = packuments[name]?.versions?.[version]
     if (published === undefined) {
-      offTrain.push(name)
+      const range = cohort?.dependencies?.[name] ?? cohort?.peerDependencies?.[name]
+        ?? cohort?.optionalDependencies?.[name]
+      if (range === undefined) {
+        absent.push(name)
+        continue
+      }
+      const resolved = highestSatisfying(packuments[name], range)
+      if (resolved === undefined) {
+        throw new Error(`${name} publishes no version satisfying the ${definition.distTag} release range ${JSON.stringify(range)}`)
+      }
+      const integrity = packuments[name].versions[resolved]?.dist?.integrity
+      if (typeof integrity !== 'string' || integrity.length === 0) {
+        throw new Error(`${name}@${resolved} publishes no tarball integrity`)
+      }
+      offTrain.push([name, { version: resolved, integrity }])
       continue
     }
     const integrity = published.dist?.integrity
@@ -107,7 +231,8 @@ export function resolveChannel(packuments, definition, packages) {
     blocks: definition.blocks,
     version,
     packages: sortedObject(entries),
-    offTrain: [...offTrain].sort(),
+    offTrain: sortedObject(offTrain),
+    absent: [...absent].sort(),
   }
 }
 
@@ -127,9 +252,11 @@ export function validateManifest(manifest, packages) {
       throw new Error(`${MANIFEST_PATH} channel ${definition.channel} does not match its declared dist-tag or blocking role`)
     }
     const pinned = Object.keys(record.packages ?? {})
-    const offTrain = record.offTrain ?? []
-    if (pinned.length + offTrain.length !== packages.length
-      || packages.some(name => !pinned.includes(name) && !offTrain.includes(name))) {
+    const offTrain = Object.keys(record.offTrain ?? {})
+    const absent = record.absent ?? []
+    if (pinned.length + offTrain.length + absent.length !== packages.length
+      || packages.some(name => !pinned.includes(name)
+        && !offTrain.includes(name) && !absent.includes(name))) {
       throw new Error(`${MANIFEST_PATH} channel ${definition.channel} does not account for every probed host package`)
     }
     if (!pinned.includes(COHORT_PACKAGE)) {
@@ -142,6 +269,18 @@ export function validateManifest(manifest, packages) {
       }
       if (typeof entry.integrity !== 'string' || entry.integrity.length === 0) {
         throw new Error(`${MANIFEST_PATH} channel ${definition.channel} records no integrity for ${name}`)
+      }
+    }
+    // A package the release does not publish is pinned at the version its own
+    // dependency range resolves to, so the channel still names the bytes an install
+    // receives rather than only naming the package.
+    for (const name of offTrain) {
+      const entry = record.offTrain[name]
+      if (typeof entry?.version !== 'string' || entry.version.length === 0) {
+        throw new Error(`${MANIFEST_PATH} channel ${definition.channel} records no version for off-train ${name}`)
+      }
+      if (typeof entry.integrity !== 'string' || entry.integrity.length === 0) {
+        throw new Error(`${MANIFEST_PATH} channel ${definition.channel} records no integrity for off-train ${name}`)
       }
     }
     channels.set(definition.channel, record)
@@ -204,13 +343,18 @@ export async function refreshDevelopmentGraph(options = {}) {
     const result = spawnSync(command.executable, command.args, {
       cwd: root, stdio: 'inherit', env: { ...process.env, NPM_CONFIG_REGISTRY: OFFICIAL_REGISTRY },
     })
-    if (result.status !== 0) throw new Error(`npm ${args.join(' ')} failed with exit ${String(result.status)}`)
+    // A process that never started has no exit status. Reporting that as an npm
+    // failure hides the cause (on Windows a `.cmd` fallback cannot be spawned
+    // without a shell), so the spawn error is stated instead.
+    if (result.error !== undefined || result.status !== 0) throw spawnFailure(command.executable, command.args, result)
   })
   const record = options.record ?? (await readManifest(root)).channels.get('next')
   const manifestPath = join(root, 'package.json')
+  const lockPath = join(root, 'package-lock.json')
   const manifestText = await readFile(manifestPath, 'utf8')
+  const lockText = await readFile(lockPath, 'utf8')
   const manifest = JSON.parse(manifestText)
-  const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'))
+  const lock = JSON.parse(lockText)
   if (lock.packages?.['node_modules/@deepseek-ai/dsh']?.version === record.version) return undefined
   const specifications = Object.keys(manifest.devDependencies ?? {})
     .filter(name => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
@@ -219,21 +363,32 @@ export async function refreshDevelopmentGraph(options = {}) {
   // `--save-dev` rewrites the channel declarations to pinned ranges. Resolve the
   // transition, restore the declarations, then require an ordinary resolver pass
   // so the committed lock still declares the channel instead of one release.
-  await runNpm(['install', '--package-lock-only', '--ignore-scripts', '--force', '--loglevel=error',
-    '--save-dev', ...specifications])
-  await writeFile(manifestPath, manifestText)
-  await runNpm(['install', '--package-lock-only', '--ignore-scripts'])
-  await runNpm(['ci', '--dry-run', '--ignore-scripts'])
-  const restored = JSON.parse(await readFile(manifestPath, 'utf8'))
-  const drifted = Object.entries(manifest.devDependencies ?? {})
-    .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
-    .filter(([name, spec]) => restored.devDependencies?.[name] !== spec)
-  if (drifted.length > 0) {
-    throw new Error(`refreshing the development graph rewrote its channel declarations: ${drifted.map(([name]) => name).join(', ')}`)
-  }
-  const moved = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'))
-  if (moved.packages?.['node_modules/@deepseek-ai/dsh']?.version !== record.version) {
-    throw new Error(`the development graph did not move onto the next channel release ${record.version}`)
+  //
+  // Every step below runs in the checkout, so a move that cannot finish restores the
+  // two files it rewrote. A refresh that leaves a half-moved lock behind would make the
+  // next command run against a graph npm refuses to resolve, and the failure would then
+  // look like a defect of that command instead of this one.
+  try {
+    await runNpm(['install', '--package-lock-only', '--ignore-scripts', '--force', '--loglevel=error',
+      '--save-dev', ...specifications])
+    await writeFile(manifestPath, manifestText)
+    await runNpm(['install', '--package-lock-only', '--ignore-scripts'])
+    await runNpm(['ci', '--dry-run', '--ignore-scripts'])
+    const restored = JSON.parse(await readFile(manifestPath, 'utf8'))
+    const drifted = Object.entries(manifest.devDependencies ?? {})
+      .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
+      .filter(([name, spec]) => restored.devDependencies?.[name] !== spec)
+    if (drifted.length > 0) {
+      throw new Error(`refreshing the development graph rewrote its channel declarations: ${drifted.map(([name]) => name).join(', ')}`)
+    }
+    const moved = JSON.parse(await readFile(lockPath, 'utf8'))
+    if (moved.packages?.['node_modules/@deepseek-ai/dsh']?.version !== record.version) {
+      throw new Error(`the development graph did not move onto the next channel release ${record.version}`)
+    }
+  } catch (error) {
+    await writeFile(manifestPath, manifestText)
+    await writeFile(lockPath, lockText)
+    throw error
   }
   return record.version
 }
@@ -284,6 +439,8 @@ export async function verifyInstalledHostGraph(root, lock) {
  *
  * The recorded integrity is the identity of the bytes that channel resolved to,
  * so it is compared with what npm actually installed rather than kept as a note.
+ * An off-train package is recorded the same way: the channel install receives it
+ * through the host release's own dependency range, so its bytes are proved too.
  * @param {string} root - installation root.
  * @param {object} record - the channel record that was installed.
  * @returns {Promise<object[]>} the verified entries.
@@ -291,7 +448,11 @@ export async function verifyInstalledHostGraph(root, lock) {
 export async function verifyInstalledChannel(root, record) {
   const installed = JSON.parse(await readFile(join(root, 'node_modules', '.package-lock.json'), 'utf8'))
   const verified = []
-  for (const [name, entry] of Object.entries(record.packages)) {
+  const recorded = [
+    ...Object.entries(record.packages),
+    ...Object.entries(record.offTrain ?? {}),
+  ]
+  for (const [name, entry] of recorded) {
     const manifest = JSON.parse(await readFile(join(root, 'node_modules', ...name.split('/'), 'package.json'), 'utf8'))
     if (manifest.name !== name || manifest.version !== entry.version) {
       throw new Error(`channel ${record.channel} installed ${name}@${manifest.version}, manifest records ${entry.version}`)
@@ -306,6 +467,14 @@ export async function verifyInstalledChannel(root, record) {
       throw new Error(`channel ${record.channel} installed ${name} with integrity ${String(installedEntry.integrity)}, manifest records ${entry.integrity}`)
     }
     verified.push({ name, version: entry.version })
+  }
+  // A package recorded as absent is a claim about the install too: the channel does
+  // not receive it, so an install that contains one contradicts the record.
+  for (const name of record.absent ?? []) {
+    const installedEntry = installed.packages?.[`node_modules/${name}`]
+    if (installedEntry !== undefined) {
+      throw new Error(`channel ${record.channel} records ${name} as absent, but the install contains ${String(installedEntry.version)}`)
+    }
   }
   return verified
 }

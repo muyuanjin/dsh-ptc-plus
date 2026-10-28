@@ -56,6 +56,86 @@ test('a recovery that restores one binding and drops another names both', async 
 })
 
 /**
+ * A recovery repeated in the same runtime explains itself once.
+ *
+ * The help pair states what a notice means rather than what happened, so a second
+ * recovery that reports the same facts carries the explanation only once: the
+ * model cannot act on the same sentence twice. The notice itself still reaches it,
+ * because the facts are still true of the environment it is about to use.
+ */
+test('a repeated recovery keeps its facts and drops the explanation', async t => {
+  const runtime = new SessionRuntime({ surfaceProvenanceRequired: true })
+  t.after(() => runtime.dispose().catch(() => {}))
+  const session = orderedSurfaceSession('repeated-recovery-help')
+  let sequence = 0
+  const run = program => runRecordedCell(runtime, session, `repeat-${++sequence}`, { program, bindings: [] })
+  const dropWorker = () => {
+    sessionKernel(runtime, session.id ?? session).client.worker = undefined
+  }
+
+  // A checkpoint, a cell that declares a binding after it, and a recorded rewind
+  // back to the checkpoint: the replay ends the binding, which is what PTC-R005
+  // reports apart from a loss.
+  assert.equal((await run('return await repl.state({action:"save",name:"cut"})')).error, undefined)
+  assert.equal((await run('const kept = 1; return kept')).value, 1)
+  assert.equal((await run('return await repl.state({action:"restore",name:"cut"})')).value.restored, true)
+
+  // The first recovery after the rewind does not report it: the surface window it
+  // folds has not moved past the rewind yet. The next one replays the rewind and
+  // states it once, with the help pair that explains what it means.
+  dropWorker()
+  await run('return typeof kept')
+  await run('return 2')
+  dropWorker()
+  const first = await run('return 3')
+  const explained = first.logs.filter(line => line.includes('PTC-R005'))
+  assert.equal(explained.length, 1, JSON.stringify(first.logs))
+  assert.match(explained[0], /\(kept\)/u)
+  assert.match(explained[0], /help: this is not a recovery failure/u)
+
+  // The same facts after another lost worker: the notice stays, the help does not.
+  await run('return 4')
+  dropWorker()
+  const again = await run('return 5')
+  const repeated = again.logs.filter(line => line.includes('PTC-R005'))
+  assert.equal(repeated.length, 1, JSON.stringify(again.logs))
+  assert.match(repeated[0], /\(kept\)/u)
+  assert.doesNotMatch(repeated[0], /help: /u)
+})
+
+test('consecutive recoveries each report the facts they replay', async t => {
+  // Two recoveries in a row, with no ordinary cell between them: the second one
+  // replays the same recorded rewind and owes the same fact. Suppressing it left the
+  // withdrawn names reported nowhere while the runtime had already recorded them as
+  // announced, so a later reference would fail as the model's own mistake.
+  const runtime = new SessionRuntime({ surfaceProvenanceRequired: true })
+  t.after(() => runtime.dispose().catch(() => {}))
+  const session = orderedSurfaceSession('consecutive-recovery-notices')
+  let sequence = 0
+  const run = program => runRecordedCell(runtime, session, `consecutive-${++sequence}`, { program, bindings: [] })
+  const dropWorker = () => {
+    sessionKernel(runtime, session.id ?? session).client.worker = undefined
+  }
+
+  assert.equal((await run('return await repl.state({action:"save",name:"cut"})')).error, undefined)
+  assert.equal((await run('const kept = 1; return kept')).value, 1)
+  assert.equal((await run('return await repl.state({action:"restore",name:"cut"})')).value.restored, true)
+  dropWorker()
+  await run('return typeof kept')
+  dropWorker()
+  const first = await run('return 3')
+  const reported = first.logs.filter(line => line.includes('PTC-R005'))
+  assert.equal(reported.length, 1, JSON.stringify(first.logs))
+  assert.match(reported[0], /\(kept\)/u)
+  dropWorker()
+  const second = await run('return 4')
+  const repeated = second.logs.filter(line => line.includes('PTC-R005'))
+  assert.equal(repeated.length, 1, JSON.stringify(second.logs))
+  assert.match(repeated[0], /\(kept\)/u)
+  assert.doesNotMatch(repeated[0], /help: /u, 'the explanation is stated once')
+})
+
+/**
  * A binding a recovery promised as live, then reported missing by the engine,
  * is named once — and the name is drained so a repeat stays quiet.
  *
@@ -64,8 +144,7 @@ test('a recovery that restores one binding and drops another names both', async 
  * the vanishing binding separates "your source is wrong" from "the value this
  * cell expected is gone". Nothing else is worth repeating on the next cell, so
  * the second failure stays silent.
- */
-test('a binding a recovery called live and then vanished is named once', async t => {
+ */test('a binding a recovery called live and then vanished is named once', async t => {
   const runtime = new SessionRuntime()
   t.after(() => runtime.dispose())
   const session = orderedSurfaceSession('vanished-announced-binding')

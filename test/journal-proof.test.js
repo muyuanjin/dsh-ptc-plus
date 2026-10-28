@@ -11,7 +11,15 @@ import {
   withSettlementProof,
 } from '../internal/session-journal.js'
 import { recoverJournal } from '../internal/session-journal-recovery.js'
-import { appendRunCodeEvents, fixture, orderedSurfaceSession } from './plugin-fixture.js'
+import { POST_EDIT_KEY } from '../internal/session-journal-schema.js'
+import {
+  appendOnlySession,
+  appendRunCodeEvents,
+  fixture,
+  orderedSurfaceSession,
+  ptcAgent,
+  runNestedEditCell,
+} from './plugin-fixture.js'
 
 const SOURCE = 'const provedValue = 1; throw new Error("proof failure")'
 
@@ -131,9 +139,10 @@ test('an edited settlement is not evidence for the bindings its cell declared', 
     const events = []
     const meta = edit(structuredClone(result.meta))
     const appended = appendRunCodeEvents(events, `proof-${label}`, SOURCE, { meta })
-    // The Host states the outcome of the tool result it recorded. Every variant
-    // keeps that copy untouched, as an editor of the plugin metadata would.
-    events[appended.resultSeq].data.isError = true
+    // The Host states the outcome of the tool result it recorded, on the result
+    // message it appends. Every variant keeps that copy untouched, as an editor of
+    // the plugin metadata would.
+    events[appended.resultSeq].data.message.isError = true
     const history = recoverJournal({ events }, undefined, {})
     const reasons = history.volatileSuffix.map(item => item.reason).join('\n')
     if (reason === undefined) {
@@ -144,6 +153,56 @@ test('an edited settlement is not evidence for the bindings its cell declared', 
     assert.equal(history.available, false, label)
     assert.match(reasons, reason, label)
   }
+})
+
+test('an edited revision record is not evidence even when both of its copies agree', async t => {
+  const published = fixture()
+  const session = appendOnlySession('journal-proof-derived')
+  session.append('turn/start', { turn: 0 })
+  t.after(() => published.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await published.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [published.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  const setup = await published.runDurable(session.id, 'let provedValue = 1; return provedValue', {},
+    { session, callId: 'proof-setup' })
+  assert.equal(setup.value, 1, JSON.stringify(setup.error))
+  const root = await runNestedEditCell(published, { session, agent, signal, callId: 'proof-root',
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })' })
+  assert.equal(root.receipt.accepted, true, JSON.stringify(root.receipt))
+
+  // The published log is the control: the same fixture folds as the revision it is.
+  assert.equal(recoverJournal({ events: session.events }, undefined,
+    { editRewritesHistory: true }).available, true)
+
+  // A revision's journal is recorded twice — in its own derived settlement and in
+  // the provenance the root result republishes — and the fold compares the two, so
+  // an edit that changes both stays self-consistent. The settlement proof is the
+  // third copy: it is taken at publication over the facts recovery reads, so a
+  // record that now claims a status it never settled no longer reproduces it.
+  const events = structuredClone(session.events)
+  const derived = events.filter(event => event.type === 'tool/ptc-dispatch'
+    && event.data?.name === 'run_code')
+  assert.equal(derived.length, 1)
+  const provenance = events.find(event => event.type === 'tool/result'
+    && event.data.meta?.[POST_EDIT_KEY] !== undefined).data.meta[POST_EDIT_KEY]
+  const claimVolatile = journal => Object.assign(journal, {
+    status: 'volatile',
+    volatileReason: 'an edited record claims this settlement was volatile',
+    values: [{ name: 'injected', wire: { codec: 'ptc-value-graph/v1', root: 7, nodes: [] } }],
+  })
+  claimVolatile(derived[0].data.meta[JOURNAL_KEY])
+  claimVolatile(provenance.meta[JOURNAL_KEY])
+
+  const history = recoverJournal({ events }, undefined, { editRewritesHistory: true })
+  assert.equal(history.available, false)
+  assert.match(history.volatileSuffix.map(item => item.reason).join('\n'),
+    /journal facts do not match their recorded settlement proof/u)
+  // The claim is a binding no cell declared: recovery must not install it.
+  assert.equal(history.nodes.some(node => (node.journal.values ?? [])
+    .some(value => value.name === 'injected')), false)
 })
 
 test('an edited settlement loses the binding the model could still reach', async t => {
@@ -159,7 +218,7 @@ test('an edited settlement loses the binding the model could still reach', async
   edited[JOURNAL_KEY].completion.error.message = renderDiagnostic(
     edited[JOURNAL_KEY].diagnostics[0], SOURCE)
   const appended = appendRunCodeEvents(session.events, 'edited-failure', SOURCE, { meta: edited })
-  session.events[appended.resultSeq].data.isError = true
+  session.events[appended.resultSeq].data.message.isError = true
 
   const reader = fixture()
   t.after(() => reader.dispose())

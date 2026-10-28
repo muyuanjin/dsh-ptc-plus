@@ -21,7 +21,9 @@ import { fileURLToPath } from 'node:url'
 
 const BEHAVIOUR_ROOTS = ['index.js', 'internal', 'src']
 const SKIP = new Set(['node_modules', '.git', 'coverage', 'artifacts'])
-const LITERAL = /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b/
+// Two components are enough: `dshVersion.startsWith('0.2.')` and `dsh >= '0.2'`
+// branch on a host release exactly like a full three-part comparison does.
+const LITERAL = /\b\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.]+)?\b/
 // A host identifier in the spellings a check is written with: `dsh`, `dshVersion`,
 // `DSH_VERSION`, `hostVersion`, `@deepseek-ai/dsh`. A plain `hostname` is not one,
 // and neither is `Node` — the engine floor is somebody else's contract.
@@ -30,12 +32,24 @@ const LITERAL = /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b/
 // `hostname` is the one prefix that is not a host; it is excluded by name.
 // Any identifier that *contains* dsh/host, in any position: `MIN_DSH_FLOOR`,
 // `peerHostVersion`, `dshPkg.version`. `hostname` is the one word excluded by name.
-const HOST = /@deepseek-ai\/dsh|(?:[A-Za-z0-9_]*(?:dsh|host)(?!name)[A-Za-z0-9_]*)/i
-// A line may mention a version only as part of a host package specifier used in
-// an error message for humans; behaviour still may not compare against it.
-// Comments, and a message that tells a human to install a package version, are
-// not behaviour: the former explains, the latter is text a user reads.
-const ALLOW = [/^\s*\*/m, /^\s*\/\//m, /@deepseek-ai\/dsh@/m]
+const HOST_TOKEN = /@deepseek-ai\/dsh|[A-Za-z0-9_]*(?:dsh|host)(?!name)[A-Za-z0-9_]*/gi
+// Words that contain `host` without naming one. A style sheet's `data-kind=ghost`
+// beside a `0.5px` border is the case that made this list necessary.
+const NOT_A_HOST = new Set(['ghost'])
+
+/** Whether the line names the host, rather than a word that merely contains it. */
+function namesHost(line) {
+  for (const match of line.matchAll(HOST_TOKEN)) {
+    if (!NOT_A_HOST.has(match[0].toLowerCase())) return true
+  }
+  return false
+}
+// A line may mention a version only as commentary. Messages are not behaviour, but a
+// version *literal* in a message is still a version claim that goes stale, and the
+// previous exemption for a `@deepseek-ai/dsh@<version>` specifier also skipped the
+// comparison that pins a branch, because that spelling is exactly how a pinned
+// comparison is written. A message that has to name a version interpolates one.
+const ALLOW = [/^\s*\*/m, /^\s*\/\//m]
 
 /**
  * Which lines would let a host version decide behaviour. A literal only counts
@@ -43,11 +57,11 @@ const ALLOW = [/^\s*\*/m, /^\s*\/\//m, /@deepseek-ai\/dsh@/m]
  * when the helper's argument is a host version, so `nodeEngine >= '24.9.0'` and
  * `compare(amaroVersion, '1.1.11')` stay legal.
  */
-export function hostVersionLiteralViolations(text, { fileNamesHost = false } = {}) {
+export function hostVersionLiteralViolations(text) {
   return text.split(/\r?\n/).flatMap((line, index) => {
     if (ALLOW.some(pattern => pattern.test(line))) return []
     if (!LITERAL.test(line)) return []
-    if (!fileNamesHost && !HOST.test(line)) return []
+    if (!namesHost(line)) return []
     return [`${index + 1}: ${line.trim()}`]
   })
 }

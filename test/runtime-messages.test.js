@@ -694,7 +694,7 @@ test('log projection registration failures are diagnosed without silently empty 
     effect: scope.effect,
     logger: { warn(...parts) { diagnostics.push(parts) } },
   })
-  assert.match(diagnostics[0][1].message, /did not return a disposer/)
+  assert.match(diagnostics[0][1].message, /returned neither a disposer nor a handle/)
   assert.throws(() => owner.project({ session: { id: 'no-current-projection' } }), /public sessionQuery observation/)
   for (const dispose of effects) await dispose?.()
   assert.equal(diagnostics.at(-1), 'disposed')

@@ -1650,6 +1650,30 @@ test('supplies the session REPL on a host that registers only the current execut
   assert.deepEqual(state.upstreamCalls, [])
 })
 
+test('reports a host executor that declares run_code and publishes no readable definition', async (t) => {
+  // The gate cannot invent a transport, so execution stays unavailable; what must not
+  // happen is reporting "this host has no executor", which is a different supply fact
+  // and the reason every feature that needs execution would disappear unexplained.
+  const state = fixture()
+  t.after(() => state.dispose())
+  const warnings = []
+  state.ctx.logger = { warn: (...args) => warnings.push(args) }
+  state.ctx.tools.get = () => undefined
+  state.ctx.tools.selectExecutor = () => ({
+    describe: () => ({ knownNames: ['run_code'] }),
+    requireTransport() { throw new TypeError('the reading scope is required') },
+    cancel() { throw new Error('the gate must not cancel a host executor') },
+  })
+  const id = `unreadable-transport-${Math.random().toString(36).slice(2)}`
+  const agent = { id, ctx: { tools: { get: () => undefined } } }
+  const assembly = { sections: [], contexts: [], variables: {}, tools: [] }
+  await state.assemble(assembly, { agent, scope: agent })
+  assert.equal(warnings.length, 1, 'the contract gap is reported once')
+  assert.match(warnings[0][0], /declares run_code but publishes no transport definition/u)
+  await state.assemble(assembly, { agent, scope: agent })
+  assert.equal(warnings.length, 1, 'a repeated assembly does not repeat the report')
+})
+
 test('reports an unusable execution seam through the plugin logger', async () => {
   const warnings = []
   const service = { language: 'typescript', run() {} }

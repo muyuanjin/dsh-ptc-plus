@@ -249,6 +249,24 @@ export function createSessionLogProjection(options = {}) {
   })
 }
 
+/**
+ * The disposer a session projection registration handed back.
+ *
+ * Two registration contracts are published: an earlier host returns a disposer and a
+ * newer one returns a `ProjectionHandle` (`stateOf`/`readerFor`/`dispose`, possibly
+ * async). Every projection this plugin registers goes through this reader, because a
+ * registration that only understands the earlier shape drops the projection — and
+ * with it the fact that the host accepted it — on the newer contract.
+ * @param {unknown} registration - what `sessionProjections.register` returned.
+ * @returns {(() => unknown)|undefined} the release call, or undefined when the answer
+ *   names neither contract.
+ */
+export function projectionRegistrationDisposer(registration) {
+  if (typeof registration === 'function') return () => registration()
+  if (typeof registration?.dispose === 'function') return () => registration.dispose()
+  return undefined
+}
+
 export function createSessionLogOwner(ctx) {
   const projection = createSessionLogProjection()
   let registeredService
@@ -256,8 +274,10 @@ export function createSessionLogOwner(ctx) {
     try {
       scope.effect(() => {
         const registry = scope.sessionProjections
-        const unregister = registry.register(projection)
-        if (typeof unregister !== 'function') throw new Error('ptc-plus: sessionProjections.register did not return a disposer')
+        const unregister = projectionRegistrationDisposer(registry.register(projection))
+        if (unregister === undefined) {
+          throw new Error('ptc-plus: sessionProjections.register returned neither a disposer nor a handle')
+        }
         registeredService = registry
         return async () => {
           await unregister()

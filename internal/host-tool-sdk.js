@@ -19,7 +19,11 @@
  *    executor host reserves the name instead and keeps the definition inside the
  *    executor that dispatches through it. Both surfaces expose the same
  *    definition shape, so the binding is resolved by that shape rather than by a
- *    version or by an accessor's name.
+ *    version. Which *member* of an executor is asked is a separate contract: only
+ *    the readers named here are ever invoked, because every other member is host
+ *    code this plugin does not own. An executor that declares the name and
+ *    publishes no definition through those readers is reported as such rather than
+ *    treated as a host without an executor.
  */
 const RENDERER_CANDIDATES = [
   '@deepseek-ai/dsh-tool-executor-ptc',
@@ -122,34 +126,41 @@ export function hostToolExecutor(tools, scope) {
   }
 }
 
-/** Accessors that change executor lifecycle are never definition readers. */
-const LIFECYCLE_ACCESSORS = new Set([
-  'dispose', 'destroy', 'reset', 'close', 'start', 'stop', 'release', 'execute', 'describe',
-])
+/**
+ * The members a transport-owning executor publishes its reserved transport through,
+ * in the order they are asked. Which surface publishes the definition is a shape
+ * question, but *which member may be invoked* is not: an executor is host code, so
+ * only members the plugin's published reader contract names are ever called. A
+ * member that is not one of these readers is never a definition reader, however
+ * many arguments it takes and whatever it returns.
+ *
+ * `requirePtcTransport` is the name the tool registry's own transport owner uses, so
+ * an executor that keeps the definition for its dispatch pipeline publishes it under
+ * the same name; the other two are the shorter spellings a host may publish instead.
+ */
+const TRANSPORT_READERS = Object.freeze(['requirePtcTransport', 'requireTransport', 'transport'])
+
+/** Executors whose declared transport could not be read; a fact about the executor,
+ * recorded so the caller can report the contract gap instead of "no executor". The
+ * readers are still asked again on a later assembly, because a scope can mount the
+ * service a reader depends on after the first one. */
+const unreadableExecutors = new WeakSet()
 
 /**
- * The zero-argument accessors an executor publishes. A definition the executor
- * dispatches through is not registered, so the executor must expose it for its
- * own pipeline; every such accessor returns without arguments and without
- * changing execution state, which is what distinguishes it from `describe` and
- * `execute`. Lifecycle members are skipped even when they take no arguments, so
- * a probe can never dispose, stop or reset a host executor.
+ * The reader an executor publishes under one of the contract's names, looking
+ * through its prototype chain the way a class member is inherited.
  */
-function* transportAccessors(executor) {
-  const seen = new Set()
+function transportReader(executor, name) {
   for (let owner = executor; owner !== null && owner !== Object.prototype; owner = Object.getPrototypeOf(owner)) {
-    for (const key of Object.getOwnPropertyNames(owner)) {
-      if (key === 'constructor' || seen.has(key)) continue
-      seen.add(key)
-      if (LIFECYCLE_ACCESSORS.has(key)) continue
-      const descriptor = Object.getOwnPropertyDescriptor(owner, key)
-      // A getter is a zero-argument reader of the same shape as a method.
-      const accessor = typeof descriptor?.value === 'function' ? descriptor.value : descriptor?.get
-      if (typeof accessor !== 'function' || accessor.length !== 0) continue
-      yield accessor
-    }
+    const descriptor = Object.getOwnPropertyDescriptor(owner, name)
+    if (descriptor === undefined) continue
+    // A getter is a zero-argument reader of the same shape as a method.
+    const accessor = typeof descriptor.value === 'function' ? descriptor.value : descriptor.get
+    return typeof accessor === 'function' ? accessor : undefined
   }
+  return undefined
 }
+
 
 /**
  * Whether this executor declares the reserved transport among the tools it
@@ -187,22 +198,51 @@ export function hostTransportDefinition(tools, scope, name) {
   const cached = executorTransports.get(executor)?.get(name)
   if (cached !== undefined) return cached
   if (!executorOwnsTransport(executor, name)) return undefined
-  for (const accessor of transportAccessors(executor)) {
+  for (const reader of TRANSPORT_READERS) {
+    const accessor = transportReader(executor, reader)
+    if (accessor === undefined) continue
     let candidate
     try {
       candidate = accessor.call(executor)
     } catch {
-      // An accessor may depend on a service this scope has not mounted yet;
-      // that is no evidence about the surface, so keep probing.
+      // A reader may require a service this scope has not mounted yet; that is no
+      // evidence about the surface, so the next contracted reader still answers.
       continue
     }
     if (!isPublishedTransport(candidate, name)) continue
+    unreadableExecutors.delete(executor)
     let byName = executorTransports.get(executor)
     if (byName === undefined) executorTransports.set(executor, byName = new Map())
     byName.set(name, candidate)
     return candidate
   }
+  // The executor declares the transport and no contracted reader published it. That
+  // is a contract gap between host and plugin, not an absent surface; it is recorded
+  // so the gate can report which of the two facts holds.
+  unreadableExecutors.add(executor)
   return undefined
+}
+
+/**
+ * Whether this scope's executor declares the reserved transport but publishes no
+ * definition this plugin can read.
+ *
+ * The gate treats that as "no session execution" — a transport must never be
+ * invented — but it is not the same fact as a host without an executor, so callers
+ * can report the gap instead of dropping every feature that needs execution
+ * silently.
+ * @param {object} tools - the host tool registry (`ctx.tools`).
+ * @param {object} scope - the owning agent or scope key.
+ * @param {string} [name] - the reserved transport name.
+ * @returns {boolean} true when the host declares it and the definition is unreadable.
+ */
+export function hostTransportUnreadable(tools, scope, name = 'run_code') {
+  const executor = hostToolExecutor(tools, scope)
+  if (executor === undefined) return false
+  const registered = typeof tools?.get === 'function' ? tools.get(name, scope) : undefined
+  if (registered !== null && typeof registered === 'object') return false
+  return executorOwnsTransport(executor, name)
+    && executorTransports.get(executor)?.get(name) === undefined
 }
 
 /**
@@ -220,6 +260,25 @@ export function sessionExecutionAvailable(tools, scope, name = 'run_code') {
 }
 
 /**
+ * Executions this plugin submitted under the host's batch dispatch contract.
+ *
+ * That contract assigns the execution identity itself, so the execution object a
+ * host runs is not the one the caller built and carries no parent token the caller
+ * could compare. The submission record is what remains: the call id this plugin
+ * chose, which the host matched its result back to.
+ */
+const batchSubmissions = new WeakSet()
+
+/**
+ * Whether this execution was submitted as a host batch call.
+ * @param {object} execution - an execution object this plugin built.
+ * @returns {boolean} true when the batch contract dispatched it.
+ */
+export function isBatchSubmission(execution) {
+  return execution !== null && typeof execution === 'object' && batchSubmissions.has(execution)
+}
+
+/**
  * Dispatch one tool call through the host registry.
  *
  * Two dispatch contracts are published. A registry host accepts one call and
@@ -233,6 +292,9 @@ export function sessionExecutionAvailable(tools, scope, name = 'run_code') {
  */
 export async function dispatchToolCall(tools, execution) {
   if (typeof tools?.selectExecutor !== 'function') return tools.execute(execution)
+  // Recorded before the host runs the batch: it calls back into this plugin during
+  // the dispatch, and the relation has to be provable then.
+  batchSubmissions.add(execution)
   const settled = await tools.execute({
     calls: [{ id: execution.callId, name: execution.name, arguments: JSON.stringify(execution.arguments) }],
     signal: execution.signal,

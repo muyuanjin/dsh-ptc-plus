@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { createHash } from 'node:crypto'
 import { extractPackFilename } from './npm-pack-filename.mjs'
-import { npmCliCommand } from './npm-cli.mjs'
+import { npmCliCommand, spawnFailure } from './npm-cli.mjs'
 import { MANIFEST_PATH, OFFICIAL_REGISTRY, readManifest, verifyInstalledChannel } from './host-channel-manifest.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -55,7 +55,8 @@ function run(executable, args, options = {}) {
     env: options.env ?? process.env,
   })
   if (result.status !== 0) {
-    throw new Error(`${executable} ${args.join(' ')} failed\n${result.stdout ?? ''}${result.stderr ?? ''}`)
+    const failure = spawnFailure(executable, args, result)
+    throw new Error(`${failure.message}\n${result.stdout ?? ''}${result.stderr ?? ''}`)
   }
   return result.stdout
 }
@@ -153,7 +154,11 @@ async function verifyConsumer(consumer, label, host) {
       },
     })
     if (result.status !== 0) {
-      throw new Error(`${label} / ${script} failed\n${result.stdout}${result.stderr}`)
+      // A contract script the spawn budget killed has no exit status. Naming the
+      // outcome and its cause keeps a killed contract distinguishable from a failing
+      // one in the text that is the operator's only attribution for a channel.
+      const failure = spawnFailure(script, [], result)
+      throw new Error(`${label}: ${failure.message}\n${result.stdout ?? ''}${result.stderr ?? ''}`)
     }
     process.stdout.write(result.stdout)
   }

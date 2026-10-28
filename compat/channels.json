@@ -68,9 +68,13 @@
           "integrity": "sha512-jFA+ub/v6jBwhmrdZtcVHKV6taJ731O2fzC9PXdIVOnOQ9bYds1kIdYsbhgBL7YFd40xWwV/LlJnE5L52v0jFw=="
         }
       },
-      "offTrain": [
-        "@deepseek-ai/cordis"
-      ]
+      "offTrain": {
+        "@deepseek-ai/cordis": {
+          "version": "4.0.6-alpha.1",
+          "integrity": "sha512-GgUFYPkAERAhjq/H7ASM9G2tWu07bY6XOD/q16jUXqsj/arawh0EIZKB+PjTXLjC7vgG3XptSvJ/8dZkkIWsfQ=="
+        }
+      },
+      "absent": []
     },
     "latest": {
       "channel": "latest",
@@ -135,8 +139,13 @@
           "integrity": "sha512-rtsHJHGE9SWX+zOgtDbPUqz3h7r+qFm3h1WASzRJxDnULqo7JaBdIiGshNTFPmetsX+r1T69CKFdTZAJmHwMug=="
         }
       },
-      "offTrain": [
-        "@deepseek-ai/cordis",
+      "offTrain": {
+        "@deepseek-ai/cordis": {
+          "version": "4.0.5",
+          "integrity": "sha512-Sktq5axy0owk9PdnivBRNOJjHEVEibCt0+TDDZcv0+UH2KS1M910fX4kn5y45YFsrpZIi1mJf/1s5VzywMUnyg=="
+        }
+      },
+      "absent": [
         "@deepseek-ai/dsh-tool-executor-ptc"
       ]
     },
@@ -203,8 +212,13 @@
           "integrity": "sha512-JYsPbakzRF/SpqEQsZpzgJ8peM4EI3nipfO/W1wMdLVZ9HCTtLogqW8Y6LH9Jp7sHnYNMECOpGW/tCQSW8UoSQ=="
         }
       },
-      "offTrain": [
-        "@deepseek-ai/cordis",
+      "offTrain": {
+        "@deepseek-ai/cordis": {
+          "version": "4.0.5",
+          "integrity": "sha512-Sktq5axy0owk9PdnivBRNOJjHEVEibCt0+TDDZcv0+UH2KS1M910fX4kn5y45YFsrpZIi1mJf/1s5VzywMUnyg=="
+        }
+      },
+      "absent": [
         "@deepseek-ai/dsh-tool-executor-ptc"
       ]
     }

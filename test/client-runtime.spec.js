@@ -36,6 +36,11 @@ const replProjection = (runtime, memory, runtimeId = 'client-test-runtime') => (
 const sessionCatalog = (entries, management = 'managed', savedSettings = undefined) => (
   { schema: 'ptc-capability-session-catalog/v1', management, entries,
     ...(savedSettings === undefined ? {} : { savedSettings }) })
+// The declaration-policy control is named by its field owner, not by this spec: the
+// settings view renders the field's English label, and the compatibility selector and
+// the migrated switch both carry that one name.
+const DECLARATION_POLICY_LABEL = CONFIG_FIELDS.find(field => field.key === 'bindingUpdates').labelEn
+const DECLARATION_POLICY_LABEL_ZH = CONFIG_FIELDS.find(field => field.key === 'bindingUpdates').label
 
 function wrappedPrimitives() {
   return Object.fromEntries(Object.entries(primitives).map(([name, component]) => [name,
@@ -2826,14 +2831,14 @@ test.each([
   await runtime.flush()
   fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
   await runtime.flush()
-  const selector = view.getByRole('combobox', { name: 'Allow redeclarations and overrides' })
+  const selector = view.getByRole('combobox', { name: DECLARATION_POLICY_LABEL })
   expect(selector.textContent).toContain('Legacy settings (not migrated)')
-  expect(view.queryByRole('switch', { name: 'Allow redeclarations and overrides' })).toBeNull()
+  expect(view.queryByRole('switch', { name: DECLARATION_POLICY_LABEL })).toBeNull()
   expect(view.getByRole('switch', { name: 'Allow top-level variable redeclarations' }).checked)
     .toBe(legacy.looseTopLevelRedeclarations ?? value.looseTopLevelRedeclarations)
   expect(settings.mutate).not.toHaveBeenCalled()
   expect(settings.set).not.toHaveBeenCalled()
-  await chooseCapabilityOption(view, 'Allow redeclarations and overrides', SETTINGS_COPY.en[`bindingPolicy.${policy}`])
+  await chooseCapabilityOption(view, DECLARATION_POLICY_LABEL, SETTINGS_COPY.en[`bindingPolicy.${policy}`])
   await runtime.flush()
   expect(selector.disabled).toBe(true)
   expect(selector.textContent).toContain('Legacy settings (not migrated)')
@@ -2847,9 +2852,9 @@ test.each([
   migration.resolve()
   await runtime.flush()
   expect(settings.set).not.toHaveBeenCalled()
-  expect(view.queryByRole('combobox', { name: 'Allow redeclarations and overrides' })).toBeNull()
+  expect(view.queryByRole('combobox', { name: DECLARATION_POLICY_LABEL })).toBeNull()
   expect(view.container.querySelector('[aria-label="Allow top-level variable redeclarations"]')).toBeNull()
-  const toggle = view.getByRole('switch', { name: 'Allow redeclarations and overrides' })
+  const toggle = view.getByRole('switch', { name: DECLARATION_POLICY_LABEL })
   expect(toggle.checked).toBe(policy === 'stateful')
   expect(toggle.disabled).toBe(false)
   fireEvent.click(toggle)
@@ -2869,7 +2874,7 @@ test.each([
   await runtime.flush()
   fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
   await runtime.flush()
-  const selector = view.getByRole('combobox', { name: '允许重声明和覆盖' })
+  const selector = view.getByRole('combobox', { name: DECLARATION_POLICY_LABEL_ZH })
   expect(selector.textContent).toContain('沿用旧版设置（尚未迁移）')
   expect(selector.disabled).toBe(true)
   fireEvent.click(selector)
@@ -3195,7 +3200,7 @@ test('the authoring entry opens the complete settings dialog from every host sea
     await runtime.flush()
     expect(view.queryByRole('menu')).toBeNull()
     const dialog = view.getByRole('dialog', { name: 'PTC Plus settings' })
-    expect(dialog.querySelector('[aria-label="Allow redeclarations and overrides"]')).not.toBeNull()
+    expect(dialog.querySelector(`[aria-label="${DECLARATION_POLICY_LABEL}"]`)).not.toBeNull()
     fireEvent.click(within(dialog).getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.budgets'] }))
     await runtime.flush()
     expect(dialog.querySelector(`[aria-label="${SETTINGS_COPY.en['capabilities.observationSession']}"]`)).not.toBeNull()
@@ -3663,7 +3668,7 @@ test('switching a saved capability configuration uses one public settings mutati
   expect(view.getByText('Capability configuration was not applied')).not.toBeNull()
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
-  fireEvent.click(view.getByRole('switch', { name: 'Allow redeclarations and overrides' }))
+  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
   await runtime.flush()
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
   expect(settings.scope.getSnapshot().value.capabilityBudgetBytes).toBe(initial.capabilityBudgetBytes)
@@ -7674,7 +7679,7 @@ test.each(['zh', 'en'])('context feature status follows independent saved settin
 test('capability save feedback reflects its own pending or conflicting writes', async () => {
   const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.probe', category: 'tool' }] })
   updateSetting.mockResolvedValue('status.conflict')
-  fireEvent.click(view.getByRole('switch', { name: 'Allow redeclarations and overrides' }))
+  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
   await act(async () => {})
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Saved · used by new sessions')
@@ -7686,7 +7691,7 @@ test('capability save feedback reflects its own pending or conflicting writes', 
   await act(async () => pending.resolve('status.conflict'))
   expect(feedback()).toBe(SETTINGS_COPY.en['status.conflict'])
   updateSetting.mockResolvedValue('status.applied')
-  fireEvent.click(view.getByRole('switch', { name: 'Allow redeclarations and overrides' }))
+  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
   await act(async () => {})
   expect(feedback()).toBe(SETTINGS_COPY.en['status.conflict'])
   view.unmount()

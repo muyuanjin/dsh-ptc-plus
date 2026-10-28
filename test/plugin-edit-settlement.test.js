@@ -158,6 +158,51 @@ test('submits a derived edit as one model batch on a host that keeps its transpo
   assert.equal((await state.runDurable(session.id, 'return ++batchDispatched', {}, { session })).value, 3)
 })
 
+test('a host that mints its own batch identity still runs the accepted edit', async t => {
+  // The executor contract assigns the execution identity of a submitted call, so
+  // the parent token and root call the registry path compares belong to the host.
+  // The relation the plugin owns is the call id it chose; losing it makes the
+  // nested result arrive without an execution journal, the accepted edit fail
+  // after acceptance, and the revision never apply.
+  const session = Session.create('derived-edit-batch-identity')
+  const state = fixture()
+  t.after(() => state.dispose())
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  session.append('turn/start', { turn: 1 })
+  await state.assemble(
+    { sections: [], contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal },
+  )
+  const singleCall = state.ctx.tools.execute
+  state.ctx.tools.selectExecutor = () => ({ describe: () => ({ knownNames: ['run_code'] }) })
+  state.ctx.tools.execute = async options => {
+    if (!Array.isArray(options?.calls)) return singleCall(options)
+    const results = []
+    for (const call of options.calls) {
+      results.push({ callId: call.id, result: await singleCall({ ...options, callId: call.id,
+        name: call.name, arguments: JSON.parse(call.arguments),
+        parent: Symbol('executor.execution'), rootCallId: call.id }) })
+    }
+    return { results }
+  }
+
+  const setup = await state.runDurable(session.id, 'let batchIdentified = 1; return batchIdentified', {},
+    { session, callId: 'batch-identity-setup' })
+  assert.equal(setup.value, 1)
+
+  const edit = await runNestedEditCell(state, {
+    session, agent, callId: 'batch-identity-edit', signal,
+    code: 'return await tools.edit_run_code({ edits: [{ old_string: "= 1", new_string: "= 2" }] })',
+  })
+  assert.equal(edit.result.isError, false, JSON.stringify(edit.result))
+  assert.equal(edit.receipt.accepted, true, JSON.stringify(edit.receipt))
+  assert.ok(edit.result.meta.dshPtcPlusPostEdit)
+  assert.match(edit.raw.logs.at(-1), /edit_run_code settled \(target run_code call \d+/)
+  assert.equal((await state.runDurable(session.id, 'return batchIdentified * 10',
+    {}, { session })).value, 20)
+})
+
 test('background roots after a derived edit read their own official Session observation', async t => {
   const session = Session.create('derived-background-observation')
   const state = fixture()

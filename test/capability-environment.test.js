@@ -301,6 +301,37 @@ test('session capability choices preserve their sources across refresh, global c
   assert.equal(entries.find(entry => entry.id === 'tools.other').temporary, 'closed')
 })
 
+test('a capability proof reports the catalog it published and the rule it saved', async t => {
+  // The receipt states three facts about one capability. Two of them are read from
+  // state a plan entry alone cannot prove: a closed choice removes the entry from the
+  // model-visible catalog, and a global save is recorded as a policy rule rather than
+  // as the legacy override map.
+  let saved = config({ 'tools.probe': 'full' })
+  const agent = agentFor(Session.create('capability-proof'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const proof = (id = 'tools.probe') => env.describeCapabilityProof(agent, id)
+  assert.equal(proof().delivery, 'delivered')
+  assert.equal(proof().saved, true, 'the configured choice is recorded')
+  const save = async (scope, selection) => env.change(agent, { scope, id: 'tools.probe', selection },
+    agent.signal, { read: () => ({ value: saved, revision: 1 }),
+      update: async patch => { saved = { ...saved, ...patch }; env.reconfigure(saved) } })
+  // A session choice that closes the capability removes it from the catalog, so the
+  // plan holding an entry for it no longer proves the model received it.
+  await save('session', 'closed')
+  assert.equal(proof().delivery, 'absent', 'a closed entry is not published')
+  await save('session', 'automatic')
+  assert.equal(proof().delivery, 'delivered')
+  // A global save of a disclosure dimension is written into the policy, not into the
+  // override map, and the receipt must still report the save it made.
+  await save('global', 'on-demand')
+  assert.equal(proof().saved, true)
+  assert.equal(proof().delivery, 'delivered')
+})
+
 test('global capability save failure and session publication failure keep distinct confirmed outcomes', async t => {
   let saved = config()
   const agent = agentFor(Session.create('choice-failures'))

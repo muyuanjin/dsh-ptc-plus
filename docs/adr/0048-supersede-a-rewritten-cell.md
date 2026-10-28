@@ -1,45 +1,48 @@
-# 日志折叠：修订取代被编辑的单元格
+# Supersede a rewritten cell
 
-## 状态
+## Status
 
-已接受（0.5.3）。
+Accepted (0.5.3).
 
-## 问题
+## Problem
 
-`edit_run_code` 的接受收据安排一次派生执行：外层 cell 结算后，整段目标源码以修订后的形态重跑，并作为另一条记录写入日志。0.5.2 的折叠把两条记录都当作环境成员，于是"追加"成为语义：被编辑的单元格继续参与环境构建，修订在它之后又叠一层。
+An accepted `edit_run_code` receipt schedules a derived execution: after the outer cell settles, the whole target source runs again in its revised form and is recorded as one more cell. The 0.5.2 fold treated both records as environment members, so "append" became the meaning: the edited cell kept building the environment and the revision stacked on top of it.
 
-追加在多数情况看不出问题，因为修订声明了同样的名字并覆盖了旧值。但它留下一个说不清的状态：目标单元格声明、修订不再声明的名字仍然存在于环境里，而日志中没有任何单元格再声明它。此时插件对模型陈述的名字没有可产出的证据：源码里已经没有这段声明，重启后又按另一套规则消失。
+Appending is invisible in the common case, because the revision declares the same names and overwrites the old values. It leaves one state the plugin cannot state: a name the target declared and the revision no longer declares still exists in the environment, while no cell in the log declares it any more. The plugin then has no producible evidence for a name it reports to the model: the source no longer contains that declaration, and a restart removes it by a different rule.
 
-## 决定
+## Decision
 
-被编辑的单元格与它的修订之间是一条**取代关系**，不是删除。
+The edited cell and its revision are related by **supersession**, not by deletion.
 
-- 日志不变：被编辑的单元格与修订都留在记录里，两者都保留自己的 journal 与源码。
-- 折叠决定环境：`editRewritesHistory` 打开时，修订折叠为记录中的普通单元格，被取代的单元格保留 node 但离开 head 的 parent 路径；它的后继（包括发起编辑的外层 cell）改接它的 parent，因此路径上除该单元格之外的一切照旧。
-- 关系可从日志重建：折叠结果给出 `supersessions`（`supersededCallSeq` / `supersedingCallSeq`）与 `supersededBindings`，与 `deletedBindings` 一样只附着在恢复结果上，不改变 §history 的可枚举形状。
-- 报告：一次取代关系在每个 runtime 内报告一次 `PTC-R007`，说明哪一格取代了哪一格；日志能证明的、修订不再提供的名字一并点名。
-- 默认关闭。关闭时折叠完全保持 0.5.2 的追加语义，既有用例与既有会话日志的解释都不变。
+- The log does not change: the edited cell and the revision both stay recorded, each with its own journal and source.
+- The fold decides the environment: with `editRewritesHistory` on, the revision folds as an ordinary recorded cell and **takes the edited cell's place** — it continues from that cell's parent, and the cells recorded after the edited cell continue from the revision. The superseded cell keeps its node but leaves the head's parent path; the head stays the latest recorded cell.
+- The relation does not depend on how the revision itself settled: a revision that settled volatile is installed from its recorded values and still replaces its target; a revision the fold contracts (its recorded values cannot be installed) is absent from the environment, and the relation the record states still holds, so the target's provable names are still reported as superseded. A contracted revision has no node to continue from, so its successors continue from the superseded cell's parent. A `discarded` settlement is no evidence that the revision ran, so it states no relation and keeps append semantics; a `noop` derived settlement never becomes a record and states none either.
+- The relation is reconstructable from the log: the fold reports `supersessions` (`supersededCallSeq` / `supersedingCallSeq`) and `supersededBindings`, attached to the recovery result like `deletedBindings` and without changing the enumerable shape of §history.
+- Reporting: one relation states `PTC-R007` once per runtime, naming which cell replaced which, together with the names the log can prove and the revision no longer supplies.
+- Off by default. When it is off, the fold keeps 0.5.2's append semantics exactly, so neither existing cases nor the reading of earlier session logs changes.
 
-## 只声明能证明的部分
+## What it claims and what it refuses to claim
 
-`supersededBindings` 只包含日志能证明的名字：volatile 结算记录的 `values`、`unrecordedBindings` 与 `binding` save 操作。durable 单元格的声明名不在 journal 里——它们由重放重新执行得出——所以折叠不会替模型猜一个名字，`PTC-R007` 在无名可报时只陈述关系本身。
+`supersededBindings` contains only names the log can prove: the `values` a volatile settlement recorded, `unrecordedBindings`, and `binding` save operations. A durable cell's declared names are not in its journal — replay produces them by executing the source — so the fold never guesses a name for the model, and `PTC-R007` states only the relation when there is no name to report.
 
-live worker 与耐久折叠的分工沿用既有契约：恢复重放构建的环境是被取代关系生效的环境，live 缓存仍然持有它执行过的值。这与 `PTC-R005`（记录中的 rewind 结束了这些 binding）的处理方式相同：记录声明了结束，通知点名它们，但不把 live 缓存说成已被清空。
+The live worker and the durable fold keep their existing division of labour: the environment recovery replays is the environment the supersession applies to, while the live cache keeps the values it executed. This matches how `PTC-R005` (a recorded rewind ended these bindings) is handled: the record states the ending, the notice names it, and the live cache is not described as already emptied.
 
-## 反例
+## Alternatives considered
 
-- 修订与被编辑单元格声明完全相同的名字：关系成立、环境与追加语义一致，没有名字可报。
-- 被拒绝的编辑：没有派生执行，没有关系，日志照旧。
-- 目标单元格不可证明（缺失 journal 或落在收缩窗口后）：不存在 node 可取代，折叠按普通记录追加或收缩。
-- 关闭开关：被编辑单元格继续参与环境构建，`supersessions` 为空。
+- **Keep append semantics and report the leftover names as lost.** Rejected: the log does contain a cell that declared them, so "lost" would be false, and the model would be told to redeclare a name whose replacement it never saw.
+- **Delete the superseded cell from the log.** Rejected: the session log is append-only evidence, and history replacement belongs to DSH. Supersession is a fold-time relation, and the record has to keep proving what happened.
+- **Refuse the edit unless the revision redeclares every name the target declared.** Rejected: an accepted edit is the user's decision about the cell's source, and a revision that intentionally drops a name is legal JavaScript. Refusing it would make the transport decide the source.
+- **Report the relation on every later fold instead of once per runtime.** Rejected: the relation is a durable fact of the log, not a per-cell event; repeating it on every recovery is noise the model cannot act on twice, and the names it withdraws are reported by their own diagnostics.
+- **Adopt the relation for a `discarded` settlement too.** Rejected: a discarded settlement is not evidence that the revision ran, so claiming it replaced the target would state an execution the log denies.
 
-## 影响
+## Consequences
 
-- 打开开关后，环境中的单元格集合不再等于日志中的单元格集合；两者的差是被取代关系，而不是丢失。
-- 后续 cell 读到的是修订值，恢复后同样如此。
-- 关闭开关前写入的会话日志在开关打开后按同一关系折叠，因为关系在日志里，而不是在配置里。
+- With the switch on, the set of cells in the environment no longer equals the set of cells in the log; the difference is the supersession relation, not a loss.
+- Later cells read the revised value, and so do they after recovery.
+- A session log written while the switch was off folds under the same relation once it is on, because the relation lives in the log rather than in the configuration.
+- A runtime that supersedes a cell reports `PTC-R007` beside any restore notice the same recovery produces, and each consecutive recovery states the facts it replayed.
 
-## 相关
+## Related
 
-- ADR 0025 拥有逻辑 binding identity 与语言世代。
-- [durability-design.md](../durability-design.md) 的「日志折叠」与「恢复通知」两节描述折叠顺序与诊断。
+- ADR 0025 owns logical binding identity and language generations.
+- [durability-design.md](../durability-design.md) §「日志折叠」 and §「恢复通知」 describe the fold order and the diagnostics.

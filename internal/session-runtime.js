@@ -357,15 +357,14 @@ class SessionKernel {
     this.liveCallSeqs = new Set()
     this.unverifiedCompletions = []
     this.restoredFromRecord = []
-    this.recoveryNotice = disposedCells > 0
+    this.recoveryNotices = disposedCells > 0
       // A kernel whose owning agent or session was disposed must not resurrect
       // the disposed environment: the history is gone by contract, and a later
       // cell starts from an empty REPL with the loss reported once.
-      ? recoveryDiagnostic([], disposedCells)
+      ? [recoveryDiagnostic([], disposedCells)]
       : history.volatileSuffix.length === 0
-        ? undefined
-        : recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)
-    this.recoveryNoticeShown = false
+        ? []
+        : [recoveryDiagnostic(droppedBindingNames(history), history.volatileSuffix.length)]
     // Bindings a recovery told the model were live, and the last help pair that
     // explained a recovery. Both exist to keep one event from being reported
     // twice and to notice a binding that stops existing afterwards.
@@ -589,7 +588,7 @@ class SessionKernel {
         if (worker !== undefined) await this.resetWorker(worker)
         this.rollbackToDurable()
         if (config.durableReplay) {
-          this.recoveryNotice = undefined
+          this.recoveryNotices = []
           try {
             this.history = recoverJournal(observedSession, request.callSeq, {
               visibleCallSeqs,
@@ -600,13 +599,14 @@ class SessionKernel {
             const boundary = recoveryBoundaryForHistory(this.history, undefined, { reset: true })
             if (boundary !== undefined) recoveryBoundaries.push(boundary)
             this.history = emptyHistory()
-            this.recoveryNotice = recoveryDiagnostic([], 1)
+            this.recoveryNotices = [recoveryDiagnostic([], 1)]
             this.initialRecoveryBoundary = undefined
             /* c8 ignore stop */
           }
           /* c8 ignore start -- volatile suffix on the first fold; no case settles a volatile suffix before the first replay */
           if (this.history.volatileSuffix.length > 0) {
-            this.recoveryNotice = recoveryDiagnostic(droppedBindingNames(this.history), this.history.volatileSuffix.length)
+            this.recoveryNotices = [recoveryDiagnostic(
+              droppedBindingNames(this.history), this.history.volatileSuffix.length)]
           }
           /* c8 ignore stop */
           this.initialRecoveryBoundary = recoveryBoundaryForHistory(this.history)
@@ -619,7 +619,7 @@ class SessionKernel {
         } else {
           this.history = emptyHistory()
           this.replayed = true
-          this.recoveryNotice = recoveryDiagnostic([], 1)
+          this.recoveryNotices = [recoveryDiagnostic([], 1)]
         }
       }
     }
@@ -731,10 +731,12 @@ class SessionKernel {
           this.durability = durabilityState()
         }
       }
-      // One recovery event produces one notice. The four facts below describe the
-      // same event, so they are composed once instead of overwriting each other:
-      // an earlier overwrite dropped the restored-name list whenever a later fact
-      // arrived, and a repeat entry re-emitted the same sentence.
+      // One recovery event produces one report. The facts below describe the same
+      // event, so each one that holds is collected instead of overwriting the ones
+      // already found: an earlier overwrite dropped the restored-name list whenever
+      // a later fact arrived, and a relation dropped that way was then cleared
+      // without ever reaching the model. The facts never name the same binding, so
+      // collecting them states the event once per fact rather than twice per name.
       const restoredCount = this.restoredFromRecord.length
       const allLive = [...new Set(this.restoredFromRecord.flatMap(item => item.bindings))]
       // Report only what this recovery added. A later recovery that installs
@@ -770,19 +772,19 @@ const failedNames = [...new Set(this.restoredFromRecord
       /* c8 ignore stop */
       } else if (restoredCount > 0) {
         this.recoveryEventCount += 1
-        this.recoveryNotice = restoredFromRecordDiagnostic(
+        this.recoveryNotices.push(restoredFromRecordDiagnostic(
           restoredCount,
           liveNames,
           failedNames,
           alreadyReported,
-        )
+        ))
       }
       /* c8 ignore start -- needs a proven name the replay never visits; no case records one */
       if (droppedNames.length > 0) {
-        this.recoveryNotice = recoveryDiagnostic(droppedNames, droppedNames.length)
+        this.recoveryNotices.push(recoveryDiagnostic(droppedNames, droppedNames.length))
       /* c8 ignore stop */
       } else if (restoredCount === 0 && skipped > 0) {
-        this.recoveryNotice = recoveryDiagnostic([], skipped)
+        this.recoveryNotices.push(recoveryDiagnostic([], skipped))
       }
       // A rewind that ended a binding is recorded, not a loss: report it only when
       // the replay installed nothing under that name anywhere (path, off-path or
@@ -792,27 +794,34 @@ const failedNames = [...new Set(this.restoredFromRecord
       // reported once per runtime instead of on every later fold.
       const freshSupersessions = (this.supersessions ?? [])
         .filter(item => !this.announcedSupersessions.has(item.supersedingCallSeq))
-      if (this.recoveryNotice === undefined && (freshSupersessions.length > 0 || supersededNames.length > 0)) {
-        this.recoveryNotice = supersededDiagnostic(supersededNames, freshSupersessions)
+      // A restored cell and a superseded one are two facts about the same recovery,
+      // not alternatives: the names this relation withdrew are excluded from the
+      // missing and rewind lists, so a report that chose the restore notice over it
+      // left a withdrawn name reported nowhere.
+      if (freshSupersessions.length > 0 || supersededNames.length > 0) {
+        this.recoveryNotices.push(supersededDiagnostic(supersededNames, freshSupersessions))
         for (const item of freshSupersessions) this.announcedSupersessions.add(item.supersedingCallSeq)
       }
-      if (this.recoveryNotice === undefined && endedNames.length > 0) {
-        this.recoveryNotice = rewindEndedDiagnostic(endedNames)
-      }
-      if (this.recoveryNotice === undefined && this.unverifiedCompletions.length > 0) {
-        this.recoveryNotice = unverifiedCompletionDiagnostic(this.unverifiedCompletions.length)
+      if (endedNames.length > 0) {
+        this.recoveryNotices.push(rewindEndedDiagnostic(endedNames))
       }
       // A completion the replay could not certify is not a lost binding: the
       // replay established them, and only the recorded payload stays unproved.
-      if (this.recoveryNotice !== undefined) {
+      if (this.unverifiedCompletions.length > 0) {
+        this.recoveryNotices.push(unverifiedCompletionDiagnostic(this.unverifiedCompletions.length))
+      }
+      if (this.recoveryNotices.length > 0) {
         // Remember what was promised as live, so a binding that disappears later
         // is reported by name instead of surfacing as an unexplained ReferenceError.
         for (const name of liveNames) this.announcedLive.add(name)
         // The help pair explains the recovery once. Repeating it on every later
         // recovery in the same session is noise the model cannot act on twice.
-        const signature = this.recoveryNotice.message
-        if (this.recoveryHelpSignature === signature) this.recoveryNotice = { ...this.recoveryNotice, help: [] }
-        else this.recoveryHelpSignature = signature
+        const signature = this.recoveryNotices.map(item => item.message).join('\n')
+        if (this.recoveryHelpSignature === signature) {
+          this.recoveryNotices = this.recoveryNotices.map(item => ({ ...item, help: [] }))
+        } else {
+          this.recoveryHelpSignature = signature
+        }
       }
       this.restoredFromRecord = []
       this.missingBindings = undefined
@@ -820,11 +829,12 @@ const failedNames = [...new Set(this.restoredFromRecord
       this.supersededEndedBindings = undefined
       this.supersessions = undefined
     }
-    const leadingDiagnostics = [
-      ...(this.recoveryNotice === undefined || this.recoveryNoticeShown ? [] : [this.recoveryNotice]),
-    ]
-    this.recoveryNoticeShown = this.recoveryNotice !== undefined
-    this.recoveryNotice = undefined
+    // Every recovery reports the facts it established. Suppressing a later recovery's
+    // notice hid a relation the runtime had already marked as announced, so a name the
+    // revision withdrew was reported nowhere; what is deduplicated is the explanation
+    // (below) and each name or relation this runtime already stated.
+    const leadingDiagnostics = this.recoveryNotices
+    this.recoveryNotices = []
     if (request.journal !== undefined) request.journal.diagnostics.push(...leadingDiagnostics)
     let result
     try {

@@ -14,6 +14,16 @@ test('a host version compared with any spelling is a violation', () => {
     "const HOST_FLOOR = '0.2.1'",
     "if (dshPkg.version < '0.2.1') settleLegacy()",
     "if (ctx.tools?.hostVersionAtLeast?.('0.2.1')) enable()",
+    // A pinned package specifier is how a version comparison is written, so the
+    // specifier spelling may not buy the line an exemption.
+    "if (specifier === '@deepseek-ai/dsh@0.2.1-rc.4') return legacy()",
+    "const PINNED = new Set(['@deepseek-ai/dsh@0.2.1-rc.4'])",
+    "const pinnedVersion = '@deepseek-ai/dsh@0.2.1-rc.4'.split('@')[2]",
+    // A branch on the release prefix carries fewer components and decides exactly
+    // as much as a full comparison does.
+    "if (dshVersion.startsWith('0.2.')) enable()",
+    "if (dshVersion >= '0.2') enable()",
+    "const DSH_FLOOR = '0.2'",
   ]) {
     assert.notDeepEqual(hostVersionLiteralViolations(line), [], line)
   }
@@ -28,6 +38,10 @@ test('a version that belongs to something else is not a violation', () => {
     "if (hostname === '0.2.1') report()",
     "  // 0.2.2-alpha.2 will carry this shape",
     "import { describe } from './tool-executor.js'",
+    // `ghost` contains `host` and a stylesheet beside a 0.5px border is not a
+    // host-version claim.
+    "const style = '.ptcPlusButton[data-kind=ghost]{border:0.5px solid transparent}'",
+    "  const ratio = Math.round(0.5 * total)",
   ]) {
     assert.deepEqual(hostVersionLiteralViolations(line), [], line)
   }

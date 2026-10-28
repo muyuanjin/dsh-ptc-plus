@@ -117,3 +117,21 @@ test('headless config selects the executor row on a host that retires the mode f
   rows.find(row => row.id === 'tool-executor-native').disabled = false
   assert.throws(() => validateHeadlessRuntimeConfig(rows, 'wrong executor Host', runtime), /does not disable tool-executor-native/)
 })
+
+test('the older-host fallback rejects malformed raw streams when the host cannot expand them', async t => {
+  const { default: defaultExport, ...llm } = await import('@deepseek-ai/dsh-llm')
+  const { expandAssistantStream: _unused, ...withoutReader } = llm
+  t.mock.module('@deepseek-ai/dsh-llm', { defaultExport, namedExports: withoutReader })
+  const legacy = await import('../scripts/dsh-host-contract.mjs?legacy-stream-fallback')
+  for (const stream of [
+    [{ type: 'unknown-record' }],
+    [{ type: 'text-chunks', time0: 0, index: 0, texts: ['text'], dt: [1, 2] }],
+    [{ type: 'tool-call-chunks', time0: 0, index: 0, args: ['{}'], dt: [], id: '' }],
+    [{ type: 'chunk', time: 1.5, chunk: { type: 'usage', usage: {} } }],
+    [{ type: 'text-chunks', time0: 0, index: 0, texts: [], dt: [] }],
+  ]) assert.throws(() => legacy.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream } }))
+  const valid = [{ type: 'text-chunks', time0: 0, index: 0, texts: ['a', 'b'], dt: [1] }]
+  assert.deepEqual(legacy.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream: valid } }), [])
+  const usage = [{ type: 'chunk', time: 1, chunk: { type: 'usage', usage: { inputTokens: 5 } } }]
+  assert.deepEqual(legacy.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream: usage } }), [{ inputTokens: 5 }])
+})

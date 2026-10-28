@@ -139,7 +139,7 @@ async function mkdtempUnderTmp(prefix) {
     return mkdtemp(join(root, prefix))
   }
 }
-test('execution smoke rejects capability-only changes and accepts the real plugin', async t => {
+test('execution smoke rejects a plugin that never installs the entry and accepts the real plugin', async t => {
   const directory = await mkdtempUnderTmp('ptc-seam-smoke-')
   t.after(() => rm(directory, { recursive: true, force: true }))
   const smoke = fileURLToPath(new URL('../scripts/dsh-execution-seam-smoke.mjs', import.meta.url))
@@ -147,6 +147,10 @@ test('execution smoke rejects capability-only changes and accepts the real plugi
     cwd: fileURLToPath(new URL('..', import.meta.url)), encoding: 'utf8', timeout: 30_000,
   })
   const fake = join(directory, 'fake.mjs')
+  // Both variants mutate a shallow copy of the provider, so neither installs the
+  // public execution entry. That is the fact this case proves; the capability
+  // contract itself (sandboxMode/timeout/instructions withheld) is asserted by the
+  // smoke's own run against the real plugin below and by execution-seam-compat.
   for (const mutation of ['', 'runtime.run = null']) {
     await writeFile(fake, `export function apply(ctx) {
       const runtime = { ...(ctx.get('ptcRuntime') ?? ctx.get('codeRuntime')) }

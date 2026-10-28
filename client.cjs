@@ -1984,10 +1984,10 @@ var CONFIG_FIELDS = Object.freeze([
     type: "enum",
     options: Object.freeze(["stateful", "protected"]),
     default: "stateful",
-    label: "\u5141\u8BB8\u91CD\u58F0\u660E\u548C\u8986\u76D6",
-    labelEn: "Allow redeclarations and overrides",
+    label: "\u8DE8 cell \u58F0\u660E\u7B56\u7565",
+    labelEn: "Cross-cell declaration policy",
     description: "\u540C\u4E00\u4F5C\u7528\u57DF\u7684\u58F0\u660E\u548C\u8D4B\u503C\u53EF\u66F4\u65B0\u53D8\u91CF\u3001\u51FD\u6570\u3001\u7C7B\u53CA\u5BFC\u5165\u3002\u9009\u201C\u542F\u7528\u540D\u79F0\u4FDD\u62A4\u201D\u65F6\u6539\u4E3A\u68C0\u6D4B\u8DE8 cell \u91CD\u58F0\u660E\uFF0C\u5E76\u4FDD\u62A4\u65B0\u5EFA\u7684 const \u548C import\uFF1B\u9759\u6001 import/export \u59CB\u7EC8\u53EF\u7528\u3002",
-    descriptionEn: "Declarations and assignments update variables, functions, classes and imports in the same scope. Disabling detects cross-cell redeclarations and protects newly created const and import bindings; static import/export remains available."
+    descriptionEn: "Declarations and assignments update variables, functions, classes and imports in the same scope. With \u201CProtect names\u201D selected, cross-cell redeclarations are detected instead and newly created const and import bindings are protected; static import/export remains available."
   },
   {
     key: "canonicalizeToolCalls",

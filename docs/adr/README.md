@@ -24,3 +24,8 @@ This directory records stable design constraints for PTC Plus. An ADR states a d
 - [0043: Compose Capability and Context Policies](0043-compose-capability-and-context-policies.md) — independent availability, disclosure, allocation, collection, recovery and presentation inputs with historical replay generations.
 
 - [0044: Coexist With The Official Persistent REPL](0044-coexist-with-the-official-persistent-repl.md) — forwarded owner release, program format and state retention, plus live-capability ownership selection between PTC Plus and the official persistent REPL.
+- [0045: Customize Model-Visible Prompt Text](0045-customize-model-visible-prompt-text.md) — fixed plugin text becomes a document the user can edit per slot, with read-only segments and drafts.
+- [0046: Gate The Commit With The Semantic Evidence Tier](0046-gate-the-commit-with-the-semantic-evidence-tier.md) — the change gate runs the semantic tier rather than a hand-picked file list.
+- [0047: Store Journal Argument Digests In The Projection](0047-store-journal-argument-digests-in-the-projection.md) — the projection keeps argument digests so admission can reject a rewritten call.
+- [0048: Supersede A Rewritten Cell](0048-supersede-a-rewritten-cell.md) — an edit with the rewrite setting on supersedes its target; the target stays in the log and its names are reported as replaced.
+- [0049: Prove A Settlement Against Its Published Record](0049-prove-a-settlement-against-its-published-record.md) — a settlement carries the digest of what it asserts, so an edited record is not evidence.

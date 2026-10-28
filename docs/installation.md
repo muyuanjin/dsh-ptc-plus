@@ -159,7 +159,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.1`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.3`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Upgrades
 

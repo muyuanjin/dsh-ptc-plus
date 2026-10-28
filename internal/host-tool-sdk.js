@@ -41,8 +41,11 @@ async function loadCandidate(specifier) {
     // fails to initialise is a different fact: treating it as absent silently
     // substitutes another implementation, and reporting "no package provides this"
     // hides the real error from the operator.
-    const code = error?.code
-    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+    // "Cannot find package 'x'" means x is not installed. A module-not-found
+    // raised from inside x means x resolved and then failed, which must stay loud.
+    const missing = error?.code === 'ERR_MODULE_NOT_FOUND' || error?.code === 'MODULE_NOT_FOUND'
+    const absent = missing && String(error?.message ?? '').includes("Cannot find package '" + specifier + "'")
+    if (absent) {
       module = undefined
     } else {
       throw new Error(`ptc-plus: host package ${specifier} failed to load: ${error?.message ?? String(error)}`, { cause: error })

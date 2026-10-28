@@ -24,6 +24,7 @@ import {
   toolCapabilityMetadata,
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
+import { adaptRunCodeSchema } from './direct-surface-owner.js'
 import { hostTransportDefinition } from './host-tool-sdk.js'
 import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
@@ -395,6 +396,29 @@ export function createRuntimeBridgeOwner({
     return { request: { ...request, bindings: projected }, release }
   }
 
+/**
+ * The editable run_code slots have to reach whichever definition the host lets this
+ * plugin own. Two writes, one decision: if the host's parameter texts cannot be
+ * replaced, the definition keeps all of its own text rather than half of ours.
+ */
+function applyEditableSlots(definition, promptText) {
+  if (promptText === undefined) return
+  let adapted
+  try {
+    adapted = adaptRunCodeSchema(definition, promptText)
+  } catch {
+    return
+  }
+  const hadParameters = Object.hasOwn(definition, 'parameters')
+  try {
+    definition.parameters = adapted.parameters
+    definition.description = adapted.description
+  } catch {
+    if (!hadParameters) delete definition.parameters
+    return
+  }
+}
+
   const patchRunCodeDefinition = (agent) => {
     const definition = hostTransportDefinition(ctx.tools, agent, RUN_CODE)
     if (definition === undefined) {
@@ -403,19 +427,12 @@ export function createRuntimeBridgeOwner({
     if (definition.output === undefined) {
       throw new Error('ptc-plus: run_code definition has no output projection')
     }
-    if (patchedDefinitions.has(definition)) return
     // A host that declares its own model-facing tools never hands this plugin a
     // tools array to adapt, so the editable prompt slots reach the model only on
-    // the definition the executor projects. A definition of another shape keeps
-    // its own text: adapting is an improvement here, never a reason to fail.
-    try {
-      const promptText = readPromptText()
-      if (promptText !== undefined) {
-        const adapted = adaptRunCodeSchema(definition, promptText)
-        definition.description = adapted.description
-        definition.parameters = adapted.parameters
-      }
-    } catch {}
+    // the definition the executor projects. Re-applied on every request, because
+    // the prompt document can change while the definition stays the same object.
+    applyEditableSlots(definition, readPromptText())
+    if (patchedDefinitions.has(definition)) return
     const output = definition.output
     const ownPresentationMeta = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
     const patchedPresentationMeta = (args, value) => {

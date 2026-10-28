@@ -28,10 +28,14 @@ const LITERAL = /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b/
 // `dsh` and `host` prefix the identifiers a version check is written with:
 // `dshVersion`, `hostFloor`, `HOST_FLOOR`, `dshPkg.version`, `hostVersionAtLeast`.
 // `hostname` is the one prefix that is not a host; it is excluded by name.
-const HOST = /@deepseek-ai\/dsh\b|\b(?:dsh|host)(?!name)[A-Za-z0-9_]*/i
+// Any identifier that *contains* dsh/host, in any position: `MIN_DSH_FLOOR`,
+// `peerHostVersion`, `dshPkg.version`. `hostname` is the one word excluded by name.
+const HOST = /@deepseek-ai\/dsh|(?:[A-Za-z0-9_]*(?:dsh|host)(?!name)[A-Za-z0-9_]*)/i
 // A line may mention a version only as part of a host package specifier used in
 // an error message for humans; behaviour still may not compare against it.
-const ALLOW = [/^\s*\*/m, /^\s*\/\//m]
+// Comments, and a message that tells a human to install a package version, are
+// not behaviour: the former explains, the latter is text a user reads.
+const ALLOW = [/^\s*\*/m, /^\s*\/\//m, /@deepseek-ai\/dsh@/m]
 
 /**
  * Which lines would let a host version decide behaviour. A literal only counts

@@ -19,8 +19,14 @@ const BEHAVIOUR_ROOTS = ['index.js', 'internal', 'src']
 const SKIP = new Set(['node_modules', '.git', 'coverage', 'artifacts'])
 const LITERAL = /\b\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?\b/g
 // Only a *host* version is a hazard; other pins (the transform toolchain, for
-// example) are contracts of their own and stay where they are.
-const HOST = /@deepseek-ai\/dsh|\bdsh\b/i
+// example) are contracts of their own and stay where they are. The pattern has to
+// catch the spellings a version check is actually written with — `dshVersion`,
+// `hostVersion`, `DSH_VERSION` — not just the bare package prefix, or the guard
+// would miss exactly the line it exists to prevent.
+const HOST = /(?:@deepseek-ai\/)?\b(?:dsh|host)[A-Za-z_]*\b/i
+const COMPARISON = /(?:[<>]=?|===?|!==?)\s*['"`]?\d+\.\d+\.\d+/
+// Comparing a host version through a helper reads the same in reverse order.
+const COMPARE_CALL = /\b(?:compare|semver|satisfies|gte|lte|gt|lt)\s*\(/i
 // A line may mention a version only as part of a host package specifier used in
 // an error message for humans; behaviour still may not compare against it.
 const ALLOW = [/^\s*\*/m, /^\s*\/\//m]
@@ -35,19 +41,29 @@ function* sources(directory) {
   }
 }
 
+/** Which lines would let a host version decide behaviour. Exported so a test can
+ * assert that the guard discriminates, rather than trusting it because it is green. */
+export function hostVersionLiteralViolations(text) {
+  const found = []
+  text.split(/\r?\n/).forEach((line, index) => {
+    if (ALLOW.some(pattern => pattern.test(line))) return
+    if (!HOST.test(line) && !COMPARISON.test(line) && !COMPARE_CALL.test(line)) return
+    const match = line.match(LITERAL)
+    if (match === null) return
+    found.push(`${index + 1}: ${match[0]} — ${line.trim()}`)
+  })
+  return found
+}
+
 const violations = []
 for (const root of BEHAVIOUR_ROOTS) {
   const start = join(ROOT, root)
   const files = statSync(start).isDirectory() ? [...sources(start)] : [start]
   for (const file of files) {
     const text = readFileSync(file, 'utf8')
-    text.split(/\r?\n/).forEach((line, index) => {
-      if (ALLOW.some(pattern => pattern.test(line))) return
-      if (!HOST.test(line)) return
-      const match = line.match(LITERAL)
-      if (match === null) return
-      violations.push(`${relative(ROOT, file).replaceAll('\\', '/')}:${index + 1}: ${match[0]} — ${line.trim()}`)
-    })
+    for (const violation of hostVersionLiteralViolations(text)) {
+      violations.push(`${relative(ROOT, file).replaceAll('\\', '/')}:${violation}`)
+    }
   }
 }
 

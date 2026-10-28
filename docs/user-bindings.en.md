@@ -60,6 +60,21 @@ The code console runs the entry's unsaved source draft. It supports top-level `a
 
 Bindings are stored in `$DSH_HOME/ptc-plus/bindings.json`. Relative imports in binding modules resolve from that file's directory; ordinary session REPL imports resolve from the session's project directory.
 
+## Skipping an entry in this session only
+
+The global catalog decides what exists; whether *this* session uses an entry is a separate decision. Inside a session:
+
+| Command | Effect |
+| --- | --- |
+| `/binding status` | Lists every catalog entry and says whether this session uses it |
+| `/binding skip <id>` | This session does not use that entry; `id` is the identifier before the parentheses in `status` |
+| `/binding use <id>` | Undoes that choice |
+| `/binding reset` | Clears every choice for this session, back to "use what the catalog supplies" |
+
+Only this session changes: the global catalog and other sessions are untouched, the next cell already follows the new choice, and the choice survives a restart because it is recorded in the session log.
+
+An adoption decision can only withdraw a supplied entry. It cannot supply one, so an entry the catalog does not offer — or one disabled globally — stays unavailable here, and "the global switch is off but a session brought it back" cannot happen.
+
 ## Limits
 
 Enabled configuration allows loading but does not guarantee successful initialization. Assigning or redeclaring a same-name variable can override the global default in the current session without modifying its saved entry.

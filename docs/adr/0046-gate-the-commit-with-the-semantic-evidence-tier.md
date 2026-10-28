@@ -8,7 +8,7 @@
 
 The commit gate runs the static prerequisites plus the **semantic-evidence backend tier**; the complete behavioral inventories stay behind `npm run verify`.
 
-- `npm run check` records its proof from `npm run verify:check`: `review:validate`, `host:channels:verify`, `semantic:check`, `build:check`, the syntax checks and `deterministic-test-groups.mjs --check`.
+- `npm run check` records its proof from `npm run verify:check`: `review:validate`, `host:channels:verify`, `host:shape-check`, `semantic:check`, `build:check`, the syntax checks and `deterministic-test-groups.mjs --check`.
 - `--check` selects `test:client` plus `test:backend:fast`. The Client units stay in the gate because a change can be covered only by them; leaving them out let a red Client suite pass, which is how the copy-key and layout regressions were first caught. The backend tier is the test files that `semantic-obligations.json` names as evidence for at least one obligation, minus coverage-only paths and the verification-tooling probes that fail by construction outside their own harness. Each obligation keeps at least one executable owner, and the fast tier is derived from the ownership graph rather than a hand-maintained list.
 - `npm run verify` keeps the complete gate: `test:client:visual` plus the whole ordinary backend inventory. CI runs `verify:ci`, release preparation runs `verify` (and coverage), and any change that touches a semantic owner missing from the graph must extend the graph — which extends the fast tier at the same time.
 - Browser suites are no longer part of the commit gate. They remain the complete visual contract and run in `verify`, in CI, and on demand.

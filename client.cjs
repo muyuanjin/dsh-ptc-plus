@@ -2071,15 +2071,6 @@ var CONFIG_FIELDS = Object.freeze([
     descriptionEn: "Rebuilds recoverable REPL state from the session journal after a worker restart."
   },
   {
-    key: "editRewritesHistory",
-    type: "boolean",
-    default: false,
-    label: "\u7F16\u8F91\u6539\u5199\u76EE\u6807\u5355\u5143\u683C",
-    labelEn: "Rewrite the edited cell",
-    description: '\u5F00\u542F\u540E\uFF0C\u5DF2\u63A5\u53D7\u7684 edit_run_code \u4FEE\u8BA2\u53D6\u4EE3\u76EE\u6807\u5355\u5143\u683C\uFF1A\u76EE\u6807\u4ECD\u7559\u5728\u65E5\u5FD7\u91CC\uFF0C\u4F46\u4E0D\u518D\u53C2\u4E0E\u73AF\u5883\u91CD\u5EFA\uFF0C\u4FEE\u8BA2\u4E0D\u518D\u58F0\u660E\u7684\u540D\u5B57\u4EE5"\u88AB\u53D6\u4EE3"\u62A5\u544A\u800C\u4E0D\u662F"\u4E22\u5931"\u3002\u5173\u95ED\u65F6\u4FDD\u6301\u8FFD\u52A0\u8BED\u4E49\uFF0C\u65E7\u5355\u5143\u683C\u7EE7\u7EED\u53C2\u4E0E\u73AF\u5883\u3002',
-    descriptionEn: "When on, an accepted edit_run_code revision supersedes its target cell: the target stays in the log but no longer builds the environment, and names the revision no longer declares are reported as superseded rather than lost. Off keeps append semantics, where the old cell keeps contributing."
-  },
-  {
     key: "retentionPayloadRuns",
     type: "integer",
     default: 8,
@@ -2149,6 +2140,15 @@ var CONFIG_FIELDS = Object.freeze([
     labelEn: "Prioritize the official REPL mode",
     description: "\u68C0\u6D4B\u5230\u5B98\u65B9\u6301\u4E45 REPL \u6A21\u5F0F\u65F6\u7531\u5B98\u65B9\u8FD0\u884C\u65F6\u63A5\u7BA1 PTC \u4F1A\u8BDD\u6267\u884C\uFF1BPTC Plus \u8BA9\u51FA run_code \u53CA\u5176\u8FDB\u7A0B\u5185\u4F1A\u8BDD\u72B6\u6001\u8BED\u4E49\uFF0C\u5173\u95ED\u65F6\u59CB\u7EC8\u7531 PTC Plus \u63A5\u7BA1\u3002",
     descriptionEn: "Lets the official runtime own PTC session execution when the official persistent REPL mode is active; PTC Plus then leaves run_code and its in-process session-state semantics to DSH. Disabled keeps PTC Plus in charge."
+  },
+  {
+    key: "editRewritesHistory",
+    type: "boolean",
+    default: false,
+    label: "\u7F16\u8F91\u65F6\u66FF\u6362\u539F\u5355\u5143\u683C",
+    labelEn: "Replace the edited cell in place",
+    description: '\u9ED8\u8BA4\u5173\u95ED\uFF0C\u4E00\u822C\u4E5F\u4E0D\u9700\u8981\u6253\u5F00\uFF1A\u7F16\u8F91\u53EA\u4F1A\u8FFD\u52A0\u4E00\u6B21\u6267\u884C\uFF0C\u539F\u5355\u5143\u683C\u548C\u5B83\u521B\u5EFA\u7684\u7ED1\u5B9A\u90FD\u8FD8\u5728\u3002\u5F00\u542F\u540E\uFF0C\u7F16\u8F91\u4F1A\u66FF\u6362\u539F\u5355\u5143\u683C\uFF0C\u4E4B\u540E\u7684\u91CD\u5EFA\u6309\u65B0\u7248\u672C\u8FDB\u884C\uFF0C\u65B0\u7248\u672C\u91CC\u4E0D\u518D\u58F0\u660E\u7684\u540D\u5B57\u4F1A\u88AB\u70B9\u540D"\u5DF2\u88AB\u66FF\u6362"\uFF0C\u800C\u4E0D\u662F\u6084\u6084\u6D88\u5931\u3002\u53EA\u6709\u5F53\u4F60\u5E0C\u671B\u73AF\u5883\u8868\u73B0\u5F97"\u8FD9\u4E00\u683C\u4E00\u76F4\u5C31\u662F\u65B0\u7248\u672C"\u65F6\u624D\u9700\u8981\u6253\u5F00\u3002',
+    descriptionEn: "Off by default, and usually unnecessary: an edit appends one more execution, leaving the original cell and the bindings it created in place. When on, the edit replaces the original cell, later rebuilds follow the new version, and a name the new version no longer declares is reported as replaced rather than silently disappearing. Turn it on only when the environment should behave as if that cell had always been the new version."
   },
   {
     key: "tipsEnabled",

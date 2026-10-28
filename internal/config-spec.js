@@ -217,15 +217,6 @@ export const CONFIG_FIELDS = Object.freeze([
     descriptionEn: 'Rebuilds recoverable REPL state from the session journal after a worker restart.',
   },
   {
-    key: 'editRewritesHistory',
-    type: 'boolean',
-    default: false,
-    label: '编辑改写目标单元格',
-    labelEn: 'Rewrite the edited cell',
-    description: '开启后，已接受的 edit_run_code 修订取代目标单元格：目标仍留在日志里，但不再参与环境重建，修订不再声明的名字以"被取代"报告而不是"丢失"。关闭时保持追加语义，旧单元格继续参与环境。',
-    descriptionEn: 'When on, an accepted edit_run_code revision supersedes its target cell: the target stays in the log but no longer builds the environment, and names the revision no longer declares are reported as superseded rather than lost. Off keeps append semantics, where the old cell keeps contributing.',
-  },
-  {
     key: 'retentionPayloadRuns',
     type: 'integer',
     default: 8,
@@ -295,6 +286,15 @@ export const CONFIG_FIELDS = Object.freeze([
     labelEn: 'Prioritize the official REPL mode',
     description: '检测到官方持久 REPL 模式时由官方运行时接管 PTC 会话执行；PTC Plus 让出 run_code 及其进程内会话状态语义，关闭时始终由 PTC Plus 接管。',
     descriptionEn: 'Lets the official runtime own PTC session execution when the official persistent REPL mode is active; PTC Plus then leaves run_code and its in-process session-state semantics to DSH. Disabled keeps PTC Plus in charge.',
+  },
+  {
+    key: 'editRewritesHistory',
+    type: 'boolean',
+    default: false,
+    label: '编辑时替换原单元格',
+    labelEn: 'Replace the edited cell in place',
+    description: '默认关闭，一般也不需要打开：编辑只会追加一次执行，原单元格和它创建的绑定都还在。开启后，编辑会替换原单元格，之后的重建按新版本进行，新版本里不再声明的名字会被点名"已被替换"，而不是悄悄消失。只有当你希望环境表现得"这一格一直就是新版本"时才需要打开。',
+    descriptionEn: 'Off by default, and usually unnecessary: an edit appends one more execution, leaving the original cell and the bindings it created in place. When on, the edit replaces the original cell, later rebuilds follow the new version, and a name the new version no longer declares is reported as replaced rather than silently disappearing. Turn it on only when the environment should behave as if that cell had always been the new version.',
   },
   {
     key: 'tipsEnabled',

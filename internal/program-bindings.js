@@ -175,6 +175,17 @@ export function capabilityFind(metadata, query) {
     .map(candidate => candidate.value)
 }
 
+/**
+ * Inspection answers "how do I call this", so it hands back the declaration the
+ * model programs against. The JSON schema is how the plugin stores a signature,
+ * not how anyone reads one; keeping it in the payload made the model parse JSON
+ * to learn a call shape the source already states.
+ */
+function inspectableMember(member) {
+  const { schema, ...rest } = member
+  return rest
+}
+
 /** Batch, budgeted inspection; omitted items remain explicit to the caller. */
 export function capabilityInspect(metadata, symbols = undefined, budget = 50) {
   if (!Number.isSafeInteger(budget) || budget < 1) throw new TypeError('ptc-plus: capability inspection budget must be a positive integer')
@@ -190,7 +201,7 @@ export function capabilityInspect(metadata, symbols = undefined, budget = 50) {
   const selected = requested.slice(0, budget).flatMap((symbol) => {
     const key = text(symbol, 'capability symbol')
     const found = bySymbol.get(key)
-    return found === undefined ? [] : [found]
+    return found === undefined ? [] : [inspectableMember(found)]
   })
   return {
     symbols: selected,

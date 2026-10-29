@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
@@ -487,6 +487,47 @@ test('public retention and spill preserve complete presentation without rerunnin
   assert.deepEqual(JSON.parse(await readFile(saved.locator, 'utf8')), canonical)
 })
 
+
+test('session catalog reports a disabled global binding entry through the entry point reader', async t => {
+  // The entry point wires `readUserBindings: () => userBindings.list()`. Only
+  // `list()` keeps a disabled entry: `snapshot()` drops it, which would make the
+  // panel's "off globally" state unreachable. Bind that wiring to the real owner.
+  const root = await mkdtemp(join(tmpdir(), 'ptc-plus-entry-bindings-'))
+  const previousHome = process.env.DSH_HOME
+  process.env.DSH_HOME = root
+  t.after(async () => {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    await rm(root, { recursive: true, force: true })
+  })
+  await mkdir(join(root, 'ptc-plus'), { recursive: true })
+  await writeFile(join(root, 'ptc-plus', 'bindings.json'), JSON.stringify({ entries: [
+    { id: 'alpha', name: 'alphaHelpers', scope: 'namespace', purpose: 'Alpha helpers.', enabled: true,
+      source: 'export const alpha = 1' },
+    { id: 'beta', name: 'betaHelpers', scope: 'namespace', purpose: 'Beta helpers.', enabled: false,
+      source: 'export const beta = 2' },
+  ] }))
+  const { ctx } = host(t, 'ptc')
+  new CommandRuntime(ctx)
+  new AgentRegistry(ctx)
+  new SessionProjectionRegistry(ctx)
+  ctx.agents.list = () => []
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: {}, cursor: 0, events: [],
+    [Symbol.dispose]() {} }) })
+  const operations = new Map()
+  ctx.provide('ptcPlusRpc', { register(contract, handler) {
+    operations.set(contract.service, handler); return () => operations.delete(contract.service)
+  } })
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: true, cordisToolsEnabled: false,
+    capabilityManagementEnabled: true }).await()
+  const result = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId: 'entry-binding-session' }, signal())
+  assert.equal(result.ok, true)
+  assert.equal(result.value.live, false)
+  assert.deepEqual(result.value.bindings.map(row => ({ id: row.id, name: row.name, enabled: row.enabled, declined: row.declined })), [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false },
+  ])
+})
 
 test('settings catalog captures public MCP ownership before the first request without preparing plans or bindings', async t => {
   const {ctx,agent} = host(t,'ptc')

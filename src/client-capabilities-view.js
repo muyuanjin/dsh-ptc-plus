@@ -1447,16 +1447,26 @@ export function createCapabilityRefreshView(React, commands) {
 }
 
 /** Session capability choices use the real command transaction and a read-only catalog observation. */
-export function createSessionCapabilityControlsView(React, { commands, Modal, Select, inspectSessionCatalog }) {
+export function createSessionCapabilityControlsView(React, { commands, bindingCommands, Modal, Select, inspectSessionCatalog }) {
   const h = React.createElement
   const emptyDrafts = () => ({})
   // The panel reports the three capability facts only where it holds evidence:
   // the receipts its own commands returned. A catalogue row says what the plan
   // will do; it cannot say a cell reached the capability.
   const emptyProofs = () => ({})
+  // A binding write is a `/binding` command, so a Client without that access
+  // answers "not listed" instead of inventing a second write channel.
+  const absentCommands = Object.freeze({ getSnapshot: () => false, subscribe: () => () => {} })
   return function SessionCapabilityControls({ sessionId, open, enabled, t, onClose }) {
     const source = React.useMemo(() => commands.source(sessionId), [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
+    const bindingSource = React.useMemo(() => bindingCommands?.source(sessionId) ?? absentCommands, [sessionId])
+    const bindingAvailable = React.useSyncExternalStore(bindingSource.subscribe, bindingSource.getSnapshot)
+    // `null` means this response carried no binding group at all; a reason means it
+    // carried the group's absence and why, which is what the panel renders.
+    const [bindingView, setBindingView] = React.useState(null)
+    const [bindingPending, setBindingPending] = React.useState(null)
+    const [bindingFailure, setBindingFailure] = React.useState(null)
     const [catalog, setCatalog] = React.useState([])
   // A session with no live runtime is a fact about this session, not a failure:
   // the panel says which layer it has not observed instead of pretending the
@@ -1483,6 +1493,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const [pending, setPending] = React.useState(false)
     const request = React.useRef(null)
     const applying = React.useRef(false)
+    // The binding write that currently owns the pending row. A superseded write
+    // must not release a newer write's pending state, even when both address the
+    // same entry id in different sessions.
+    const bindingWrite = React.useRef(null)
     const mounted = React.useRef(true)
     const detail = React.useRef(null)
     const list = React.useRef(null)
@@ -1496,11 +1510,12 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     }, [focusDimension, selectedId, pane])
     React.useEffect(() => {
       mounted.current = true
-      return () => { mounted.current = false; request.current?.abort(); request.current = null }
+      return () => { mounted.current = false; request.current?.abort(); request.current = null; bindingWrite.current = null }
     }, [])
     React.useEffect(() => {
       request.current?.abort()
       request.current = null
+      bindingWrite.current = null
       applying.current = false
       setCatalog([])
       setManagement('unknown')
@@ -1514,6 +1529,9 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       setStatus(null)
       setProofs(emptyProofs())
       setPending(false)
+      setBindingView(null)
+      setBindingPending(null)
+      setBindingFailure(null)
       setError(null)
     }, [sessionId])
     const load = React.useCallback(async signal => {
@@ -1531,22 +1549,34 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           ? payload.management : 'unknown')
         setSavedSettings(payload.savedSettings !== null && typeof payload.savedSettings === 'object'
           && !Array.isArray(payload.savedSettings) ? payload.savedSettings : null)
+        // A reported array is the group the session sees; a reported `null` carries
+        // the reason instead, so the panel never renders an empty group in its place.
+        setBindingView(Array.isArray(payload.bindings) ? { rows: payload.bindings }
+          : payload.bindings === null ? { reason: payload.bindingsReason === 'supply-off' ? 'supply-off' : 'unreadable' }
+            : null)
         setError(null)
         return payload.entries
       } catch (failure) {
-        if (!signal.aborted && mounted.current && request.current?.signal === signal) setError(String(failure?.message ?? failure))
+        if (!signal.aborted && mounted.current && request.current?.signal === signal) {
+          setError(String(failure?.message ?? failure))
+          setBindingView(null)
+        }
       } finally {
         if (!signal.aborted && mounted.current && request.current?.signal === signal) setLoading(false)
       }
     }, [sessionId])
     React.useEffect(() => {
+      // A submitted command owns the shared slot: neither a settings or availability
+      // change nor the reload that follows it may abort or displace an apply or a
+      // binding write that is still in flight.
       if (!open || !enabled || !available) {
-        if (!applying.current) { request.current?.abort(); request.current = null }
+        if (!applying.current && bindingWrite.current === null) { request.current?.abort(); request.current = null }
         setLoading(false)
         return
       }
-      // An in-flight apply owns the shared catalog request and reloads it on completion.
-      if (applying.current) return
+      // An in-flight apply or binding write reloads the catalog on completion. A write
+      // abandoned by a session switch is cleared first, so the new session still loads.
+      if (applying.current || bindingWrite.current !== null) return
       const controller = new AbortController()
       request.current = controller
       void load(controller.signal)
@@ -1736,9 +1766,9 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     }
     const discard = () => { setDrafts(emptyDrafts()); setStatus(null) }
     const close = () => {
-      // A confirmed apply keeps its own lifecycle: refusing the close keeps an accidental
-      // Escape or backdrop click from aborting host commands the user already submitted.
-      if (applying.current) return
+      // A submitted command keeps its own lifecycle: an apply or a binding write that
+      // is still in flight cannot be aborted by Escape or a backdrop click.
+      if (applying.current || bindingPending !== null) return
       request.current?.abort()
       request.current = null
       applying.current = false
@@ -1844,6 +1874,85 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const dimensionCell = (entry, dimension, value) => temporaryDimension(entry, dimension) === value
       ? t('capabilities.quick.temporaryState', { state: statusLabel(value) }) : statusLabel(value)
     const openEditor = (entry, dimension = 'availability') => { setSelectedId(entry.id); setPane('detail'); setFocusDimension(dimension) }
+    // One of the three states a user can read: a supplied entry this session uses,
+    // one it declined, or one the global catalog disables and this session cannot
+    // revive (adoption only withdraws an entry; it never supplies one). The state
+    // comes from `declined` alone; `use` is that same bit read the other way.
+    const bindingState = row => row.enabled === false ? 'disabled' : row.declined === true ? 'skip' : 'use'
+    // Why this row's control cannot be used, in the order the layers own the fact:
+    // a `/binding` command this Client does not have, then an entry the global
+    // catalog disabled. The row reports the reason instead of only going dead.
+    const bindingBlock = row => !bindingAvailable ? 'command-unlisted'
+      : row.enabled === false ? 'entry-disabled' : null
+    const bindingToggle = async row => {
+      const controller = new AbortController()
+      request.current?.abort()
+      request.current = controller
+      bindingWrite.current = controller
+      setBindingPending(row.id)
+      setBindingFailure(null)
+      try {
+        // The decision is the command a human types; the panel adds no writer and
+        // reads the result back from the same catalog the command reports.
+        await bindingCommands.run(sessionId, `${row.declined === true ? 'use' : 'skip'} ${row.id}`, controller.signal)
+        if (request.current !== controller || controller.signal.aborted || !mounted.current) return
+        await load(controller.signal)
+      } catch (failure) {
+        if (request.current === controller && !controller.signal.aborted && mounted.current) {
+          setBindingFailure(String(failure?.message ?? failure))
+        }
+      } finally {
+        // One owner releases the shared slot and this write's pending state on every
+        // exit path. An apply or reload may take the slot while the write is in
+        // flight; leaving the row pending would keep every control in the group
+        // disabled for the rest of the panel. A write a session switch abandoned must
+        // not release the row of a write that session started afterwards.
+        if (request.current === controller) request.current = null
+        if (bindingWrite.current === controller) {
+          bindingWrite.current = null
+          if (mounted.current) setBindingPending(null)
+        }
+      }
+    }
+    const renderBindingRow = row => h('div', { key: row.id, role: 'group', 'aria-label': row.name ?? row.id,
+      className: 'ptcPlusBindingRow', 'data-binding-id': row.id, 'data-binding-state': bindingState(row) },
+      h('div', { className: 'ptcPlusBindingIdentity' },
+        h('span', { className: 'ptcPlusBindingName' }, row.name ?? row.id),
+        row.name && row.name !== row.id ? h('code', null, row.id) : null),
+      h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': bindingState(row),
+        'aria-pressed': bindingState(row) === 'use', 'aria-busy': bindingPending === row.id || undefined,
+        // An apply in flight owns the shared request slot, so a binding write started
+        // now would be aborted with it. The row reports that state instead of
+        // accepting a click the panel would discard.
+        disabled: !enabled || pending || bindingBlock(row) !== null || bindingPending !== null,
+        onClick: () => void bindingToggle(row) },
+      t(bindingState(row) === 'disabled' ? 'capabilities.binding.disabled'
+        : bindingState(row) === 'skip' ? 'capabilities.binding.skip' : 'capabilities.binding.use')))
+    // A group the read could not produce states why; an empty supply says the
+    // catalog has no entries rather than showing a heading over nothing. Rows the
+    // read did produce stay listed even when this Client has no `/binding` command:
+    // the group names that reason instead of leaving the controls silently dead.
+    const bindingSection = bindingView === null ? null : h('section', {
+      key: 'bindings', className: 'ptcPlusSessionCapabilityGroup ptcPlusBindingGroup',
+      'data-binding-group': bindingView.reason ?? 'rows' },
+      h('h3', null, t('bindings.title')),
+      bindingView.reason !== undefined
+        ? h('p', { className: 'ptcPlusBindingNotice', role: 'status' },
+          t(bindingView.reason === 'supply-off' ? 'capabilities.binding.supplyOff' : 'capabilities.binding.unreadable'))
+        : bindingView.rows.length === 0
+          ? h('p', { className: 'ptcPlusBindingNotice' }, t('bindings.empty'))
+          : [
+            !bindingAvailable
+              ? h('p', { key: 'unlisted', className: 'ptcPlusBindingNotice', role: 'status' },
+                t('capabilities.binding.commandUnlisted'))
+              : null,
+            h('div', { key: 'rows', className: 'ptcPlusBindingRows' }, ...bindingView.rows
+              .slice().sort((left, right) => (left.name ?? left.id).localeCompare(right.name ?? right.id)
+                || String(left.id).localeCompare(String(right.id)))
+              .map(renderBindingRow)),
+          ],
+      bindingFailure === null ? null : h('p', { className: 'ptcPlusBindingNotice', role: 'alert' },
+        t('bindings.failed', { error: bindingFailure })))
     const renderRow = entry => h('div', { key: entry.id, role: 'row',
       className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem', 'data-capability-id': entry.id, 'data-selected': selected?.id === entry.id,
       onClick: () => openEditor(entry) },
@@ -1876,7 +1985,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     h('div', { className: 'ptcPlusSessionCapabilityHead' },
       h('div', null, h('h2', null, t('capabilities.quick.modalTitle')),
         h('p', null, t('capabilities.quick.sessionIdentity', { session: sessionId }))),
-      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'), disabled: pending, onClick: close }, '×')),
+      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'),
+        // The close path refuses while a submitted command is in flight, so the control
+        // reports that state instead of looking clickable and doing nothing.
+        disabled: pending || bindingPending !== null, onClick: close }, '×')),
     h('div', { className: 'ptcPlusSessionCapabilityToolbar' },
       h('label', { className: 'ptcPlusSearch' },
         h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true },
@@ -1904,7 +2016,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           : savedSettings?.contextEnabled === false ? 'capabilities.quick.savedPaused'
             : 'capabilities.quick.savedManagementOff')) : null,
     h('div', { className: 'ptcPlusSessionCapabilityWorkspace', 'data-pane': pane },
-      h('div', { className: 'ptcPlusSessionCapabilityList', role: 'table', 'aria-label': t('capabilities.quick.members'), ref: list },
+      // The binding group sits in the same scroll column but outside the capability
+      // table: its rows answer a different question and carry their own control.
+      h('div', { className: 'ptcPlusSessionCapabilityList' },
+        h('div', { className: 'ptcPlusSessionCapabilityTable', role: 'table', 'aria-label': t('capabilities.quick.members'), ref: list },
         h('div', { className: 'ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns', role: 'row' },
           ...CAPABILITY_SORT_COLUMNS.map(column => h('span', { key: column.key, role: 'columnheader',
             'aria-sort': capabilitySortDirection(sort, column.key),
@@ -1926,6 +2041,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           .map(group => h('section', { key: group, className: 'ptcPlusSessionCapabilityGroup' },
             h('h3', null, t(`capabilities.quick.${group}`)),
             h('div', { role: 'rowgroup' }, ...matches.filter(entry => category(entry) === group).map(renderRow)))))),
+        bindingSection),
       h('aside', { className: 'ptcPlusSessionCapabilityDetail', 'aria-label': t('capabilities.details'), ref: detail },
         h('button', { type: 'button', className: 'ptcPlusSessionCapabilityBack', onClick: () => { setPane('list'); setFocusDimension('list') } },
           t('capabilities.quick.backToList')),
@@ -2018,11 +2134,11 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
       // Session-scoped temporary application stays the footer's primary action; saving global
       // defaults is an explicit secondary choice, so no default-looking control changes global state.
       h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', title: t('capabilities.quick.sessionHint'),
-        disabled: pending || !enabled || !available || writesBlocked || staged.length === 0, onClick: () => void apply('session') },
+        disabled: pending || bindingPending !== null || !enabled || !available || writesBlocked || staged.length === 0, onClick: () => void apply('session') },
         t('capabilities.quick.applySession')),
       h('button', { type: 'button', className: 'ptcPlusButton',
         title: t(hasInheritanceReset ? 'capabilities.quick.inheritSessionOnly' : 'capabilities.quick.globalHint'),
-        disabled: pending || !enabled || !available || writesBlocked || staged.length === 0 || hasInheritanceReset,
+        disabled: pending || bindingPending !== null || !enabled || !available || writesBlocked || staged.length === 0 || hasInheritanceReset,
         onClick: () => void apply('global') },
         t('capabilities.quick.applyGlobal')),
       h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',

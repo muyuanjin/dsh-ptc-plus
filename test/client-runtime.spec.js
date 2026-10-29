@@ -2140,6 +2140,29 @@ test('sparkle session capability workbench reads a catalog, groups sources and p
   expect(rpcCalls).toEqual([])
 })
 
+test('the mounted plugin panel writes a binding decision through the `/binding` command', async () => {
+  // The panel is constructed once by the shipped client, so its binding command
+  // access must be observable from the mounted plugin rather than only from a view
+  // this spec builds itself: a dropped prop would leave every row "not listed".
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false }]
+  const execute = vi.fn(async () => ({ ok: true, value: { commandId: 'binding',
+    result: { kind: 'success', text: 'Session binding adoption recorded.' } } }))
+  const { runtime } = await fixture({ bindings: true,
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+      ? { ...sessionCatalog([]), bindings: rows } : [] }),
+    commands: { list: async () => ({ ok: true, value: [{ name: 'capabilities' }, { name: 'binding' }] }), execute } })
+  const view = runtime.renderRoot(); await runtime.flush()
+  await openGlobalMenu(view, runtime, 'click')
+  fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
+  const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
+  const toggle = within(panel).getByRole('button', { name: 'Used in this session' })
+  expect(toggle.disabled).toBe(false)
+  expect(within(panel).queryByText('The `/binding` command is not listed in this session, so these entries can be read but not changed here.')).toBeNull()
+  fireEvent.click(toggle); await runtime.flush()
+  expect(execute.mock.calls.map(([, line]) => line)).toContain('/binding skip alpha')
+})
+
 test('sparkle session capability controls reload saved-only facts and refuse to cancel an in-flight apply', async () => {
   const pending = deferred()
   let entries = [{ id: 'tools.probe', category: 'tool', source: { kind: 'host' }, saved: 'automatic', temporary: 'inherit', effective: 'on-demand' }]
@@ -2526,16 +2549,30 @@ test('session capability batch stages one choice for every selected item and app
   } finally { view.unmount() }
 })
 
-async function sessionControlsFixture({ read, run, sessionId = 'client-session' }) {
+async function sessionControlsFixture({ read, run, bindingRun, bindingPayload, bindingAvailable = true,
+  bindingSessions, sessionId = 'client-session' }) {
   let available = true
   const subscribers = new Set()
   const source = { getSnapshot: () => available, subscribe: listener => {
     subscribers.add(listener); return () => subscribers.delete(listener)
   } }
   const commands = { source: () => source, run: vi.fn(run) }
-  const inspectSessionCatalog = vi.fn(async (sessionId, signal) => sessionCatalog(await read(sessionId, signal)))
+  // The binding rows write through the `/binding` command access, so the fixture
+  // supplies the same `{ source, run }` shape the capability command has. `source`
+  // answers for the fixture's own session only, so a panel that reads another
+  // session's (or no session's) command availability is observable.
+  const bindingSource = { getSnapshot: () => bindingAvailable, subscribe: () => () => {} }
+  const absentBindingSource = { getSnapshot: () => false, subscribe: () => () => {} }
+  const bindingSources = []
+  const bindingCommands = { source: requested => {
+    bindingSources.push(requested)
+    return (bindingSessions ?? [sessionId]).includes(requested) ? bindingSource : absentBindingSource
+  },
+  run: vi.fn(bindingRun ?? (async () => ({ kind: 'success', text: 'Session binding adoption recorded.' }))) }
+  const inspectSessionCatalog = vi.fn(async (sessionId, signal) => ({ ...sessionCatalog(await read(sessionId, signal)),
+    ...(typeof bindingPayload === 'function' ? bindingPayload() : bindingPayload ?? {}) }))
   const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
-    commands, Modal: createFallbackModal(React, createPortal), Select: createSelect(React), inspectSessionCatalog,
+    commands, bindingCommands, Modal: createFallbackModal(React, createPortal), Select: createSelect(React), inspectSessionCatalog,
   })
   const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
     .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
@@ -2544,7 +2581,7 @@ async function sessionControlsFixture({ read, run, sessionId = 'client-session' 
   const view = render(element())
   cleanups.push(() => view.unmount())
   await act(async () => {})
-  return { view, props, commands, inspectSessionCatalog, rerender: () => view.rerender(element()),
+  return { view, props, commands, bindingCommands, bindingSources, inspectSessionCatalog, rerender: () => view.rerender(element()),
     setAvailable: async next => act(async () => { available = next; for (const listener of subscribers) listener() }) }
 }
 
@@ -2658,6 +2695,339 @@ test.each(['usage', 'mismatched'])('session controls retain the unconfirmed tail
   expect(view.getByRole('button', { name: /^tools.second$/ }).closest('.ptcPlusSessionCapabilityRow').querySelector('.ptcPlusSessionCapabilityPending').textContent).toContain('Closed')
   expect(view.getByRole('button', { name: /^tools.first$/ }).closest('.ptcPlusSessionCapabilityRow').querySelector('.ptcPlusSessionCapabilityPending').textContent).not.toContain('Closed')
   view.unmount()
+})
+
+test('session capability controls read binding rows with three readable states and write through the binding command', async () => {
+  let rows = [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false },
+    { id: 'gamma', name: 'gammaHelpers', enabled: true, declined: true },
+  ]
+  const bindingRun = vi.fn(async (sessionId, input) => {
+    const [decision, id] = input.split(' ')
+    rows = rows.map(row => row.id === id
+      ? { ...row, declined: decision === 'skip' } : row)
+    return { kind: 'success', text: 'Session binding adoption recorded.' }
+  })
+  const { view, bindingCommands, bindingSources, inspectSessionCatalog } = await sessionControlsFixture({
+    read: async () => [{ id: 'tools.probe', category: 'tool', source: { kind: 'host' }, saved: 'automatic',
+      temporary: 'inherit', effective: 'on-demand' }],
+    bindingRun, bindingPayload: () => ({ bindings: rows }),
+  })
+  try {
+    expect(view.getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
+    // The group is its own region inside the scroll column, not content of the
+    // element announced as the capability table.
+    expect(view.baseElement.querySelector('[role="table"] .ptcPlusBindingGroup')).toBeNull()
+    const rowFor = name => view.getByRole('group', { name })
+    // A supplied entry this session uses, one it declined, and one the global
+    // catalog disables: the third state is a reason, not an unknown row.
+    expect(within(rowFor('alphaHelpers')).getByRole('button', { name: 'Used in this session' }).disabled).toBe(false)
+    expect(within(rowFor('gammaHelpers')).getByRole('button', { name: 'Not used in this session' }).disabled).toBe(false)
+    const disabled = within(rowFor('betaHelpers')).getByRole('button', { name: 'Off globally: the entry is disabled' })
+    expect(disabled.disabled).toBe(true)
+    // The command access is that of the panel's own session, not of another one.
+    expect(bindingSources).toEqual(['client-session'])
+    fireEvent.click(within(rowFor('alphaHelpers')).getByRole('button', { name: 'Used in this session' }))
+    await act(async () => {})
+    // The panel owns no writer: the decision is the `/binding skip` a human types,
+    // and the row is read back from the same catalog the command reports.
+    expect(bindingCommands.run.mock.calls[0].slice(0, 2)).toEqual(['client-session', 'skip alpha'])
+    expect(inspectSessionCatalog).toHaveBeenCalledTimes(2)
+    expect(within(rowFor('alphaHelpers')).getByRole('button', { name: 'Not used in this session' })).not.toBeNull()
+    // The other direction is the only way to restore a declined entry, so it is
+    // driven as well: a panel that always writes `skip` must not pass this test.
+    fireEvent.click(within(rowFor('gammaHelpers')).getByRole('button', { name: 'Not used in this session' }))
+    await act(async () => {})
+    expect(bindingCommands.run.mock.calls.map(([, input]) => input)).toEqual(['skip alpha', 'use gamma'])
+    expect(inspectSessionCatalog).toHaveBeenCalledTimes(3)
+    expect(within(rowFor('gammaHelpers')).getByRole('button', { name: 'Used in this session' })).not.toBeNull()
+  } finally { view.unmount() }
+})
+
+test.each(['supply-off', 'unreadable'])('session capability controls name why the binding group is absent (%s)', async reason => {
+  const { view } = await sessionControlsFixture({ read: async () => [],
+    bindingPayload: { bindings: null, bindingsReason: reason } })
+  try {
+    expect(view.getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
+    expect(view.getByText(reason === 'supply-off'
+      ? 'Global bindings are off, so this session has no binding entries to show.'
+      : "The binding entries or this session's adoption record could not be read, so their state is not known yet.")).not.toBeNull()
+    // The modal renders through a portal, so the absence is asserted on the base
+    // element: the group states its reason and lists no row at all.
+    expect(view.baseElement.querySelectorAll('.ptcPlusBindingRow')).toHaveLength(0)
+  } finally { view.unmount() }
+})
+
+test('session capability controls list binding rows read-only when the `/binding` command is not listed', async () => {
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const { view, bindingCommands, bindingSources, inspectSessionCatalog } = await sessionControlsFixture({ read: async () => [],
+    bindingAvailable: false, bindingPayload: () => ({ bindings: rows }) })
+  try {
+    // An unlisted command is not an empty group: the rows the read produced stay
+    // visible, each control is disabled, and the group names the reason instead of
+    // leaving a rendered but silently dead toggle.
+    expect(view.getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
+    expect(bindingSources).toEqual(['client-session'])
+    expect(view.baseElement.querySelectorAll('.ptcPlusBindingRow')).toHaveLength(1)
+    expect(view.getByText('The `/binding` command is not listed in this session, so these entries can be read but not changed here.')).not.toBeNull()
+    const toggle = view.getByRole('button', { name: 'Used in this session' })
+    expect(toggle.disabled).toBe(true)
+    fireEvent.click(toggle)
+    await act(async () => {})
+    expect(bindingCommands.run).not.toHaveBeenCalled()
+    expect(inspectSessionCatalog).toHaveBeenCalledTimes(1)
+  } finally { view.unmount() }
+})
+
+test('session capability controls release a binding write whose request slot a reload took', async () => {
+  // The panel shares one request slot between the catalog read, the apply path and
+  // a binding write. Whichever owner takes the slot must not leave a row pending:
+  // a stranded row disables every control in the group for the rest of the panel.
+  const pending = deferred()
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: () => pending.promise, bindingPayload: () => ({ bindings: rows }) })
+  const { view, setAvailable } = fixture
+  try {
+    const toggle = () => view.getByRole('button', { name: 'Used in this session' })
+    fireEvent.click(toggle())
+    await act(async () => {})
+    expect(fixture.bindingCommands.run).toHaveBeenCalledWith('client-session', 'skip alpha', expect.anything())
+    expect(toggle().disabled).toBe(true)
+    // A service change takes the slot and aborts the in-flight write.
+    await setAvailable(false)
+    pending.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    await setAvailable(true)
+    expect(toggle().disabled).toBe(false)
+  } finally { view.unmount() }
+})
+
+test('session capability controls keep a newer binding write pending when an abandoned one settles', async () => {
+  // A session switch abandons the first write and clears its row; the new session
+  // then starts its own write for an entry with the same id. When the abandoned
+  // write settles it must not release the row the newer write still owns.
+  const first = deferred()
+  const second = deferred()
+  const writes = [first, second]
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: () => writes.shift().promise, bindingPayload: () => ({ bindings: rows }),
+    bindingSessions: ['client-session', 'next-session'] })
+  const { view, props, rerender } = fixture
+  try {
+    const toggle = () => view.getByRole('button', { name: 'Used in this session' })
+    fireEvent.click(toggle())
+    await act(async () => {})
+    expect(toggle().disabled).toBe(true)
+    props.sessionId = 'next-session'
+    rerender()
+    await act(async () => {})
+    fireEvent.click(toggle())
+    await act(async () => {})
+    expect(toggle().disabled).toBe(true)
+    first.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    expect(toggle().disabled).toBe(true)
+    second.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    expect(toggle().disabled).toBe(false)
+  } finally { view.unmount() }
+})
+
+test('session capability controls report an unobserved inventory instead of an empty table', async () => {
+  // A session with no live runtime reports `live:false` with no entries: the panel
+  // says the inventory has not been observed instead of claiming nothing matches.
+  const { view } = await sessionControlsFixture({ read: async () => [],
+    bindingPayload: { live: false, entries: [], bindings: [] } })
+  try {
+    // The list column carries the sentence; the detail column has its own empty
+    // state, so the assertion is scoped to the column that states the inventory.
+    const list = view.baseElement.querySelector('.ptcPlusSessionCapabilityList')
+    expect(list.textContent).toContain('This session has no live runtime, so its capability inventory has not been observed; the session can still use every host tool.')
+    expect(list.textContent).not.toContain('No matching capabilities')
+    expect(list.querySelector('.ptcPlusSessionCapabilityRow')).toBeNull()
+  } finally { view.unmount() }
+})
+
+test('session capability controls state an empty binding supply instead of an absence reason', async () => {
+  // A readable store that supplies nothing is an empty group with its own sentence,
+  // not one of the two absence reasons.
+  const { view } = await sessionControlsFixture({ read: async () => [], bindingPayload: { bindings: [] } })
+  try {
+    expect(view.getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
+    expect(view.getByText('No global entries yet')).not.toBeNull()
+    expect(view.baseElement.querySelectorAll('.ptcPlusBindingRow')).toHaveLength(0)
+    expect(view.queryByText('Global bindings are off, so this session has no binding entries to show.')).toBeNull()
+    expect(view.queryByText('The binding entries or this session\'s adoption record could not be read, so their state is not known yet.')).toBeNull()
+  } finally { view.unmount() }
+})
+
+test('session capability controls disable a binding write while an apply owns the panel', async () => {
+  // An apply and a binding write share one request slot. The row must not offer a
+  // click the panel would discard while the apply is in flight.
+  const pendingApply = deferred()
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [{ id: 'tools.probe', category: 'tool',
+    source: { kind: 'host' }, saved: 'automatic', temporary: 'inherit', effective: 'on-demand' }],
+    run: () => pendingApply.promise, bindingPayload: () => ({ bindings: rows }) })
+  const { view } = fixture
+  try {
+    fireEvent.click(view.getByRole('button', { name: /^tools\.probe$/ }))
+    await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
+    fireEvent.click(view.getByRole('button', { name: 'Apply to session' }))
+    await act(async () => {})
+    const toggle = view.getByRole('button', { name: 'Used in this session' })
+    expect(toggle.disabled).toBe(true)
+    fireEvent.click(toggle)
+    await act(async () => {})
+    expect(fixture.bindingCommands.run).not.toHaveBeenCalled()
+    pendingApply.resolve({ kind: 'success', text: capabilityCommandReceipt('recorded', 'client-session') })
+    await act(async () => {})
+  } finally { view.unmount() }
+})
+
+test('session capability controls report a rejected binding write instead of dropping it', async () => {
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: async () => { throw new Error('/binding is unavailable in this session') },
+    bindingPayload: () => ({ bindings: rows }) })
+  const { view } = fixture
+  try {
+    const toggle = view.getByRole('button', { name: 'Used in this session' })
+    expect(toggle.disabled).toBe(false)
+    fireEvent.click(toggle)
+    await act(async () => {})
+    // The failure is the panel's only report of a refused decision: it must name
+    // the reason and release the row so the user can try again.
+    expect(view.getByRole('alert').textContent).toContain('/binding is unavailable in this session')
+    expect(view.getByRole('button', { name: 'Used in this session' }).disabled).toBe(false)
+  } finally { view.unmount() }
+})
+
+test('session capability controls disable the binding rows when the panel is not writable', async () => {
+  // The panel can stay mounted while the plugin or its settings become unwritable;
+  // the rendered gate, not a click-time guard, is what keeps the row read-only.
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [], bindingPayload: () => ({ bindings: rows }) })
+  const { view, props, rerender } = fixture
+  try {
+    expect(view.getByRole('button', { name: 'Used in this session' }).disabled).toBe(false)
+    props.enabled = false
+    rerender()
+    await act(async () => {})
+    expect(view.getByRole('button', { name: 'Used in this session' }).disabled).toBe(true)
+  } finally { view.unmount() }
+})
+
+test('session capability controls refuse an apply while a binding write is in flight', async () => {
+  // A binding write already submitted must not be aborted by an apply that takes the
+  // shared slot: the apply controls report that state instead of accepting the click.
+  const pendingWrite = deferred()
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [{ id: 'tools.probe', category: 'tool',
+    source: { kind: 'host' }, saved: 'automatic', temporary: 'inherit', effective: 'on-demand' }],
+    bindingRun: () => pendingWrite.promise, bindingPayload: () => ({ bindings: rows }) })
+  const { view, commands } = fixture
+  try {
+    fireEvent.click(view.getByRole('button', { name: /^tools\.probe$/ }))
+    await chooseCapabilityOption(view, 'Selection strategy', 'Closed')
+    fireEvent.click(view.getByRole('button', { name: 'Used in this session' }))
+    await act(async () => {})
+    const applySession = view.getByRole('button', { name: 'Apply to session' })
+    const applyGlobal = view.getByRole('button', { name: 'Apply to global' })
+    expect(applySession.disabled).toBe(true)
+    expect(applyGlobal.disabled).toBe(true)
+    fireEvent.click(applySession)
+    await act(async () => {})
+    expect(commands.run).not.toHaveBeenCalled()
+    pendingWrite.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+  } finally { view.unmount() }
+})
+
+test('session capability controls lock every binding row while one write is in flight', async () => {
+  // One write owns the shared slot, so no sibling row may offer a click that the
+  // panel would discard; only the writing row reports itself as busy.
+  const pendingWrite = deferred()
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: () => pendingWrite.promise, bindingPayload: () => ({ bindings: rows }) })
+  const { view } = fixture
+  try {
+    const rowFor = name => view.getByRole('group', { name })
+    fireEvent.click(within(rowFor('alphaHelpers')).getByRole('button', { name: 'Used in this session' }))
+    await act(async () => {})
+    const writing = within(rowFor('alphaHelpers')).getByRole('button', { name: 'Used in this session' })
+    const sibling = within(rowFor('betaHelpers')).getByRole('button', { name: 'Used in this session' })
+    expect(writing.getAttribute('aria-busy')).toBe('true')
+    expect(writing.disabled).toBe(true)
+    expect(sibling.disabled).toBe(true)
+    expect(sibling.getAttribute('aria-busy')).toBeNull()
+    pendingWrite.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    expect(within(rowFor('betaHelpers')).getByRole('button', { name: 'Used in this session' }).disabled).toBe(false)
+  } finally { view.unmount() }
+})
+
+test('session capability controls refuse to close while a binding write is in flight', async () => {
+  // Closing aborts the shared request slot; a submitted binding decision must not be
+  // aborted after the fact, so both the control and the close path refuse.
+  const pendingWrite = deferred()
+  let handed
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: (sessionId, input, signal) => { handed = signal; return pendingWrite.promise },
+    bindingPayload: () => ({ bindings: rows }) })
+  const { view, props } = fixture
+  try {
+    fireEvent.click(view.getByRole('button', { name: 'Used in this session' }))
+    await act(async () => {})
+    // The dialog's own close control reports the refusal instead of looking clickable.
+    const closeButton = view.baseElement.querySelector('.ptcPlusDialogClose')
+    expect(closeButton).not.toBeNull()
+    expect(closeButton.disabled).toBe(true)
+    // Escape reaches the close path itself, which must refuse the abort.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await act(async () => {})
+    expect(props.onClose).not.toHaveBeenCalled()
+    expect(handed.aborted).toBe(false)
+    expect(view.getByRole('button', { name: 'Used in this session' }).disabled).toBe(true)
+    pendingWrite.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    expect(view.baseElement.querySelector('.ptcPlusDialogClose').disabled).toBe(false)
+    // Once the write settled, the close path no longer refuses.
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await act(async () => {})
+    expect(props.onClose).toHaveBeenCalled()
+  } finally { view.unmount() }
+})
+
+test('session capability controls keep a binding write alive across a command-availability flap', async () => {
+  // The availability effect owns the shared slot whenever it re-runs. A submit that
+  // already reached the host must not be aborted or displaced by that re-run.
+  const pending = deferred()
+  let handed
+  const rows = [{ id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false }]
+  const fixture = await sessionControlsFixture({ read: async () => [],
+    bindingRun: (sessionId, input, signal) => { handed = signal; return pending.promise },
+    bindingPayload: () => ({ bindings: rows }) })
+  const { view, setAvailable, inspectSessionCatalog } = fixture
+  try {
+    fireEvent.click(view.getByRole('button', { name: 'Used in this session' }))
+    await act(async () => {})
+    await setAvailable(false)
+    expect(handed.aborted).toBe(false)
+    await setAvailable(true)
+    expect(handed.aborted).toBe(false)
+    // The reload belongs to the write, not to the effect: nothing else reads yet.
+    expect(inspectSessionCatalog).toHaveBeenCalledTimes(1)
+    pending.resolve({ kind: 'success', text: 'Session binding adoption recorded.' })
+    await act(async () => {})
+    expect(inspectSessionCatalog).toHaveBeenCalledTimes(2)
+  } finally { view.unmount() }
 })
 
 test('settings refresh selects an exact session with management off and rejects duplicate clicks and late readonly receipts', async () => {

@@ -655,7 +655,7 @@
         "current SDK input/output schemas, signature and revision agree in search and inspect; output-only changes invalidate recovery and cursors",
         "settings-only catalog name and source metadata from public Skill provider/source and captured MCP owner sections without loading bodies, name-based provenance guesses or mutation of frozen model context; read-only session catalog publishes current saved preferences separately from sessionSourceSelection in the validated live or recorded frozen source, retaining unknown without a snapshot and both directions of divergence after global save without refresh",
         "read-only active PTC identity observation does not read or prepare plans, including management-off synchronization",
-        "read-only session capability catalog binds to one live PTC agent identity, rejects replacement and abort, and reports source, saved, temporary and effective facts without a command transaction",
+        "read-only session capability catalog reports source, saved, temporary and effective facts without a command transaction, rejects replacement and abort, reports a session with no refreshable PTC identity as unobserved with its saved settings, and lists the global binding supply with this session's own adoption decision without writing",
         "MCP server closure precedes independent child choices using frozen owner membership, preserves other servers and old inventories, and rejects ambiguous ownership rather than guessing; catalog observation captures public sections without session preparation or binding loads",
         "empty or whitespace-only public Host instruction sections create no dependencies while MCP ownership and SDK/resource contracts survive initial preparation, discovery, restoration and refresh; malformed dependencies remain invalid",
         "read-only allocation RPC observes explicit live PTC target workspace/global coverage and recomputes exact budget choices without session preparation, publication, sample registration, Skill body loads or model calls; frozen session inspection exposes its source settings separately",
@@ -760,7 +760,8 @@
         "test/client-runtime.spec.js"
       ],
       "dependsOn": [
-        "capability-family-statistics"
+        "capability-family-statistics",
+        "user-bindings-and-client"
       ]
     },
     {

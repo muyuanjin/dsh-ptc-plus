@@ -376,6 +376,9 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     })
     capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig,
       toolSchemasForAgent: toolSdkSchemasForAgent, modelSchemasForAgent: toolSchemasForAgent,
+      // The panel's binding rows report the same catalog `/binding` acts on, so the
+      // read borrows the bindings owner's `list()` instead of opening a second store.
+      readUserBindings: () => userBindings.list(),
       store: new CapabilityStatisticsStore({ ctx }) })
     runtimeBridge = createRuntimeBridgeOwner({
       ctx,

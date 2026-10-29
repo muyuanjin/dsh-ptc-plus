@@ -2,6 +2,9 @@ import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { PLAN_NAVIGATION } from '../internal/prompt-text.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry, agentEvents } from '@deepseek-ai/dsh-agent'
@@ -21,6 +24,8 @@ import { ToolRuntime, defineTool, renderToolsSdk } from '@deepseek-ai/dsh-tools'
 import { createCapabilityEnvironment as createEnvironment, capabilityPlanText, capabilityPlanTextFromMessage, readCapabilityContextMessage, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
+import { BINDING_ADOPTION_SCHEMA, bindingAdoptionMessage } from '../internal/binding-adoption.js'
+import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
 import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
 import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
@@ -83,6 +88,165 @@ test('session catalog observation requires the same active PTC agent and returns
   // The read no longer fails when the observed target is replaced mid-flight: it
   // reports the session as not observed, which is the fact the Client renders.
   assert.equal((await pending).live, false)
+})
+
+const bindingSupply = entries => async () => ({ revision: 3, path: '/tmp/ptc-plus/bindings.json',
+  entries: entries.map(entry => ({ scope: 'namespace', purpose: '', declaration: '',
+    symbols: [entry.id], origin: 'global', ...entry })) })
+
+test('session catalog lists binding rows for a session that declined nothing, keeping a disabled entry', async t => {
+  const agents = [agentFor(Session.create('binding-rows-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: bindingSupply([
+      { id: 'alpha', name: 'alphaHelpers', enabled: true },
+      { id: 'beta', name: 'betaHelpers', enabled: false },
+    ]) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  // Supply is the store's `list()`: a disabled entry stays a row (the panel says
+  // it is off globally) instead of disappearing as the adopted snapshot would.
+  // A session that recorded no decision uses every offered entry.
+  assert.deepEqual(catalog.bindings, [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false },
+  ])
+  assert.equal('bindingsReason' in catalog, false)
+})
+
+test('session catalog marks the binding entry this session declined, and leaves the others in use', async t => {
+  const session = Session.create('binding-declined-session')
+  session.append('user/message', bindingAdoptionMessage({ schema: BINDING_ADOPTION_SCHEMA, declined: ['alpha'] }),
+    { surfaceOp: 'append' })
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: bindingSupply([
+      { id: 'alpha', name: 'alphaHelpers', enabled: true },
+      { id: 'beta', name: 'betaHelpers', enabled: true },
+    ]) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+  assert.deepEqual(catalog.bindings, [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: true },
+    { id: 'beta', name: 'betaHelpers', enabled: true, declined: false },
+  ])
+})
+
+test('session catalog reports the binding group as absent with a reason when global bindings are off', async t => {
+  const agents = [agentFor(Session.create('binding-supply-off-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const reader = bindingSupply([{ id: 'alpha', name: 'alphaHelpers', enabled: true }])
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: false },
+    toolSchemasForAgent: () => [schema('run_code')], readUserBindings: reader })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  // The switch gates the catalog itself (`/binding` is not registered while it is
+  // off), so the read reports no group and the reason, never the entries as offered.
+  assert.equal(catalog.bindings, null)
+  assert.equal(catalog.bindingsReason, 'supply-off')
+})
+
+test('session catalog reports an unreadable binding supply instead of an empty group', async t => {
+  const agents = [agentFor(Session.create('binding-supply-unreadable-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const failure = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: async () => { throw new Error('bindings document unreadable') } })
+  t.after(() => failure.dispose())
+  const unread = await failure.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  assert.equal(unread.bindings, null)
+  assert.equal(unread.bindingsReason, 'unreadable')
+  const damaged = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: async () => ({ revision: 0, path: '/tmp/ptc-plus/bindings.json', entries: [], error: 'invalid bindings document' }) })
+  t.after(() => damaged.dispose())
+  const reported = await damaged.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  assert.equal(reported.bindings, null)
+  assert.equal(reported.bindingsReason, 'unreadable')
+})
+
+test('session catalog lists binding rows for a session with no live runtime', async t => {
+  // The read that replaced the old capability-list failure must still report the
+  // rows it does not need a runtime for: the supply comes from the store and the
+  // adoption from the session's own log, which an unobserved session still has.
+  const adoption = bindingAdoptionMessage({ schema: BINDING_ADOPTION_SCHEMA, declined: ['beta'] })
+  const ctx = { agents: { list: () => [] }, systemPrompt: { assemble: async () => ({ sections: [] }) },
+    sessionQuery: { observeSession: async () => ({ header: {}, cursor: 0,
+      events: [{ type: 'user/message', data: adoption }], [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: bindingSupply([
+      { id: 'alpha', name: 'alphaHelpers', enabled: true },
+      { id: 'beta', name: 'betaHelpers', enabled: true },
+    ]) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: 'unobserved-session' }, new AbortController().signal)
+  assert.equal(catalog.live, false)
+  assert.deepEqual(catalog.entries, [])
+  assert.deepEqual(catalog.bindings, [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: true, declined: true },
+  ])
+})
+
+test('session catalog reports an unreadable adoption log instead of dropping the supplied rows', async t => {
+  // The supply can be readable while this session's own log is not. The rows are
+  // withheld with the reason the panel renders, rather than reported as declined
+  // by nobody or as an empty catalog.
+  const ctx = { agents: { list: () => [] }, systemPrompt: { assemble: async () => ({ sections: [] }) },
+    sessionQuery: { observeSession: async () => { throw new Error('session log unavailable') } } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: bindingSupply([{ id: 'alpha', name: 'alphaHelpers', enabled: true }]) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: 'unreadable-log-session' }, new AbortController().signal)
+  assert.equal(catalog.live, false)
+  assert.equal(catalog.bindings, null)
+  assert.equal(catalog.bindingsReason, 'unreadable')
+})
+
+test('session catalog reports a disabled binding row read through the user bindings store list()', async t => {
+  // The entry point supplies `() => userBindings.list()`. Bind the panel read to
+  // that owner contract: `list()`/`describe()` keeps a disabled entry as a row and
+  // reports a damaged document as an error, while `snapshot()` would drop it.
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-plus-binding-supply-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const filename = join(directory, 'bindings.json')
+  await writeFile(filename, JSON.stringify({ entries: [
+    { id: 'alpha', name: 'alphaHelpers', scope: 'namespace', purpose: 'Alpha helpers.', enabled: true,
+      source: 'export const alpha = 1' },
+    { id: 'beta', name: 'betaHelpers', scope: 'namespace', purpose: 'Beta helpers.', enabled: false,
+      source: 'export const beta = 2' },
+  ] }))
+  const store = new UserBindingsStore({ filename })
+  const agents = [agentFor(Session.create('binding-store-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')], readUserBindings: () => store.list() })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  assert.deepEqual(catalog.bindings.map(row => ({ id: row.id, name: row.name, enabled: row.enabled, declined: row.declined })), [
+    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
+    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false },
+  ])
+})
+
+test('session catalog reports a readable but empty binding supply as an empty group', async t => {
+  // The most common store state -- bindings enabled, no document yet -- supplies
+  // nothing. It must stay an empty array with no reason, or "the catalog supplied
+  // nothing" collapses into "the catalog cannot be read".
+  const agents = [agentFor(Session.create('binding-empty-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: async () => ({ revision: 1, path: '/tmp/ptc-plus/bindings.json', entries: [] }) })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  assert.deepEqual(catalog.bindings, [])
+  assert.equal('bindingsReason' in catalog, false)
 })
 
 test('session catalog reports a saved-off group or management switch that still freezes an enabled session', async t => {

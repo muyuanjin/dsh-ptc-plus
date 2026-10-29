@@ -11,10 +11,11 @@ import { readSessionLog } from './session-events.js'
 import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
 import { normalizeCapabilityProof } from './capability-delivery-proof.js'
 import { createCapabilityPlan } from './capability-plan.js'
+import { declinedBindingEntries, latestBindingAdoption } from './binding-adoption.js'
 import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
-import { readRuntimeAvailability } from './runtime-messages.js'
+import { readRuntimeAvailability, readRuntimeMessage } from './runtime-messages.js'
 import { PLAN_CATEGORY_LINES, PLAN_NAVIGATION, PLAN_OVERAGE, PLAN_OVERAGE_HOLE,
   PROMPT_SLOT_IDS, planCategorySlotId, resolvePromptText, resolvePromptTextConfig } from './prompt-text.js'
 
@@ -433,14 +434,21 @@ function readContractUpdate(message, planDigest, sessionId) {
   return snapshot
 }
 
-/** Derived metadata only: invocation continues through the request's original host functions. */
-export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store, sessionHistoryForAgent }) {
+/**
+ * Derived metadata only: invocation continues through the request's original host functions.
+ *
+ * `readUserBindings` is the plugin's own store read (`list()`), supplied because
+ * that store belongs to the user-bindings owner: the capability read reports what
+ * the global catalog supplies without owning or duplicating it.
+ */
+export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store, sessionHistoryForAgent, readUserBindings }) {
   let currentConfig = config
   const sessions = new Map()
   const histories = new WeakMap()
   const sessionEvents = session => Array.isArray(session?.events) ? session.events : histories.get(session) ?? []
+  const sessionQueryService = () => typeof ctx.get === 'function' ? ctx.get('sessionQuery') : ctx.sessionQuery
   async function observeHistory(agent, signal) {
-    const query = typeof ctx.get === 'function' ? ctx.get('sessionQuery') : ctx.sessionQuery
+    const query = sessionQueryService()
     const log = sessionHistoryForAgent ? await sessionHistoryForAgent(agent, signal) : await readSessionLog(agent.session, query, signal)
     const events = log?.events ?? []
     histories.set(agent.session, events)
@@ -467,6 +475,63 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       if (message?.source?.kind === PTC_MESSAGE_SOURCE_KIND && message.source.form === CAPABILITY_PLAN_FORM && message.source.sessionId === id) latest = message
     }
     return latest
+  }
+  /**
+   * The entry this session declined, read from its own log.
+   *
+   * Adoption is one user message appended to the session, and the newest message
+   * states the current decision. A session that appended none declined nothing,
+   * which builds the same environment as stating "use": absence of a record is
+   * not a third state, so it is read as using every supplied entry.
+   */
+  function declinedBySession(events) {
+    const records = []
+    for (const event of Array.isArray(events) ? events : []) {
+      if (event?.type !== 'user/message') continue
+      const record = readRuntimeMessage(event.data)
+      if (record !== undefined) records.push(record)
+    }
+    return declinedBindingEntries(latestBindingAdoption(records))
+  }
+  /**
+   * The binding half of one session catalog read: what the global catalog supplies
+   * and how this session stands on each entry.
+   *
+   * Supply is the store's `list()`. `snapshot()` answers a different question — it
+   * drops disabled entries, so a row could not report "offered but globally
+   * disabled" — and `describe()` answers before the first load, which would report
+   * a full catalog as empty. The plugin switch gates the same catalog everywhere
+   * else (the `/binding` command is not even registered while it is off), so an off
+   * switch is an absent group *with its reason*, never an empty one: a row that
+   * exists is never unknown, and a group that cannot exist says why.
+   */
+  async function bindingGroup(sessionId, history, signal) {
+    if (currentConfig.userBindingsEnabled !== true) return { bindings: null, bindingsReason: 'supply-off' }
+    let supply
+    try {
+      supply = typeof readUserBindings === 'function' ? await readUserBindings() : undefined
+    } catch { supply = undefined }
+    if (supply === null || typeof supply !== 'object' || !Array.isArray(supply.entries) || supply.error !== undefined) {
+      return { bindings: null, bindingsReason: 'unreadable' }
+    }
+    let events = history
+    if (events === undefined) {
+      // A session with no live runtime still has a log, so its adoption is read
+      // from that log rather than guessed from an absent in-memory state.
+      try {
+        events = (await readSessionLog({ id: sessionId }, sessionQueryService(), signal))?.events
+      } catch {
+        signal?.throwIfAborted()
+        return { bindings: null, bindingsReason: 'unreadable' }
+      }
+    }
+    const declined = declinedBySession(events)
+    // One bit, one name: a row says whether this session declined the entry, and
+    // "uses it" is that same answer read by the consumer. Reporting `adopted` beside
+    // it would publish the negation under a second name and add a state
+    // (`{adopted:false, declined:false}`) nothing can reach.
+    return { bindings: supply.entries.map(entry => ({ id: entry.id, name: entry.name,
+      enabled: entry.enabled === true, declined: declined.has(entry.id) })) }
   }
   const operations = new WeakMap()
   const completions = new WeakMap()
@@ -1370,25 +1435,30 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const agent = (ctx.agents?.list?.() ?? []).find(candidate =>
         String(candidate.session.id ?? candidate.id) === sessionId && canRefresh(candidate))
       const savedSettings = capabilityConfiguration(currentConfig)
+      const saved = { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
+        contextEnabled: savedSettings.contextEnabled !== false }
       // A session with no refreshable runtime is a fact about the session, not a
       // reason to fail the panel: the Client shows the same rows and names the
       // layer it has not observed. Only an unreadable identity is a request error.
-      const notObserved = () => ({ schema: 'ptc-capability-session-catalog/v1', live: false,
-        management: 'unknown', entries: [],
-        savedSettings: { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
-          contextEnabled: savedSettings.contextEnabled !== false } })
-      if (!agent) return notObserved()
+      // Binding rows do not depend on a live runtime, so this branch reports them
+      // too: the supply comes from the store and the session's adoption from its log.
+      const notObserved = async history => ({ schema: 'ptc-capability-session-catalog/v1', live: false,
+        management: 'unknown', entries: [], ...await bindingGroup(sessionId, history, signal),
+        savedSettings: saved })
+      if (!agent) return await notObserved()
       const { management, entries } = await this.catalogObservation(agent, signal)
       signal?.throwIfAborted()
+      // The observation already read this session's log; reading the same cut for
+      // adoption keeps the response one read instead of two disagreeing ones.
+      const history = histories.get(agent.session)
       if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)
         || String(agent.session.id ?? agent.id) !== sessionId) {
-        return notObserved()
+        return await notObserved(history)
       }
       // The saved group and management switches gate session writes in change();
       // report them so the Client can block staged choices with the reason.
       return { schema: 'ptc-capability-session-catalog/v1', live: true, management, entries,
-        savedSettings: { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
-          contextEnabled: savedSettings.contextEnabled !== false } }
+        ...await bindingGroup(sessionId, history, signal), savedSettings: saved }
     },
     async observeAllocation({ sessionId, configuration } = {}, signal) {
       signal?.throwIfAborted()

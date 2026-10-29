@@ -178,10 +178,13 @@ export function createClientPlugin(require) {
       })
       const { observeRepl } = createReplObserver({ rpc, ctx })
       const capabilityCommands = createCommandAccess(ctx, 'capabilities')
+      // The panel's binding rows write through the same `/binding` command a human
+      // types, so they borrow its availability source instead of a second channel.
+      const bindingCommands = createBindingCommandAvailability(ctx)
       const CapabilityCommandCard = createCapabilityCommandCard(React)
       const CapabilityRefreshButton = createCapabilityRefreshView(React, capabilityCommands)
       const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
-        commands: capabilityCommands, Modal, Select,
+        commands: capabilityCommands, bindingCommands, Modal, Select,
         async inspectSessionCatalog(sessionId, signal) {
           const result = await rpc.call(RPC_CONTRACTS.capabilities, 'session-catalog', { sessionId }, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Session capability catalog unavailable')
@@ -366,7 +369,6 @@ export function createClientPlugin(require) {
           name: 'conversation.input.dock', id: 'ptc-plus-binding-review', order: -30, locale: LOCALE_NS,
         }, props => typeof props.useProjection === 'function' && props.sessionId !== undefined
           ? h(BindingReviewDock, { ...props, key: props.sessionId }) : null)))))
-      const availability = createBindingCommandAvailability(ctx)
       // The composer binding entry belongs to the PTC surface, exactly like the
       // header indicator and the REPL tab. A non-PTC session keeps plugin
       // settings and `/binding` command cards, but shows no binding shortcut and
@@ -387,7 +389,7 @@ export function createClientPlugin(require) {
           register: () => ctx.slots.register({
             name: 'conversation.input.left', id: 'ptc-plus-binding-author', order: 20, locale: LOCALE_NS,
             inject: sessionId => ({
-              hooks: { ptcSettings: preferenceScope, bindingCommand: availability.source(sessionId),
+              hooks: { ptcSettings: preferenceScope, bindingCommand: bindingCommands.source(sessionId),
                 capabilityCommand: capabilityCommands.source(sessionId) },
             }),
           }, props => props.sessionId === undefined ? null : h(BindingAuthorButton, { ...props, key: props.sessionId })),

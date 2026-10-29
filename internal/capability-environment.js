@@ -1366,20 +1366,27 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     async describeSessionCatalog({ sessionId } = {}, signal) {
       signal?.throwIfAborted()
-      if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('ptc-plus: select an active PTC session')
+      if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('ptc-plus: a capability read needs a session')
       const agent = (ctx.agents?.list?.() ?? []).find(candidate =>
         String(candidate.session.id ?? candidate.id) === sessionId && canRefresh(candidate))
-      if (!agent) throw new TypeError('ptc-plus: select an active PTC session')
+      const savedSettings = capabilityConfiguration(currentConfig)
+      // A session with no refreshable runtime is a fact about the session, not a
+      // reason to fail the panel: the Client shows the same rows and names the
+      // layer it has not observed. Only an unreadable identity is a request error.
+      const notObserved = () => ({ schema: 'ptc-capability-session-catalog/v1', live: false,
+        management: 'unknown', entries: [],
+        savedSettings: { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
+          contextEnabled: savedSettings.contextEnabled !== false } })
+      if (!agent) return notObserved()
       const { management, entries } = await this.catalogObservation(agent, signal)
       signal?.throwIfAborted()
       if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)
         || String(agent.session.id ?? agent.id) !== sessionId) {
-        throw new Error('ptc-plus: capability observation target is no longer available')
+        return notObserved()
       }
-      const savedSettings = capabilityConfiguration(currentConfig)
       // The saved group and management switches gate session writes in change();
       // report them so the Client can block staged choices with the reason.
-      return { schema: 'ptc-capability-session-catalog/v1', management, entries,
+      return { schema: 'ptc-capability-session-catalog/v1', live: true, management, entries,
         savedSettings: { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
           contextEnabled: savedSettings.contextEnabled !== false } }
     },

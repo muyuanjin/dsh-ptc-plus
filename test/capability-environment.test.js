@@ -65,9 +65,11 @@ test('session catalog observation requires the same active PTC agent and returns
     source: catalog.find(entry => entry.id === 'tools.probe').source,
   }, { saved: 'full', sessionSourceSelection: 'full', temporary: 'inherit', effective: 'full', source: { kind: 'host' } })
   assert.equal(agents[0].session.snapshotEvents().length, before)
-  await assert.rejects(env.describeSessionCatalog({ sessionId: 'missing' }), /active PTC session/)
+  // A session with no live runtime is not an error: the read reports what it has
+  // not observed, and the panel keeps its rows.
+  assert.equal((await env.describeSessionCatalog({ sessionId: 'missing' })).live, false)
   agents = []
-  await assert.rejects(env.describeSessionCatalog({ sessionId: 'observed-session' }), /active PTC session/)
+  assert.equal((await env.describeSessionCatalog({ sessionId: 'observed-session' })).live, false)
   agents = [agentFor(Session.create('observed-session'))]
   const controller = new AbortController()
   controller.abort()
@@ -78,7 +80,9 @@ test('session catalog observation requires the same active PTC agent and returns
   while (!releaseAssembly) await new Promise(resolve => setImmediate(resolve))
   agents = [agentFor(Session.create('observed-session'))]
   releaseAssembly()
-  await assert.rejects(pending, /no longer available/)
+  // The read no longer fails when the observed target is replaced mid-flight: it
+  // reports the session as not observed, which is the fact the Client renders.
+  assert.equal((await pending).live, false)
 })
 
 test('session catalog reports a saved-off group or management switch that still freezes an enabled session', async t => {

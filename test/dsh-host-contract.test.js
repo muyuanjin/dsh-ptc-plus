@@ -129,6 +129,10 @@ test('the older-host fallback rejects malformed raw streams when the host cannot
     [{ type: 'tool-call-chunks', time0: 0, index: 0, args: ['{}'], dt: [], id: '' }],
     [{ type: 'chunk', time: 1.5, chunk: { type: 'usage', usage: {} } }],
     [{ type: 'text-chunks', time0: 0, index: 0, texts: [], dt: [] }],
+    // An index is a non-negative sequence number and a gap is a whole number of
+    // milliseconds; an oracle that accepted either would validate nothing built on it.
+    [{ type: 'text-chunks', time0: 0, index: -1, texts: ['text'], dt: [] }],
+    [{ type: 'text-chunks', time0: 0, index: 0, texts: ['a', 'b'], dt: [1.5] }],
   ]) assert.throws(() => legacy.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream } }))
   const valid = [{ type: 'text-chunks', time0: 0, index: 0, texts: ['a', 'b'], dt: [1] }]
   assert.deepEqual(legacy.hostAssistantUsageEvents({ type: 'assistant/message', data: { stream: valid } }), [])

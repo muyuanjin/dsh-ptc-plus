@@ -9,10 +9,10 @@ import { Context } from '@deepseek-ai/cordis'
 import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
 import { readSessionLog } from './session-events.js'
 import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
-import { normalizeCapabilityProof } from './capability-delivery-proof.js'
 import { createCapabilityPlan } from './capability-plan.js'
-import { declinedBindingEntries, latestBindingAdoption } from './binding-adoption.js'
-import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { bindingAdoptionOf, declinedBindingEntries } from './binding-adoption.js'
+import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilitySelectionMessage, capabilitySelectionOf, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
+import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
 import { readRuntimeAvailability, readRuntimeMessage } from './runtime-messages.js'
@@ -326,6 +326,52 @@ function temporaryCapabilityRule(selection) {
       : selection === 'closed' ? { availability: 'closed' } : { availability: 'enabled', disclosure: selection }
 }
 
+/**
+ * The one-selection spelling of a recorded choice, or `undefined` when the
+ * record states a dimension that spelling cannot carry.
+ *
+ * A record states dimensions, a saved decision states one selection, and the two
+ * vocabularies meet exactly at the shapes `temporaryCapabilityRule` produces for
+ * a whole selection. Anything narrower (a single dimension) stays a dimension
+ * rule, because writing it as a selection would also decide the other dimension.
+ */
+function compactSelection(choice) {
+  const dimensions = Object.keys(choice).sort().join(',')
+  return dimensions === 'availability' && choice.availability === 'closed' ? 'closed'
+    : dimensions === 'availability,disclosure' && choice.availability === 'enabled'
+      && ['full', 'on-demand'].includes(choice.disclosure) ? choice.disclosure
+      : dimensions === 'availability,disclosure' && choice.availability === 'automatic'
+        && choice.disclosure === 'automatic' ? 'automatic' : undefined
+}
+
+/**
+ * This session's recorded choices, in the vocabulary a composition reads.
+ *
+ * The record is the owner: a composition that needs this session's choices takes
+ * them from here and from nowhere else. `state.sessionOverrides` and a previous
+ * composition are not inputs — they are what an earlier composition made of this
+ * same record, so reading them back would let a stale composition outvote a
+ * decision the log already holds.
+ */
+function sessionOverridesOf(statement) {
+  if (statement?.state !== 'decided') return {}
+  const overrides = {}
+  for (const [id, choice] of Object.entries(statement.selection.choices)) {
+    overrides[id] = compactSelection(choice) ?? { ...choice }
+  }
+  return overrides
+}
+
+/** Two override maps state the same choices when they state the same decisions. */
+function sameChoices(left, right) {
+  const canonical = overrides => JSON.stringify(Object.keys(overrides ?? {}).sort().map(id => {
+    const choice = overrides[id]
+    return [id, typeof choice === 'object' && choice !== null
+      ? Object.keys(choice).sort().map(dimension => [dimension, choice[dimension]]) : choice]
+  }))
+  return canonical(left) === canonical(right)
+}
+
 function savedConfiguration(settings) {
   return { capabilityManagementEnabled: settings.enabled,
     ...(settings.contextEnabled === undefined ? {} : { capabilityContextEnabled: settings.contextEnabled }),
@@ -441,7 +487,7 @@ function readContractUpdate(message, planDigest, sessionId) {
  * that store belongs to the user-bindings owner: the capability read reports what
  * the global catalog supplies without owning or duplicating it.
  */
-export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, modelSchemasForAgent = toolSchemasForAgent, store, sessionHistoryForAgent, readUserBindings }) {
+export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, store, sessionHistoryForAgent, readUserBindings }) {
   let currentConfig = config
   const sessions = new Map()
   const histories = new WeakMap()
@@ -477,23 +523,6 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return latest
   }
   /**
-   * The entry this session declined, read from its own log.
-   *
-   * Adoption is one user message appended to the session, and the newest message
-   * states the current decision. A session that appended none declined nothing,
-   * which builds the same environment as stating "use": absence of a record is
-   * not a third state, so it is read as using every supplied entry.
-   */
-  function declinedBySession(events) {
-    const records = []
-    for (const event of Array.isArray(events) ? events : []) {
-      if (event?.type !== 'user/message') continue
-      const record = readRuntimeMessage(event.data)
-      if (record !== undefined) records.push(record)
-    }
-    return declinedBindingEntries(latestBindingAdoption(records))
-  }
-  /**
    * The binding half of one session catalog read: what the global catalog supplies
    * and how this session stands on each entry.
    *
@@ -525,7 +554,14 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         return { bindings: null, bindingsReason: 'unreadable' }
       }
     }
-    const declined = declinedBySession(events)
+    // One owner answers which statement governs this session: the newest one, whether
+    // or not this build can read it.
+    const adoption = bindingAdoptionOf(events)
+    // An unreadable newest statement supersedes the readable ones before it, so
+    // the group cannot answer for any row: it reports that its adoption record is
+    // unreadable rather than publishing the state of a decision the session replaced.
+    if (adoption.state === 'unreadable') return { bindings: null, bindingsReason: 'unreadable' }
+    const declined = declinedBindingEntries(adoption.state === 'decided' ? adoption.adoption : undefined)
     // One bit, one name: a row says whether this session declined the entry, and
     // "uses it" is that same answer read by the consumer. Reporting `adopted` beside
     // it would publish the negation under a second name and add a state
@@ -550,21 +586,32 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return directories?.get(agent.session) ?? agent.session.header.cwd
   }
 
-  async function observeSkills(agent, signal) {
+  /**
+   * The Skill catalogue one supply view answers: a scope selects the viewing
+   * agent's layers, a directory selects workspace-sensitive Skills. A view with no
+   * scope is the Host's own declaration, which is what a session without a runtime
+   * can still be told about.
+   */
+  async function observeSkillsAt(target, signal) {
     if (!readSkills(ctx)?.snapshot) return { skills: [], complete: true }
     // Read the original provider layers through a short-lived child scope. The
     // session projection is exact-scope-only, so catalogue reads cannot toggle
     // a global inventory flag and create a window where closed Skills load.
     const child = {}
-    const isolated = typeof ctx.plugin === 'function' ? createScope(ctx, child, { parent: agent }) : null
-    const view = isolated ? child : agent
+    const isolated = target.scope !== undefined && typeof ctx.plugin === 'function'
+      ? createScope(ctx, child, { parent: target.scope }) : null
+    const view = isolated ? child : target.scope
     let observed
     try {
-      const combined = [signal, agent.signal].filter(Boolean)
-      observed = await readSkills(ctx).snapshot({ cwd: currentDirectory(agent), scope: view,
+      const combined = [signal, target.signal].filter(Boolean)
+      observed = await readSkills(ctx).snapshot({ cwd: target.cwd, scope: view,
         signal: combined.length > 1 ? AbortSignal.any(combined) : combined[0] })
     } finally { await isolated?.dispose() }
     return { ...observed, skills: observed.skills.filter(skill => isModelInvocable(skill) || isUserInvocable(skill)) }
+  }
+
+  function observeSkills(agent, signal) {
+    return observeSkillsAt({ scope: agent, cwd: currentDirectory(agent), signal: agent.signal }, signal)
   }
 
   function recordedSkills(agent, state) {
@@ -601,9 +648,18 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return state
   }
 
-  async function inventory(agent, sections = [], settings, signal, presentation, frozenIds, skillObservation) {
+  /**
+   * Declare the capabilities of one supply view.
+   *
+   * `access` names the view when it is not the agent's own: `schemas` is the tool
+   * registry projection and `skills` an already-observed Skill catalogue. Both are
+   * what a view answers, so the caller that observed them decides which view this
+   * declaration describes; passing them keeps one declaration path for every view
+   * instead of a second inventory that could disagree with this one.
+   */
+  async function inventory(agent, sections = [], settings, signal, presentation, frozenIds, skillObservation, access) {
     if (settings) settings = effectiveCapabilitySettings(settings)
-    const schemas = toolSchemasForAgent(agent).filter(schema => !TRANSPORTS.has(schema.name))
+    const schemas = (access?.schemas ?? toolSchemasForAgent(agent)).filter(schema => !TRANSPORTS.has(schema.name))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
     const declaredServers = new Set([...resourceServers(sections),
       ...sections.filter(section => section.name?.startsWith('mcp:')).map(section => section.name.slice(4))])
@@ -620,7 +676,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       && (!settings?.enabled || !settings.policy || capabilityRule(settings.policy, item).availability !== 'closed'))
     const policyPaths = Boolean(settings?.policy)
     if (readSkills(ctx)?.snapshot !== undefined) {
-      const observed = await observeSkills(agent, signal)
+      const observed = access?.skills ?? await observeSkills(agent, signal)
       if (skillObservation) {
         skillObservation.complete = observed.complete
         skillObservation.partialNames = observed.complete ? [] : observed.skills.map(skill => skill.name)
@@ -660,7 +716,6 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
 
   function stateFor(agent) { return sessions.get(String(agent?.session?.id ?? agent?.id)) }
-  const canRefresh = agent => modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')
   function planCommitted(agent, message) {
     return message !== undefined && (sessionEvents(agent.session).some(event =>
       event.type === 'user/message' && event.data?.id === message.id)
@@ -673,6 +728,37 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     // messages. Preparation must not create that head or precede it on the surface.
     if (!sessionEvents(agent.session).some(event => event.type === 'system/message')) return
     agent.session.append('user/message', message, { surfaceOp: 'append' })
+  }
+  /**
+   * A session capability choice is a record, not a plan edit.
+   *
+   * The panel states what this session decided, so the decision itself has to exist in
+   * the session's own log. The plan is what a runtime later materializes from it; a
+   * change that only rebuilt a plan would leave the row stating the value it replaced.
+   *
+   * The record is this session's statement about itself, so it is appended to every live
+   * session, before the Host's first system head as well as after it. Skipping that
+   * append would leave the panel reporting a decision the log never received, and no
+   * later read could recover it.
+   */
+  function recordSelection(agent, overrides, signal) {
+    signal?.throwIfAborted()
+    if (typeof agent?.session?.append !== 'function') {
+      throw new Error('ptc-plus: session capability choices require the public Session.append surface')
+    }
+    const choices = {}
+    for (const [id, value] of Object.entries(overrides ?? {})) {
+      const rule = temporaryCapabilityRule(value)
+      if (Object.keys(rule).length > 0) choices[id] = rule
+    }
+    const message = capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA, choices })
+    agent.session.append('user/message', message, { surfaceOp: 'append' })
+    // This record is now the session's newest statement. The observed cut the
+    // readers use is the same log, so it carries the statement the write just made;
+    // otherwise a read immediately after a change would answer from the record this
+    // one replaced.
+    const observed = histories.get(agent.session)
+    if (Array.isArray(observed)) histories.set(agent.session, [...observed, { type: 'user/message', data: message }])
   }
   function selection(state, id) { return state?.snapshot.plan.entries.find(entry => entry.id === id)?.selection }
   function liveCapability(state, id) {
@@ -861,52 +947,91 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return previewPolicies.get(cap)
   }
 
-  async function prepare(agent, sections, force = false, signal = agent?.signal, choice) {
+  /**
+   * Compose this session's capability plan from the record that owns its choices.
+   *
+   * The session's own log states this session's choices and the saved
+   * configuration states what it inherits; both are read on every composition,
+   * including the incremental one a step begins with. A composition may not
+   * remember them: a choice recorded before the process restarted exists in the
+   * log and in no memory, and a plan that trusted its own earlier composition
+   * would keep a decision the log has already replaced.
+   *
+   * A plan whose recorded choices already match the log is kept as it is. One that
+   * disagrees is recomposed from the same saved inputs it was composed from, so a
+   * session choice never silently adopts a saved configuration the session has not
+   * refreshed to. `force` remains the explicit refresh: it recomposes from the
+   * saved configuration as it stands now and publishes immediately.
+   */
+  async function prepare(agent, sections, force = false, signal = agent?.signal) {
     signal?.throwIfAborted()
     if (agent?.session === undefined) {
       if (!effectiveCapabilitySettings(capabilityConfiguration(currentConfig)).enabled) return undefined
       throw new TypeError('ptc-plus: capability management requires an agent Session')
     }
-    await observeHistory(agent, signal)
-    await reconcilePendingChoice(agent, signal)
+    const history = await observeHistory(agent, signal)
     const id = String(agent.session.id ?? agent.id)
-    if (!force && sessions.has(id)) {
-      const state = sessions.get(id)
-      if (sections !== undefined) state.hostSections = sections
-      return qualifyCapabilities(agent, state, signal)
+    const statement = capabilitySelectionOf(history)
+    const sessionOverrides = sessionOverridesOf(statement)
+    const current = sessions.get(id)
+    if (!force && current !== undefined) {
+      if (sections !== undefined) current.hostSections = sections
+      if (sameChoices(sessionOverrides, current.snapshot.sessionOverrides)) return qualifyCapabilities(agent, current, signal)
     }
+    // A composition that is rebuilt for a record keeps the Host sections it already
+    // observed: a caller that has none to offer is not asking the Host to declare
+    // less than it did, only to act on what the session recorded.
+    const hostSections = sections ?? current?.hostSections ?? []
     const pending = operations.get(agent)
     if (pending !== undefined && !force) return pending
     const task = (async () => {
+      // The composition this one replaces, when it replaces one: a live state, or
+      // the plan the log last published. Its saved inputs are reused so the
+      // replacement states the same inheritance; its plan is not reused.
+      let preceding
       if (!force) {
-        const history = sessionEvents(agent.session)
-        const recorded = recordedPlan(history, id)
-        if (recorded !== undefined) {
-          let snapshot
-          try { snapshot = sourcePlan(recorded, id) } catch (error) {
-            ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
-            const settings = { ...capabilityConfiguration(currentConfig), enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) }
-            const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
-            snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : 'ptc-capability-environment/v1', ...(settings.policy || settings.contextEnabled !== undefined ? { sourceSettings: settings, sessionOverrides: {} } : {}), navigationText: NAVIGATION, settings, capabilities: [], plan })
-            const notice = planMessage(snapshot, id, true)
-            const state = { snapshot, message: notice, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
-            return acceptState(agent, state, true, signal)
+        if (current !== undefined) preceding = current.snapshot
+        else {
+          const recorded = recordedPlan(history, id)
+          if (recorded !== undefined) {
+            let snapshot
+            try { snapshot = sourcePlan(recorded, id) } catch (error) {
+              ctx.logger?.warn?.(`ptc-plus: ${error.message}; continuing with the host environment until /capabilities refresh`)
+              const settings = { ...capabilityConfiguration(currentConfig), enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) }
+              const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
+              snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : 'ptc-capability-environment/v1', ...(settings.policy || settings.contextEnabled !== undefined ? { sourceSettings: settings, sessionOverrides: {} } : {}), navigationText: NAVIGATION, settings, capabilities: [], plan })
+              const notice = planMessage(snapshot, id, true)
+              const state = { snapshot, message: notice, hostSections, expanded: new Set(), used: new Map() }
+              return acceptState(agent, state, true, signal)
+            }
+            if (sameChoices(sessionOverrides, snapshot.sessionOverrides)) {
+              const restored = { snapshot, message: snapshot.settings.contextEnabled !== undefined || snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections, expanded: new Set(), used: new Map() }
+              await qualifyCapabilities(agent, restored, signal)
+              signal?.throwIfAborted()
+              restoreEvidence(agent, restored)
+              return acceptState(agent, restored, false, signal)
+            }
+            preceding = snapshot
           }
-          const restored = { snapshot, message: snapshot.settings.contextEnabled !== undefined || snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections: sections ?? [], expanded: new Set(), used: new Map() }
-          await qualifyCapabilities(agent, restored, signal)
-          signal?.throwIfAborted()
-          restoreEvidence(agent, restored)
-          return acceptState(agent, restored, false, signal)
         }
       }
       const historical = !force && !sessionEvents(agent.session).some(event => event.type === 'user/message'
         && readRuntimeAvailability(event.data) === 'disabled') && sessionEvents(agent.session).some(event =>
         event.type === 'assistant/message' || event.type === 'tool/result')
-      const previous = stateFor(agent)?.snapshot
-      const sourceSettings = choice?.sourceSettings ?? { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) } : {}) }
-      const sessionOverrides = choice?.sessionOverrides ?? previous?.sessionOverrides ?? {}
+      let sourceSettings = preceding === undefined
+        ? { ...capabilityConfiguration(currentConfig), ...(historical ? { enabled: false, ...(currentConfig.capabilityPolicy ? { recoveryEnabled: false, previewEnabled: false, statistics: { ...capabilityConfiguration(currentConfig).statistics, enabled: false } } : {}) } : {}) }
+        : preceding.sourceSettings ?? preceding.settings
+      // A record can state one dimension where a saved decision states a whole
+      // selection. The policy vocabulary can hold either, and it is derived from the
+      // same saved document, so the composition upgrades to it here rather than
+      // dropping a dimension the record decided.
+      if (sourceSettings.policy === undefined
+        && Object.values(sessionOverrides).some(selection => typeof selection === 'object')) {
+        sourceSettings = capabilityConfiguration(capabilityProfileConfiguration(
+          savedConfiguration(sourceSettings), { allowInvalidStatistics: true }))
+      }
       const settings = sessionCapabilitySettings(sourceSettings, sessionOverrides)
-      const capabilities = requiresCapabilityInventory(settings) ? await inventory(agent, sections ?? [], settings, signal) : []
+      const capabilities = requiresCapabilityInventory(settings) ? await inventory(agent, hostSections, settings, signal) : []
       const effective = effectiveCapabilitySettings(settings)
       const coverage = (effective.policy ? effective.enabled && effective.policy.allocation.statistics : effective.statistics?.enabled === true) ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const planChannel = planChannelText(currentConfig)
@@ -915,7 +1040,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         capabilities, coverage, navigationText: planChannel.navigationSentence,
         categories: planChannel.categoryLines,
         directoryBudgetBytes })
-      const hasChoices = settings.contextEnabled !== undefined || settings.policy !== undefined || choice !== undefined || previous?.schema === 'ptc-capability-environment/v2'
+      const hasChoices = settings.contextEnabled !== undefined || settings.policy !== undefined
+        || statement.state !== 'none' || preceding?.schema === 'ptc-capability-environment/v2'
       // An edited plan channel needs the v5 record, and that generation requires the
       // saved inputs and session choices it was composed from.
       const recordsText = !planChannel.isDefault
@@ -926,37 +1052,22 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         ...(recordsText ? planPromptText(planChannel, directoryBudgetBytes) : {}),
         navigationText: planChannel.navigationSentence, settings, capabilities, ...(coverage === undefined ? {} : { coverage }), plan })
       const initialized = sessionEvents(agent.session).some(event => event.type === 'system/message')
-      const message = planMessage(snapshot, id, force && initialized)
+      // A composition that replaces one already delivered says so, whether the
+      // replacement came from an explicit refresh or from a record the delivered
+      // plan no longer matches.
+      const message = planMessage(snapshot, id, (force || preceding !== undefined) && initialized)
       agent.signal?.throwIfAborted?.()
       signal?.throwIfAborted()
       // Initialized sessions commit a refresh and its notification atomically.
       // First-step proposals are accepted through the Host's pre-step messages.
       const state = { snapshot, message: settings.contextEnabled === undefined && !effective.enabled && !force && !(effective.policy && (effective.statistics?.enabled || effective.recoveryEnabled || effective.previewEnabled)) ? undefined : message,
-        hostSections: sections ?? [], expanded: new Set(), used: new Map(),
+        hostSections, expanded: new Set(), used: new Map(),
         ...(requiresCapabilityInventory(settings) ? { liveCapabilities: new Map(capabilities.map(item => [item.id, item])) } : {}) }
       restoreEvidence(agent, state)
-      if (choice?.commandId && !initialized) {
-        state.pendingCommand = choice.commandId
-        state.pendingPrevious = stateFor(agent)
-      }
       return acceptState(agent, state, force, signal)
     })()
     operations.set(agent, task)
     try { return await task } finally { if (operations.get(agent) === task) operations.delete(agent) }
-  }
-
-  async function reconcilePendingChoice(agent, signal, requireReceipt = false) {
-    const state = stateFor(agent)
-    if (!state?.pendingCommand || planCommitted(agent, state.message)) return
-    const history = sessionEvents(agent.session)
-    const done = history.findLast(event => event.type === 'command/done' && event.data?.commandId === state.pendingCommand)
-    if (!done && !requireReceipt) return
-    const proved = recordedPlan(history, String(agent.session.id ?? agent.id))
-    if (proved?.id === state.message.id) {
-      delete state.pendingCommand; delete state.pendingPrevious
-      return
-    }
-    await acceptState(agent, state.pendingPrevious, false, signal)
   }
 
   function visibleSchemas(agent, schemas) {
@@ -965,181 +1076,320 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return schemas.filter(schema => memberSupplied(state, schema.name))
   }
 
+  /**
+   * The capability plan this session recorded, as its own log proves it.
+   *
+   * The record is the session's own fact, so it is usable without a runtime. A
+   * damaged record proves no plan: the read reports the session's columns as
+   * unrecorded instead of failing a panel over a historical entry.
+   */
+  function recordedSnapshot(history, sessionId) {
+    if (!Array.isArray(history)) return undefined
+    const recorded = recordedPlan(history, sessionId)
+    if (recorded === undefined) return undefined
+    try {
+      return sourcePlan(recorded, sessionId)
+    } catch (failure) {
+      ctx.logger?.warn?.('ptc-plus: recorded capability plan is damaged', failure)
+      return undefined
+    }
+  }
+
+  /**
+   * What the Host declares exists, read without a session runtime.
+   *
+   * The supply is the Host's own declaration: prompt sections name the MCP servers
+   * and resource servers, the tool registry answers the global view, and the Skill
+   * catalogue answers a workspace directory. None of that needs a refreshable
+   * agent, which is why a session that has none still has a catalogue to list. Each
+   * source is read on its own, so a source that could not be read names itself and
+   * the others keep their rows. `strict` keeps the write path's refusal: a caller
+   * that may not act on a partial answer gets the failure instead.
+   */
+  async function hostSupply({ cwd }, signal) {
+    // One failure mode: a source that cannot be read fails this read. Partial rows
+    // would be a screen that silently misses what exists, which no wording repairs.
+    let sections = []
+    if (typeof ctx.systemPrompt?.assemble === 'function') {
+      const assembly = await ctx.systemPrompt.assemble({ signal, ptcPlusCapabilityObservation: true })
+      sections = Array.isArray(assembly?.sections) ? assembly.sections : []
+      // Reading the sections is the MCP layer's own step. A section this build cannot
+      // interpret fails here rather than being reported as a tool-registry failure.
+      resourceServers(sections)
+    }
+    const schemas = toolSchemasForAgent(undefined)
+    const skills = readSkills(ctx)?.snapshot === undefined ? undefined : await observeSkillsAt({ cwd, signal }, signal)
+    const presentation = new Map()
+    const capabilities = await inventory(undefined, sections,
+      { ...capabilityConfiguration(currentConfig), enabled: false, manual: { baseline: [], overrides: {} } },
+      signal, presentation, undefined, undefined, { schemas, skills })
+    return { capabilities, presentation }
+  }
+
+  /**
+   * Which capabilities this session's own log proves it obtained.
+   *
+   * Evidence is a fact about one execution: a completed result that names the
+   * capability in its evidence block. The absence of such a result is not a state
+   * the panel states; it is an empty cell.
+   */
+  function capabilityProofOf(events) {
+    const proved = new Set()
+    for (const event of Array.isArray(events) ? events : []) {
+      const evidence = event?.type === 'tool/result' && event.data?.meta?.[EVIDENCE_KEY]
+      if (!evidence || evidence.schema !== 'ptc-capability-evidence/v1' || !Array.isArray(evidence.used)) continue
+      for (const id of evidence.used) if (typeof id === 'string') proved.add(id)
+    }
+    return proved
+  }
+
+  /** The saved column: what the global configuration states for one entry. */
+  function savedChoice(configuration, id) {
+    if (configuration.policy) {
+      const rule = id.startsWith('mcpServers.')
+        ? configuration.policy.mcpServers[id.slice('mcpServers.'.length)]
+        : configuration.policy.items[id]
+      return { availability: rule?.availability ?? 'automatic', disclosure: rule?.disclosure ?? 'automatic' }
+    }
+    const override = configuration.manual?.overrides?.[id]
+    if (override === undefined || override === 'automatic') return { availability: 'automatic', disclosure: 'automatic' }
+    if (override === 'closed') return { availability: 'closed', disclosure: 'automatic' }
+    return { availability: 'enabled', disclosure: override }
+  }
+
+  /** The session column: what this session recorded, or `inherit` when it recorded nothing. */
+  function sessionChoice(statement, id) {
+    const choice = capabilityChoiceOf(statement, id)
+    return { availability: choice?.availability ?? 'inherit', disclosure: choice?.disclosure ?? 'inherit' }
+  }
+
+  /**
+   * The identity, name, category, description and proved source of one declared
+   * capability.
+   *
+   * The panel's rows and the settings page's entries state the same supply facts,
+   * so they take them from one place instead of two derivations that could drift.
+   */
+  function capabilityEntry(capability, presentation) {
+    const display = presentation.get(capability.id)
+    return {
+      id: capability.id,
+      name: display?.name ?? capability.name ?? capability.id,
+      category: capability.category,
+      description: capability.description,
+      source: display?.source
+        ?? (capability.mcpServer === undefined ? { kind: capability.category } : { kind: 'mcp', server: capability.mcpServer }),
+    }
+  }
+
+  /**
+   * v2 rows: one per declared capability, one per declared MCP server.
+   *
+   * `description` is the Host's own one-line contract for the capability it declared.
+   * The panel states six columns and none of them is this text; the `/capabilities
+   * list` command still names what it found, and taking that line from the same row
+   * keeps one supply read behind both surfaces.
+   */
+  function capabilityRows(capabilities, presentation, configuration, statement, proved) {
+    const rows = capabilities.map(capability => ({
+      ...capabilityEntry(capability, presentation),
+      kind: 'capability',
+      saved: savedChoice(configuration, capability.id),
+      session: sessionChoice(statement, capability.id),
+      evidence: proved.has(capability.id),
+    }))
+    for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
+      const id = `mcpServers.${server}`
+      rows.push({
+        id,
+        kind: 'server',
+        name: server,
+        category: 'server',
+        source: { kind: 'mcp', server },
+        saved: savedChoice(configuration, id),
+        session: sessionChoice(statement, id),
+        // A server is not a capability: no execution can obtain it as a whole.
+        evidence: false,
+      })
+    }
+    return rows
+  }
+
+  /** v2 rows: one per supplied binding entry. A withheld entry has no row. */
+  async function bindingRows(events) {
+    const supply = typeof readUserBindings === 'function' ? await readUserBindings() : { entries: [] }
+    if (supply === null || typeof supply !== 'object' || !Array.isArray(supply.entries) || supply.error !== undefined) {
+      // A document this build cannot parse is a failed read, not an empty catalogue:
+      // an empty table would tell the user they have no bindings.
+      throw new Error('ptc-plus: the binding catalogue could not be read')
+    }
+    const adoption = bindingAdoptionOf(events)
+    const declined = adoption.state === 'decided' ? new Set(adoption.adoption.declined) : new Set()
+    return supply.entries.filter(entry => entry.enabled === true).map(entry => ({
+      id: entry.id,
+      kind: 'binding',
+      name: entry.name ?? entry.id,
+      category: 'binding',
+      source: { kind: 'bindings' },
+      saved: null,
+      session: { use: adoption.state === 'unreadable' ? 'damaged' : declined.has(entry.id) ? 'skip' : 'use' },
+      evidence: false,
+    }))
+  }
+
+  /**
+   * This session's own log, reached through whichever public handle the Host has.
+   *
+   * A live session object, the agent that owns it, and the persistence query all
+   * name the same log. None of them is a capability source: which handle answered
+   * changes no rendered value, only whether the read had to wait for a query.
+   */
+  async function sessionLogOf(sessionId, signal) {
+    const owned = typeof ctx.get === 'function' ? ctx.get('sessions')?.get?.(sessionId) : ctx.sessions?.get?.(sessionId)
+    const holder = (ctx.agents?.list?.() ?? []).find(agent => String(agent.session?.id ?? agent.id) === sessionId)
+    const session = owned ?? holder?.session
+    const query = sessionQueryService()
+    // A Host without a projection service still has the session's own events.
+    if (session !== undefined && session !== null && query === undefined && typeof session.snapshotEvents === 'function') {
+      return { id: session.id, header: session.header, events: session.snapshotEvents() }
+    }
+    if (session !== undefined && session !== null) return readSessionLog(session, query, signal)
+    return readSessionLog({ id: sessionId }, query, signal)
+  }
+
+  /**
+   * The two permanent sources of one session catalogue: this session's own log and
+   * the Host's declaration for the directory its header names.
+   *
+   * No session runtime produces either of them, so this read cannot tell a session
+   * with one from a session without one — which is the whole point: a difference
+   * here would have to be drawn on the screen somewhere. A failed source fails the
+   * whole read; a partial answer would be a screen that silently misses what exists.
+   */
+  async function sessionCatalogSupply(sessionId, signal) {
+    signal?.throwIfAborted()
+    if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('ptc-plus: a capability read needs a session')
+    let log
+    try {
+      log = await sessionLogOf(sessionId, signal)
+    } catch (cause) {
+      signal?.throwIfAborted()
+      throw new Error('ptc-plus: the session catalogue needs this session\'s log', { cause })
+    }
+    if (log === null || typeof log !== 'object' || log.header === undefined) {
+      throw new Error('ptc-plus: the session catalogue needs this session\'s header')
+    }
+    const events = Array.isArray(log.events) ? log.events : []
+    const cwd = typeof log.header.cwd === 'string' ? log.header.cwd : undefined
+    const supply = await hostSupply({ cwd }, signal)
+    signal?.throwIfAborted()
+    return { events, supply }
+  }
+
   return Object.freeze({
     reconfigure(next) { currentConfig = next },
     prepare,
     stateFor,
     visibleSchemas,
     validateSupply,
-    async refresh(agent, sections, signal, commandId) {
+    /**
+     * Recompose this session's plan from the saved configuration and the record.
+     *
+     * `agent` is a parameter of the call, not a property of the session: which
+     * live agent's composition to replace is what the caller states by naming it.
+     * Nothing else about the session decides whether a refresh may happen.
+     */
+    async refresh(agent, sections, signal) {
       signal?.throwIfAborted()
+      if (agent === undefined) throw new TypeError('ptc-plus: a capability refresh needs an agent')
       if (typeof agent.runMaintenance !== 'function') throw new Error('ptc-plus: capability refresh requires the public agent maintenance boundary')
       return agent.runMaintenance(async maintenanceSignal => {
-        await prepare(agent, sections, false, maintenanceSignal)
+        // The Host's declaration is observed first: a refresh composes from it, so a
+        // composition that had to guess it would compose from less than the Host says.
         const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: maintenanceSignal })
         signal?.throwIfAborted()
         maintenanceSignal.throwIfAborted()
         const preparationSignal = AbortSignal.any([signal, maintenanceSignal, agent.signal].filter(Boolean))
-        const previous = stateFor(agent)?.snapshot
-        return prepare(agent, stateFor(agent)?.hostSections ?? assembly.sections, true, preparationSignal,
-          commandId === undefined ? undefined : {
-            sourceSettings: capabilityConfiguration(currentConfig), sessionOverrides: previous?.sessionOverrides ?? {}, commandId,
-          })
+        return prepare(agent, sections ?? stateFor(agent)?.hostSections ?? assembly.sections, true, preparationSignal)
       })
     },
-    async catalogObservation(agent, signal) {
-      if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
-      const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })
-      const presentation = new Map()
-      const capabilities = await inventory(agent, assembly.sections,
-        { ...capabilityConfiguration(currentConfig), enabled: false, manual: { baseline: [], overrides: {} } }, signal, presentation)
-      signal?.throwIfAborted()
-      const history = await observeHistory(agent, signal)
-      await reconcilePendingChoice(agent, signal)
-      const recorded = recordedPlan(history, String(agent.session.id ?? agent.id))
-      const snapshot = stateFor(agent)?.snapshot ?? (recorded && sourcePlan(recorded, String(agent.session.id ?? agent.id)))
-      const state = snapshot ? { snapshot } : undefined
-      const sourceSettings = snapshot?.sourceSettings ?? snapshot?.settings
-      const sourceOverrides = sourceSettings?.manual?.overrides
-      const sessionSourceSelection = id => sourceOverrides?.[id] ?? (sourceOverrides ? 'automatic' : 'unknown')
-      // A paused or unmanaged session has no frozen allocation to report: every
-      // row then states the one truth that applies, the Host default. Only a
-      // managed session may report a pending refresh boundary.
-      const planManaged = state !== undefined && effectiveCapabilitySettings(state.snapshot.settings).enabled === true
-      const management = state === undefined ? 'unknown'
-        : state.snapshot.settings.contextEnabled === false ? 'paused'
-          : planManaged ? 'managed' : 'off'
-      const dimensions = capability => {
-        const saved = capabilityConfiguration(currentConfig)
-        if (!saved.policy && !snapshot?.settings.policy) return { managementEnabled: snapshot && effectiveCapabilitySettings(snapshot.settings).enabled }
-        const source = sourceSettings?.policy ? capabilityRule(sourceSettings.policy, capability) : undefined
-        const temporary = snapshot?.sessionOverrides?.[capability.id]
-        const rule = rules => capability.id.startsWith('mcpServers.') ? rules.mcpServers[capability.id.slice(11)] ?? {} : rules.items[capability.id] ?? {}
-        return { managementEnabled: snapshot && effectiveCapabilitySettings(snapshot.settings).enabled, ...(saved.policy ? { savedRule: rule(saved.policy) } : {}),
-          ...(sourceSettings?.policy ? { sourceRule: rule(sourceSettings.policy), sourceDimensions: source } : {}),
-          temporaryRule: temporaryCapabilityRule(temporary),
-          ...(snapshot?.settings.policy ? { effectiveDimensions: snapshot.plan.entries.find(entry => entry.id === capability.id)
-            ?? (capability.category === 'server' ? effectiveCapabilitySettings(snapshot.settings).enabled
-              ? capabilityRule(snapshot.settings.policy, capability) : { availability: 'enabled', disclosure: 'host', availabilitySource: 'host', disclosureSource: 'host' } : undefined) } : {}) }
-      }
-      const entries = capabilities.map(capability => ({ id: capability.id, category: capability.category,
-        description: capability.description, ...presentation.get(capability.id), ...dimensions(capability),
-        ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }),
-        saved: capabilityConfiguration(currentConfig).manual.overrides[capability.id] ?? 'automatic',
-        sessionSourceSelection: sessionSourceSelection(capability.id),
-        temporary: typeof state?.snapshot.sessionOverrides?.[capability.id] === 'object' ? 'inherit' : state?.snapshot.sessionOverrides?.[capability.id] ?? 'inherit',
-        effective: state === undefined ? 'pending'
-          : planManaged ? state.snapshot.plan.entries.find(entry => entry.id === capability.id)?.selection ?? 'pending'
-            : 'host' }))
-      for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
-        const id = `mcpServers.${server}`
-        const enclosingClosure = state ? effectiveCapabilitySettings(state.snapshot.settings).enabled && (state.snapshot.settings.policy
-          ? state.snapshot.settings.policy.mcpServers[server]?.availability === 'closed'
-          : state.snapshot.settings.manual.overrides[id] === 'closed') : undefined
-        const effective = state === undefined ? 'pending'
-          : !planManaged ? 'host'
-            : state.snapshot.settings.policy
-              ? capabilityRule(state.snapshot.settings.policy, { id, category: 'server', mcpServer: server }).availability
-              : enclosingClosure ? 'closed' : 'enabled'
-        entries.push({ id, category: 'server', name: server, description: `MCP server ${server}`,
-          source: { kind: 'mcp', server }, ...dimensions({ id, category: 'server', mcpServer: server }), saved: capabilityConfiguration(currentConfig).manual.overrides[id] ?? 'automatic',
-          sessionSourceSelection: sessionSourceSelection(id),
-          temporary: typeof state?.snapshot.sessionOverrides?.[id] === 'object' ? 'inherit' : state?.snapshot.sessionOverrides?.[id] ?? 'inherit',
-          enclosingClosure, effective })
-      }
-      return { management, entries }
-    },
-    async catalogFor(agent, signal) {
-      return (await this.catalogObservation(agent, signal)).entries
-    },
+    /**
+     * State one capability choice: one intent, one writer, one receipt.
+     *
+     * A session choice is a record and a global choice is a saved setting; neither
+     * is a plan. The plan is the runtime's composition of the record and is
+     * rebuilt by the entry that composes one, so no control here asks whether a
+     * runtime exists — a decision this session made is the same decision whether
+     * or not something is running to act on it.
+     */
     async change(agent, intent, signal, globalSettings) {
-      if (!canRefresh(agent)) throw new Error('ptc-plus: select an active PTC session')
       const dimension = intent.dimension
-      const choices = dimension === 'availability' ? ['enabled', 'closed', 'automatic', 'inherit']
+      const selections = dimension === 'availability' ? ['enabled', 'closed', 'automatic', 'inherit']
         : dimension === 'disclosure' ? [...CAPABILITY_DISCLOSURES, 'automatic', 'inherit']
           : dimension === undefined ? ['full', 'on-demand', 'closed', 'automatic', 'inherit'] : []
-      if (!['session', 'global'].includes(intent.scope) || !choices.includes(intent.selection)
+      if (!['session', 'global'].includes(intent.scope) || !selections.includes(intent.selection)
         || intent.scope === 'global' && intent.selection === 'inherit') throw new TypeError('invalid capability change')
-      if (typeof agent.runMaintenance !== 'function') throw new Error('ptc-plus: capability changes require public agent maintenance')
-      return agent.runMaintenance(async maintenanceSignal => {
-        const combined = AbortSignal.any([signal, maintenanceSignal, agent.signal].filter(Boolean))
-        combined.throwIfAborted()
-        await prepare(agent, undefined, false, combined)
-        const assembly = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: combined, ptcPlusCapabilityObservation: true })
-        const completeSettings = { ...capabilityConfiguration(currentConfig), enabled: false, manual: { baseline: [], overrides: {} } }
-        const available = await inventory(agent, assembly.sections, completeSettings, combined)
-        if (intent.id.startsWith('mcpServers.')) {
-          const server = intent.id.slice('mcpServers.'.length)
-          if (!available.some(item => item.mcpServer === server)) throw new Error('unknown MCP server in this session')
-          if (!dimension && !['closed', 'automatic', 'inherit'].includes(intent.selection)) throw new Error('MCP server choices are closed, automatic or inherit')
-        } else if (!available.some(item => item.id === intent.id)) throw new Error('unknown managed capability in this session')
-        const previous = stateFor(agent)?.snapshot
-        let sourceSettings = previous?.sourceSettings ?? previous?.settings ?? capabilityConfiguration(currentConfig)
-        if (dimension && !sourceSettings.policy) {
-          sourceSettings = capabilityConfiguration(capabilityProfileConfiguration(savedConfiguration(sourceSettings)))
-        }
-        if (!effectiveCapabilitySettings(sourceSettings).enabled || !effectiveCapabilitySettings(capabilityConfiguration(currentConfig)).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
-        const sessionOverrides = { ...previous?.sessionOverrides }
-        let globalSaved = false
-        if (intent.scope === 'session') {
-          if (dimension || sourceSettings.policy) {
-            const patch = temporaryCapabilityRule(sessionOverrides[intent.id])
-            if (dimension) {
-              if (intent.selection === 'inherit') delete patch[dimension]
-              else patch[dimension] = intent.selection
-            } else if (intent.selection === 'inherit') {
-              delete patch.availability; delete patch.disclosure
-            } else if (intent.selection === 'closed') patch.availability = 'closed'
-            else Object.assign(patch, temporaryCapabilityRule(intent.selection))
-            if (Object.keys(patch).length) sessionOverrides[intent.id] = patch
-            else delete sessionOverrides[intent.id]
-          } else if (intent.selection === 'inherit') delete sessionOverrides[intent.id]
-          else sessionOverrides[intent.id] = intent.selection
-        } else {
-          if (!globalSettings?.read || !globalSettings?.update) throw new Error('ptc-plus: global capability changes require the public settings writer')
-          const before = globalSettings.read()
-          if (!before || !Number.isSafeInteger(before.revision)) throw new Error('ptc-plus: global capability changes require settings revision evidence')
-          if (!effectiveCapabilitySettings(capabilityConfiguration({ ...currentConfig, ...before.value })).enabled) throw new Error('ptc-plus: enable capability management before changing a global choice')
-          const overrides = JSON.parse(before.value.capabilityOverrides ?? '{}')
-          if (intent.selection === 'automatic') delete overrides[intent.id]
-          else overrides[intent.id] = intent.selection
-          combined.throwIfAborted()
-          const policy = capabilityPolicyForConfig(before.value)
-          let nextPolicy = dimension ? changeCapabilityRule(policy, intent.id, dimension, intent.selection)
-            : changeCapabilityRule(policy, intent.id, 'availability', intent.selection === 'closed' ? 'closed'
-              : intent.selection === 'automatic' ? 'automatic' : 'enabled')
-          if (!dimension) nextPolicy = intent.selection === 'automatic' ? changeCapabilityRule(nextPolicy, intent.id, 'disclosure', 'automatic')
-            : intent.selection === 'closed' ? nextPolicy : changeCapabilityRule(nextPolicy, intent.id, 'disclosure', intent.selection)
-          const patch = before.value.capabilityPolicy || dimension
-            ? { capabilityPolicy: JSON.stringify(nextPolicy), ...(!dimension ? { capabilityOverrides: JSON.stringify(overrides) } : {}) }
-            : { capabilityOverrides: JSON.stringify(overrides) }
-          await globalSettings.update(patch, before.revision)
-          globalSaved = true
-        }
-        try {
-          if (globalSaved) {
-            const saved = globalSettings.read()
-            if (!saved?.value || !Number.isSafeInteger(saved.revision)) throw new Error('ptc-plus: saved settings could not be confirmed for this session')
-            sourceSettings = capabilityConfiguration({ ...currentConfig, ...saved.value })
-            if (dimension) {
-              const retained = temporaryCapabilityRule(sessionOverrides[intent.id]); delete retained[dimension]
-              if (Object.keys(retained).length) sessionOverrides[intent.id] = retained
-              else delete sessionOverrides[intent.id]
-            } else delete sessionOverrides[intent.id]
-          }
-          combined.throwIfAborted()
-          if (!effectiveCapabilitySettings(sourceSettings).enabled) throw new Error('ptc-plus: enable capability management before changing a session choice')
-          await prepare(agent, assembly.sections, true, combined, { sourceSettings, sessionOverrides, commandId: intent.commandId })
-          return { globalSaved, sessionApplied: true, publication: planCommitted(agent, stateFor(agent).message) ? 'accepted' : 'pending' }
-        } catch (error) {
-          if (globalSaved) return { globalSaved: true, sessionApplied: false, error: String(error?.message ?? error) }
-          throw error
-        }
-      })
+      // The record vocabulary is asked once, here, before anything is appended: an id it
+      // cannot name would otherwise reach the message writer and fail there as an
+      // internal error, after the command had already been answered.
+      if (typeof intent.id !== 'string' || !CAPABILITY_ENTRY_ID.test(intent.id)) {
+        throw new TypeError('ptc-plus: a capability choice names an entry as tools.<name>, skills.<name>, mcp.<server> or mcpServers.<server>')
+      }
+      // A server has no disclosure of its own: its members carry one. This states
+      // the vocabulary, not what any process happens to supply.
+      if (!dimension && intent.id.startsWith('mcpServers.') && !['closed', 'automatic', 'inherit'].includes(intent.selection)) {
+        throw new Error('ptc-plus: MCP server choices are closed, automatic or inherit')
+      }
+      if (intent.scope === 'global') {
+        if (!globalSettings?.read || !globalSettings?.update) throw new Error('ptc-plus: global capability changes require the public settings writer')
+        const before = globalSettings.read()
+        if (!before || !Number.isSafeInteger(before.revision)) throw new Error('ptc-plus: global capability changes require settings revision evidence')
+        const overrides = JSON.parse(before.value.capabilityOverrides ?? '{}')
+        if (intent.selection === 'automatic') delete overrides[intent.id]
+        else overrides[intent.id] = intent.selection
+        signal?.throwIfAborted()
+        const policy = capabilityPolicyForConfig(before.value)
+        let nextPolicy = dimension ? changeCapabilityRule(policy, intent.id, dimension, intent.selection)
+          : changeCapabilityRule(policy, intent.id, 'availability', intent.selection === 'closed' ? 'closed'
+            : intent.selection === 'automatic' ? 'automatic' : 'enabled')
+        if (!dimension) nextPolicy = intent.selection === 'automatic' ? changeCapabilityRule(nextPolicy, intent.id, 'disclosure', 'automatic')
+          : intent.selection === 'closed' ? nextPolicy : changeCapabilityRule(nextPolicy, intent.id, 'disclosure', intent.selection)
+        const patch = before.value.capabilityPolicy || dimension
+          ? { capabilityPolicy: JSON.stringify(nextPolicy), ...(!dimension ? { capabilityOverrides: JSON.stringify(overrides) } : {}) }
+          : { capabilityOverrides: JSON.stringify(overrides) }
+        await globalSettings.update(patch, before.revision)
+        return { globalSaved: true, sessionApplied: true, publication: 'recorded' }
+      }
+      // A statement is the whole of what this session decided, so composing the next
+      // one starts from the log that holds the current statement — the same log the
+      // panel reads. A stale or empty runtime view would silently restate the choice
+      // just made and withdraw every decision recorded before it.
+      const statement = capabilitySelectionOf(await observeHistory(agent, signal))
+      signal?.throwIfAborted()
+      const choices = { ...(statement.state === 'decided' ? statement.selection.choices : {}) }
+      const patch = { ...(choices[intent.id] ?? {}) }
+      if (dimension) {
+        if (intent.selection === 'inherit') delete patch[dimension]
+        else patch[dimension] = intent.selection
+      } else if (intent.selection === 'inherit') {
+        delete patch.availability; delete patch.disclosure
+      } else if (intent.selection === 'closed') patch.availability = 'closed'
+      else Object.assign(patch, temporaryCapabilityRule(intent.selection))
+      if (Object.keys(patch).length > 0) choices[intent.id] = patch
+      else delete choices[intent.id]
+      recordSelection(agent, choices, signal)
+      return { globalSaved: false, sessionApplied: true, publication: 'recorded' }
     },
+    /**
+     * The composition this session built but has not delivered yet.
+     *
+     * A command that composed a plan before the Host accepted a step has to carry it
+     * in its receipt: the plan is not in the log yet, so a restart would otherwise
+     * have no way to know which composition the command made.
+     */
     pendingChoiceMessage(agent) {
       const state = stateFor(agent)
-      return ['ptc-capability-environment/v2', 'ptc-capability-environment/v3', 'ptc-capability-environment/v4'].includes(state?.snapshot.schema) && !planCommitted(agent, state.message) ? state.message : undefined
+      return state?.message !== undefined && !planCommitted(agent, state.message) ? state.message : undefined
     },
     projectSections(agent, sections) {
       const state = stateFor(agent)
@@ -1218,7 +1468,6 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const decision = await next()
       if (decision.kind !== 'enter' || payload.signal?.aborted) return decision
       await observeHistory(payload.agent, payload.signal)
-      await reconcilePendingChoice(payload.agent, payload.signal, true)
       const state = stateFor(payload.agent)
       if (decision.kind !== 'enter' || !state || payload.signal?.aborted) return decision
       await statisticsOperation(() => store?.available(payload.agent, statisticsSnapshot(state)))
@@ -1306,7 +1555,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         }
       // Before task history exists, the initial plan precedes admitted task messages.
       // Refresh and recovery append after committed history; they never reorder it.
-      const initial = !sessionEvents(payload.agent.session).some(event => ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+      // A PTC-owned record is this plugin's own statement, not task history: a session
+      // that recorded a choice before its first step still has no task to follow.
+      const initial = !sessionEvents(payload.agent.session).some(event => event.type === 'assistant/message'
+        || event.type === 'tool/result'
+        || event.type === 'user/message' && !isPtcMessageSource(event.data?.source))
       return { ...decision, messages: initial ? [...additions, ...messages] : [...messages, ...additions] }
     },
     admitted(exec) {
@@ -1372,98 +1625,63 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           member === agent ? status : member.status))
       }
     },
-    /**
-     * The saved, delivered and usable facts of one capability. A caller that
-     * only has "the save succeeded" must not report more than this returns.
-     */
-    describeCapabilityProof(agent, id) {
-      if (typeof id !== 'string' || id.length === 0) throw new TypeError('ptc-plus: capability proof requires a capability id')
-      const state = stateFor(agent)
-      const sourceSettings = state?.snapshot.sourceSettings ?? state?.snapshot.settings
-        ?? capabilityConfiguration(currentConfig)
-      // A global choice is recorded either as a legacy override or as a rule in the
-      // policy this owner writes for `/capabilities set global`, so both spellings
-      // prove the same save.
-      const capability = state?.snapshot.capabilities.find(item => item.id === id)
-      const recorded = capability === undefined || sourceSettings.policy === undefined
-        ? undefined : capabilityRule(sourceSettings.policy, capability)
-      const saved = Object.hasOwn(sourceSettings.manual?.overrides ?? {}, id)
-        || recorded?.availabilitySource === `item:${id}`
-        || recorded?.disclosureSource === `item:${id}`
-      // Delivery is a statement about the model-visible catalog. A plan that holds an
-      // entry whose choice is closed describes an entry the catalog does not list, so
-      // holding it proves nothing was delivered.
-      const entry = state?.snapshot.plan.entries.find(item => item.id === id)
-      const listed = entry !== undefined && entry.selection !== 'closed'
-      const delivery = !listed ? 'absent'
-        : state.message === undefined || planCommitted(agent, state.message) ? 'delivered' : 'pending'
-      return normalizeCapabilityProof({
-        schema: 'ptc-capability-proof/v1',
-        id,
-        saved,
-        delivery,
-        // Only a completed execution in this session proves usability; the
-        // worker's installed schemas and the published catalog prove nothing
-        // about what a cell actually obtained.
-        usability: state?.used?.has(id) === true ? 'proven' : 'unproven',
-      })
-    },
     describe(agent) {
       const state = stateFor(agent)
-      return state === undefined ? { configured: capabilityConfiguration(currentConfig), effective: null }
+      // The session column is the record's answer, not the composition's: a
+      // composition reports what it built, and this field reports what the session
+      // decided. They agree once the composition has caught up, and until then only
+      // this field is the answer.
+      const sessionOverrides = sessionOverridesOf(capabilitySelectionOf(sessionEvents(agent?.session)))
+      return state === undefined ? { configured: capabilityConfiguration(currentConfig), effective: null, sessionOverrides }
         : { configured: capabilityConfiguration(currentConfig), effective: state.snapshot.plan,
           publication: state.message === undefined ? 'not-required' : planCommitted(agent, state.message) ? 'accepted' : 'pending',
           sourceSettings: state.snapshot.sourceSettings ?? state.snapshot.settings,
-          sessionOverrides: state.snapshot.sessionOverrides ?? {},
+          sessionOverrides,
           pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }
     },
     describeSessions() {
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
         publication: state.message === undefined ? 'not-required' : planCommitted({ session: state.session }, state.message) ? 'accepted' : 'pending',
         configuration: savedConfiguration(state.snapshot.sourceSettings ?? state.snapshot.settings),
-        sessionOverrides: state.snapshot.sessionOverrides ?? {},
+        sessionOverrides: sessionOverridesOf(capabilitySelectionOf(sessionEvents(state.session))),
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }))
     },
-    canRefresh,
+    /**
+     * The live sessions a refresh could be requested for.
+     *
+     * A refresh replaces one live agent's composition, so the agent is the only
+     * fact a target has to supply. Whether a session's model tool table declares
+     * the direct transport answers a different question — what that session can
+     * call — and a target list is not the place to answer it.
+     */
     describeTargets() {
-      return (ctx.agents?.list?.() ?? []).filter(canRefresh)
-        .map(agent => ({ sessionId: String(agent.session.id ?? agent.id) }))
+      return (ctx.agents?.list?.() ?? []).map(agent => ({ sessionId: String(agent.session.id ?? agent.id) }))
     },
     async describeSessionCatalog({ sessionId } = {}, signal) {
+      // Three permanent sources, no fourth. The session's own log is the record, the
+      // Host's declaration is the supply, and the saved configuration is the saved
+      // column. `sessionCatalogSupply` reads the first two for the one session this
+      // request names.
+      const { events, supply } = await sessionCatalogSupply(sessionId, signal)
+      const configuration = capabilityConfiguration(currentConfig)
+      const rows = capabilityRows(supply.capabilities, supply.presentation, configuration,
+        capabilitySelectionOf(events), capabilityProofOf(events))
+      const bindingsEnabled = currentConfig.userBindingsEnabled === true
+      if (bindingsEnabled) rows.push(...await bindingRows(events))
       signal?.throwIfAborted()
-      if (typeof sessionId !== 'string' || !sessionId) throw new TypeError('ptc-plus: a capability read needs a session')
-      const agent = (ctx.agents?.list?.() ?? []).find(candidate =>
-        String(candidate.session.id ?? candidate.id) === sessionId && canRefresh(candidate))
-      const savedSettings = capabilityConfiguration(currentConfig)
-      const saved = { enabled: effectiveCapabilitySettings(savedSettings).enabled === true,
-        contextEnabled: savedSettings.contextEnabled !== false }
-      // A session with no refreshable runtime is a fact about the session, not a
-      // reason to fail the panel: the Client shows the same rows and names the
-      // layer it has not observed. Only an unreadable identity is a request error.
-      // Binding rows do not depend on a live runtime, so this branch reports them
-      // too: the supply comes from the store and the session's adoption from its log.
-      const notObserved = async history => ({ schema: 'ptc-capability-session-catalog/v1', live: false,
-        management: 'unknown', entries: [], ...await bindingGroup(sessionId, history, signal),
-        savedSettings: saved })
-      if (!agent) return await notObserved()
-      const { management, entries } = await this.catalogObservation(agent, signal)
-      signal?.throwIfAborted()
-      // The observation already read this session's log; reading the same cut for
-      // adoption keeps the response one read instead of two disagreeing ones.
-      const history = histories.get(agent.session)
-      if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)
-        || String(agent.session.id ?? agent.id) !== sessionId) {
-        return await notObserved(history)
-      }
-      // The saved group and management switches gate session writes in change();
-      // report them so the Client can block staged choices with the reason.
-      return { schema: 'ptc-capability-session-catalog/v1', live: true, management, entries,
-        ...await bindingGroup(sessionId, history, signal), savedSettings: saved }
+      // No `live`, no `scope`, no `plan`, no `management`, no `unreadableSupply`, no
+      // nullable row group: a failed source fails this read, it does not become a
+      // shape the Client has to interpret.
+      return { schema: 'ptc-capability-session-catalog/v2', sessionId, rows,
+        config: { bindingsEnabled } }
     },
     async observeAllocation({ sessionId, configuration } = {}, signal) {
       signal?.throwIfAborted()
-      const agent = (ctx.agents?.list?.() ?? []).find(agent => String(agent.session.id ?? agent.id) === sessionId && canRefresh(agent))
-      if (!agent) throw new TypeError('ptc-plus: select an active PTC session to observe its capability inventory and workspace statistics')
+      // The request names the session it observes; the live agent behind that id is
+      // the parameter the observation needs. What that agent's tool table declares
+      // is not a property of the target.
+      const agent = (ctx.agents?.list?.() ?? []).find(agent => String(agent.session.id ?? agent.id) === sessionId)
+      if (agent === undefined) throw new TypeError('ptc-plus: select a live session to observe its capability inventory and workspace statistics')
       const raw = configuration === undefined ? savedConfiguration(capabilityConfiguration(currentConfig)) : configuration
       const validated = capabilityProfileConfiguration(raw, { allowInvalidStatistics: true })
       const settings = capabilityConfiguration(validated)
@@ -1472,35 +1690,42 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const coverage = Number.isSafeInteger(settings.statistics?.windowSize) && settings.statistics.windowSize > 0
         ? await store?.coverage(agent, capabilities, settings.statistics) ?? null : null
       signal?.throwIfAborted()
-      if (!(ctx.agents?.list?.() ?? []).includes(agent) || !canRefresh(agent)) throw new Error('ptc-plus: capability observation target is no longer available')
+      if (!(ctx.agents?.list?.() ?? []).includes(agent)) throw new Error('ptc-plus: capability observation target is no longer available')
       const plan = createCapabilityPlan({ ...settings, capabilities, coverage, navigationText: NAVIGATION,
         configurationRevision: digest(settings) })
       return { sessionId, workspace: agent.session.header.cwd, configuration: validated, plan, coverage,
         capabilities: capabilities.map(item => ({ id: item.id, revision: item.revision, category: item.category,
           contractBytes: Buffer.byteLength(item.contract, 'utf8') })) }
     },
-    async describeCatalog(signal) {
-      const available = new Map()
-      for (const agent of ctx.agents?.list?.() ?? []) {
-        signal?.throwIfAborted()
-        const state = stateFor(agent)
-        if (!state && !modelSchemasForAgent(agent).some(schema => schema.name === 'run_code')) continue
-        const hostSections = ctx.systemPrompt?.assemble
-          ? (await ctx.systemPrompt.assemble({ agent, scope: agent, signal, ptcPlusCapabilityObservation: true })).sections
-          : state?.hostSections ?? []
-        const presentation = new Map()
-        for (const capability of await inventory(agent, hostSections, capabilityConfiguration(currentConfig), signal, presentation)) {
-          const display = presentation.get(capability.id)
-          const previous = available.get(capability.id)
-          available.set(capability.id, { id: capability.id, category: capability.category, description: capability.description,
-            ...display, ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }), ...(previous && JSON.stringify(previous.source) !== JSON.stringify(display?.source)
-              ? { source: { kind: 'unknown' }, mcpServer: undefined } : {}),
-            ...(previous && (previous.invocationConflict || JSON.stringify(previous.invocation) !== JSON.stringify(display?.invocation))
-              ? { invocation: undefined, invocationConflict: true } : {}) })
-        }
-      }
+    /**
+     * The settings page's list of what this Host declares.
+     *
+     * The settings page edits global policy, so its list states supply and nothing
+     * else: no agent, no composed plan, no installed value. A caller that names a
+     * session gets that session's workspace directory, read from the header through
+     * the same log and supply the panel reads; a caller that names none gets the
+     * Host's own declaration without a workspace directory. Neither branch asks
+     * whether a runtime exists, so a live and a cold session list the same entries,
+     * and neither can fail merely because no session is running.
+     *
+     * Skill invocation eligibility travels with the entry because it belongs to the
+     * declaration the Host just made; this read sees one workspace, so it never has
+     * two answers to reconcile.
+     */
+    async describeCatalog({ sessionId } = {}, signal) {
       signal?.throwIfAborted()
-      return [...available.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+      const supply = typeof sessionId === 'string' && sessionId
+        ? (await sessionCatalogSupply(sessionId, signal)).supply
+        : await hostSupply({}, signal)
+      signal?.throwIfAborted()
+      return supply.capabilities.map(capability => {
+        const display = supply.presentation.get(capability.id)
+        return {
+          ...capabilityEntry(capability, supply.presentation),
+          ...(display?.invocation === undefined ? {} : { invocation: display.invocation }),
+          ...(capability.mcpServer === undefined ? {} : { mcpServer: capability.mcpServer }),
+        }
+      }).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
     },
     async disposeAgent(agent) {
       const projection = skillProjections.get(agent)

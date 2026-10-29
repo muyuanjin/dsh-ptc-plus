@@ -247,7 +247,9 @@ test('projection checkpoints reject malformed tables and inconsistent derived fa
 
 test('admission proves digest-bound continuity: it rejects a tampered fact digest and a tampered frontier', () => {
   const projection = createSessionLogProjection()
-  assert.equal(projection.stateVersion, 13)
+  // 14: a binding-adoption statement this build cannot resolve is part of the fold, so
+  // its fact carries the form its own replay needs.
+  assert.equal(projection.stateVersion, 14)
   let checkpoint = projection.init()
   checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
     data: runtimeStateMessage(state('retained')), surfaceOp: 'append' })

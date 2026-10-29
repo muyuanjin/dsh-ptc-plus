@@ -488,10 +488,11 @@ test('public retention and spill preserve complete presentation without rerunnin
 })
 
 
-test('session catalog reports a disabled global binding entry through the entry point reader', async t => {
-  // The entry point wires `readUserBindings: () => userBindings.list()`. Only
-  // `list()` keeps a disabled entry: `snapshot()` drops it, which would make the
-  // panel's "off globally" state unreachable. Bind that wiring to the real owner.
+test('session catalog reports a globally enabled binding entry as a v2 row through the entry point reader', async t => {
+  // The entry point wires `readUserBindings: () => userBindings.list()`, so the
+  // catalogue is built from the store's own entries. A v2 row exists only for an
+  // entry this session can use: a withheld entry has no row at all, and what the
+  // session inherits is the global switch `config.bindingsEnabled`.
   const root = await mkdtemp(join(tmpdir(), 'ptc-plus-entry-bindings-'))
   const previousHome = process.env.DSH_HOME
   process.env.DSH_HOME = root
@@ -522,11 +523,49 @@ test('session catalog reports a disabled global binding entry through the entry 
     capabilityManagementEnabled: true }).await()
   const result = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId: 'entry-binding-session' }, signal())
   assert.equal(result.ok, true)
-  assert.equal(result.value.live, false)
-  assert.deepEqual(result.value.bindings.map(row => ({ id: row.id, name: row.name, enabled: row.enabled, declined: row.declined })), [
-    { id: 'alpha', name: 'alphaHelpers', enabled: true, declined: false },
-    { id: 'beta', name: 'betaHelpers', enabled: false, declined: false },
-  ])
+  assert.deepEqual(Object.keys(result.value).sort(), ['config', 'rows', 'schema', 'sessionId'],
+    'the v2 catalogue is the whole shape: no live state or bindings group survives beside it')
+  assert.equal(result.value.schema, 'ptc-capability-session-catalog/v2')
+  assert.equal(result.value.sessionId, 'entry-binding-session')
+  assert.deepEqual(result.value.config, { bindingsEnabled: true })
+  assert.deepEqual(result.value.rows.filter(row => row.kind === 'binding').map(row => ({ id: row.id, name: row.name })), [
+    { id: 'alpha', name: 'alphaHelpers' },
+  ], 'only the enabled entry has a row; a withheld entry is absent rather than reported as off')
+})
+
+test('the session catalogue and /capabilities list state the same ids for a session with no live runtime', async t => {
+  // Both surfaces answer one read: the session's log, the Host's declaration and the
+  // saved configuration. Neither may need a live agent, so the falsification is
+  // structural — this Host has no agent at all, and the two surfaces still agree.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionProjectionRegistry(ctx)
+  ctx.agents.list = () => []
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: { cwd: process.cwd() }, cursor: 0, events: [],
+    [Symbol.dispose]() {} }) })
+  const operations = new Map()
+  ctx.provide('ptcPlusRpc', { register(contract, handler) {
+    operations.set(contract.service, handler); return () => operations.delete(contract.service)
+  } })
+  let command
+  ctx.provide('commands', { register(definition) { command = definition; return () => {} } })
+  ctx.effect(() => ctx.tools.register(echo('probe')))
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
+    capabilityManagementEnabled: true }).await()
+  const sessionId = 'cold-capability-list'
+  const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId }, signal())
+  assert.equal(panel.ok, true)
+  assert.deepEqual(panel.value.rows.map(row => row.id), ['tools.probe'])
+  // The command receives an agent handle because the Host calls commands that way; it
+  // names a session and asks the catalogue for nothing else.
+  const listing = await command.handler({ commandId: 'cold-capability-list', rawInput: 'list all',
+    agent: { session: { id: sessionId } }, signal: signal() })
+  assert.equal(listing.kind, 'success')
+  const entries = JSON.parse(listing.text).entries
+  assert.deepEqual(entries.map(entry => entry.id).sort(), panel.value.rows.map(row => row.id).sort(),
+    'one read, one row set: the listing and the panel cannot state different ids')
+  assert.equal(entries.every(entry => entry.saved !== undefined && entry.effective === undefined), true,
+    'the listing states the saved column and no composition')
 })
 
 test('settings catalog captures public MCP ownership before the first request without preparing plans or bindings', async t => {

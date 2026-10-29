@@ -56,3 +56,33 @@ test('the Chinese pane copy contains no leftover English words', () => {
   const offenders = prose.filter(key => /[A-Za-z]{4,} [A-Za-z]{4,}/u.test(SETTINGS_COPY.zh[key]))
   assert.deepEqual(offenders, [], `Chinese copy still containing English prose: ${offenders.join(', ')}`)
 })
+
+/**
+ * A word whose producer is gone cannot be reached by any input, so its copy is
+ * dead: `capabilities.invocation.varies` described a Skill conflict no catalog
+ * reports, and `capabilities.receipt.no-session` named the text of a notice the
+ * receipt surface can no longer meet. `capabilities.card.no-session` stays:
+ * releases up to 0.5.4 recorded that outcome and the chat notice still renders it.
+ *
+ * The `capabilities.proof.*` family stated one capability's saved, delivered and
+ * usable facts in the command receipt. A receipt states the record it wrote, and
+ * proof belongs to the panel's evidence column, so that family has no producer and
+ * no reader may meet one of its words again.
+ */
+test('retired words stay out of both locales', () => {
+  for (const locale of ['zh', 'en']) {
+    for (const key of ['capabilities.invocation.varies', 'capabilities.receipt.no-session',
+      'capabilities.proof.title', 'capabilities.proof.line', 'capabilities.proof.saved.yes', 'capabilities.proof.saved.no',
+      'capabilities.proof.delivery.delivered', 'capabilities.proof.delivery.pending', 'capabilities.proof.delivery.absent',
+      'capabilities.proof.usability.proven', 'capabilities.proof.usability.unproven',
+      'capabilities.proof.observed', 'capabilities.proof.unobserved']) {
+      assert.equal(SETTINGS_COPY[locale][key], undefined, `${locale}: ${key} has no producer`)
+    }
+    assert.equal(typeof SETTINGS_COPY[locale]['capabilities.card.no-session'], 'string',
+      `${locale}: the recorded no-session notice still has copy`)
+    // The receipt that replaces them names the write in both locales.
+    for (const key of ['capabilities.receipt.record', 'capabilities.receipt.record.global']) {
+      assert.equal(typeof SETTINGS_COPY[locale][key], 'string', `${locale}: ${key} states what the command wrote`)
+    }
+  }
+})

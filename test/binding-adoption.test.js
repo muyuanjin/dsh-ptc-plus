@@ -6,7 +6,9 @@ import {
   BINDING_ADOPTION_FORM,
   BINDING_ADOPTION_SCHEMA,
   bindingAdoptionMessage,
+  bindingAdoptionOf,
   bindingAdoptionText,
+  classifyBindingAdoption,
   clearedBindingAdoption,
   declinedBindingEntries,
   latestBindingAdoption,
@@ -15,7 +17,7 @@ import {
   withBindingAdoption,
 } from '../internal/binding-adoption.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
-import { projectSessionLog } from '../internal/session-log-view.js'
+import { createSessionLogProjection, projectSessionLog } from '../internal/session-log-view.js'
 
 const adoption = declined => ({ schema: BINDING_ADOPTION_SCHEMA, declined })
 
@@ -89,6 +91,23 @@ test('the newest adoption record is the session decision', () => {
   assert.equal(latestBindingAdoption([{ form: BINDING_ADOPTION_FORM, declined: ['bad id'] }]), undefined)
 })
 
+test('a newest adoption record this build cannot read is a state, not a fallback', () => {
+  // The session stated something newer than the readable record below it. Since
+  // that statement cannot be resolved, neither it nor the record it superseded can
+  // answer: `latestBindingAdoption` reports no decision to apply, and the
+  // classification names the reason so a reader never mistakes it for "none".
+  const records = [
+    { form: BINDING_ADOPTION_FORM, declined: ['beta'] },
+    { form: BINDING_ADOPTION_FORM, declined: ['alpha'] },
+    { form: BINDING_ADOPTION_FORM, declined: 'damaged' },
+  ]
+  assert.equal(latestBindingAdoption(records), undefined)
+  assert.deepEqual(classifyBindingAdoption(records), { state: 'unreadable' })
+  assert.deepEqual(classifyBindingAdoption([{ form: 'catalog', sections: [] }]), { state: 'none' })
+  assert.deepEqual(classifyBindingAdoption([{ form: BINDING_ADOPTION_FORM, declined: ['alpha'] }]),
+    { state: 'decided', adoption: adoption(['alpha']) })
+})
+
 test('a session log records and reconstructs its own binding adoption', () => {
   const session = Session.create('binding-adoption-log')
   const projected = () => projectSessionLog({ session: { events: session.snapshotEvents() } })
@@ -106,4 +125,53 @@ test('a session log records and reconstructs its own binding adoption', () => {
   session.append('user/message', createUserMessage({ source: { kind: 'plugin:ptc-plus', form: 'instructions' },
     content: [{ type: 'text', text: 'unrelated' }] }), { surfaceOp: 'append' })
   assert.deepEqual(latestBindingAdoption(projected().ptcMessages), adoption(['beta']))
+})
+
+test('a session statement this build cannot read stays the newest adoption record', () => {
+  // The projection and the `/binding` command answer from `ptcMessages`, and the answer
+  // is this session's newest statement. Dropping a statement that cannot be resolved
+  // would let the record it superseded answer instead, so the statement is retained
+  // without a declined list and every consumer reports no decision to apply.
+  const session = Session.create('binding-adoption-unreadable-log')
+  session.append('user/message', bindingAdoptionMessage(adoption(['beta'])), { surfaceOp: 'append' })
+  const damaged = createUserMessage({ source: { kind: 'plugin:ptc-plus', form: BINDING_ADOPTION_FORM },
+    content: [{ type: 'text', text: 'PTC Plus session binding adoption. Declined entry IDs:\ndamaged' }] })
+  session.append('user/message', damaged, { surfaceOp: 'append' })
+  assert.equal(readRuntimeMessage(damaged), undefined)
+  const events = session.snapshotEvents()
+  const nodes = events.map(event => event.seq)
+  const view = projectSessionLog({ session: { events, surface: { nodes } } })
+  // The statement is in the projection, and its absence of a declined list is what
+  // marks it unreadable rather than absent.
+  assert.deepEqual(view.ptcMessages.filter(record => record.form === BINDING_ADOPTION_FORM)
+    .map(record => record.declined), [['beta'], undefined])
+  assert.equal(latestBindingAdoption(view.ptcMessages), undefined)
+  assert.deepEqual(classifyBindingAdoption(view.ptcMessages), { state: 'unreadable' })
+  // The raw log answers the same question through the same owner, so the panel and the
+  // command cannot disagree about which record governs this session.
+  assert.deepEqual(bindingAdoptionOf(events), { state: 'unreadable' })
+  // The ordered model-visible surface carries resolvable messages only.
+  assert.deepEqual(view.visibleRuntimeMessages.filter(record => record?.form === BINDING_ADOPTION_FORM)
+    .map(record => record.declined), [['beta']])
+})
+
+test('the projection admits the checkpoint it writes for an unreadable statement', () => {
+  // Admission replays the facts the fold retained and compares the result with the
+  // stored state. A record the fold appends from a fact that did not carry its own form
+  // could never be reproduced from that fact, so a valid session would refuse to
+  // restore and every load would refold the whole log.
+  const session = Session.create('binding-adoption-checkpoint')
+  session.append('user/message', bindingAdoptionMessage(adoption(['beta'])), { surfaceOp: 'append' })
+  session.append('user/message', createUserMessage({ source: { kind: 'plugin:ptc-plus', form: BINDING_ADOPTION_FORM },
+    content: [{ type: 'text', text: 'PTC Plus session binding adoption. Declined entry IDs:\ndamaged' }] }),
+  { surfaceOp: 'append' })
+  const projection = createSessionLogProjection()
+  let state = projection.init()
+  for (const event of session.snapshotEvents()) state = projection.apply(state, event)
+  // The unreadable statement is in the checkpoint this build writes...
+  assert.deepEqual(state.ptcMessages.filter(record => record.form === BINDING_ADOPTION_FORM)
+    .map(record => record.declined), [['beta'], undefined])
+  // ...and the same build accepts it, which is what proves the fold is a function of
+  // the facts it keeps rather than of the log it was handed.
+  assert.deepEqual(projection.stateSchema.parse(JSON.parse(JSON.stringify(state))), state)
 })

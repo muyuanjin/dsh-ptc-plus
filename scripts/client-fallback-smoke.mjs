@@ -106,23 +106,48 @@ if (values.list) {
       {id:'skills.design',name:'design',category:'skill',source:{kind:'skill',bucket:'project-dsh'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'},
       {id:'mcpServers.docs',name:'docs',category:'server',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'enabled'},
       {id:'tools.mcp__docs__search',name:'docs search',category:'tool',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'}];
-    window.capabilityEntries=window.capabilityEntries.map(entry=>({...entry,savedRule:{},sourceRule:{},temporaryRule:{},
-      sourceDimensions:{availability:'enabled',disclosure:'on-demand'},effectiveDimensions:{availability:'enabled',disclosure:'on-demand'}}));
+    // The v2 session catalogue answers three permanent questions per row: which rows
+    // the Host supplies, what this session recorded for each row and whether an
+    // execution proved it. The saved and session columns are two decisions; a row
+    // states both without either deriving the other.
+    window.capabilityRows=window.capabilityEntries.map(entry=>({
+      id:entry.id,
+      kind:entry.category==='server'?'server':'capability',
+      name:entry.name,
+      category:entry.category,
+      source:entry.source,
+      saved:entry.category==='server'?{availability:'closed'}
+        :entry.category==='skill'?{availability:'enabled',disclosure:'full'}
+          :{availability:'enabled',disclosure:'on-demand'},
+      session:entry.category==='server'?{availability:'inherit'}
+        :entry.id==='tools.probe5'?{availability:'closed',disclosure:'inherit'}
+          :entry.category==='skill'?{availability:'enabled',disclosure:'full'}
+            :{availability:'inherit',disclosure:'inherit'},
+      evidence:entry.id==='tools.probe3'
+    }));
+    const capabilityChannelState={getSnapshot:()=>true,subscribe:()=>()=>{}};
+    const recordCapabilityCommand=async(sessionId,input,signal)=>{
+      signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
+      const [,scope,id,dimension,choice]=input.split(' ');
+      const row=window.capabilityRows.find(candidate=>candidate.id===decodeURIComponent(id));
+      const column=scope==='session'?'session':'saved';
+      if(['automatic','inherit'].includes(choice))delete row[column][dimension];else row[column][dimension]=choice;
+      // The receipt names the record this command wrote, the way the capabilities
+      // command does: the panel footer states that sentence instead of the payload.
+      const written={scope,id:decodeURIComponent(id),selection:choice};
+      if(dimension)written.dimension=dimension;
+      return {kind:'success',text:['session','global'].includes(scope)
+        ?capabilityCommandReceipt('recorded',sessionId,undefined,undefined,written)
+        :capabilityCommandReceipt('recorded',sessionId)};
+    };
     const SessionCapabilityControls=createSessionCapabilityControlsView(React,{
-      commands:{source:()=>({getSnapshot:()=>true,subscribe:()=>()=>{}}),
-        run:async(sessionId,input,signal)=>{
-          signal.throwIfAborted();window.sessionCapabilityCalls.push({sessionId,input});
-          const [,scope,id,dimension,choice]=input.split(' ');
-          const entry=window.capabilityEntries.find(entry=>entry.id===decodeURIComponent(id));
-          const rule=entry[scope==='session'?'temporaryRule':'savedRule'];
-          if(['automatic','inherit'].includes(choice))delete rule[dimension];else rule[dimension]=choice;
-          if(scope==='global')delete entry.temporaryRule[dimension];
-          if(dimension&&!['automatic','inherit'].includes(choice))entry.effectiveDimensions={...entry.effectiveDimensions,[dimension]:choice};
-          return {kind:'success',text:capabilityCommandReceipt('recorded',sessionId)};
-        }},Modal,Select,
+      commands:{source:()=>capabilityChannelState,run:recordCapabilityCommand},
+      bindingCommands:{source:()=>capabilityChannelState,run:recordCapabilityCommand},
+      Modal,Select,
       inspectSessionCatalog:async(sessionId,signal)=>{
         signal.throwIfAborted();
-        return {schema:'ptc-capability-session-catalog/v1',management:'managed',entries:structuredClone(window.capabilityEntries)};
+        return {schema:'ptc-capability-session-catalog/v2',sessionId,rows:structuredClone(window.capabilityRows),
+          config:{bindingsEnabled:false}};
       }
     });
     const CapabilityCommandCard=createCapabilityCommandCard(React);
@@ -273,6 +298,8 @@ if (values.list) {
       await root.getByRole('combobox', { name: label, exact: true }).click()
       await page.getByRole('option', { name: option, exact: true }).click()
     }
+    // One decision through the control the row renders: the list brings the row's
+    // control into view on every surface, so no surface needs a separate path.
     const openContextDisclosure = async root => {
       const labels = SETTINGS_COPY[locale]
       await root.locator('.ptcPlusSettingsNav [data-section=capabilities]').click()
@@ -598,11 +625,13 @@ if (values.list) {
           else await page.addScriptTag({ content: output.text })
         }
         await setFixtureTheme(page, theme)
+        const labels = SETTINGS_COPY[locale]
+        const caseLabel = `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}`
         await page.locator('.ptcPlusAuthorButton').click()
         const menu = page.getByRole('menu')
-        const toggle = menu.getByRole('menuitem', { name: SETTINGS_COPY[locale]['capabilities.quick.title'], exact: true })
+        const toggle = menu.getByRole('menuitem', { name: labels['capabilities.quick.title'], exact: true })
         await toggle.click()
-        const panel = page.getByRole('dialog', { name: SETTINGS_COPY[locale]['capabilities.quick.modalTitle'] })
+        const panel = page.getByRole('dialog', { name: labels['capabilities.quick.modalTitle'] })
         assert.equal(await page.evaluate(() => window.nativeModalUsed), native, 'fixture must resolve the requested Modal implementation')
         assert.equal(await panel.evaluate(element => element.classList.contains('ptcPlusFallbackModal')), !native,
           'native workbench must render the official Modal DOM')
@@ -610,29 +639,95 @@ if (values.list) {
           'workbench Modal must be portaled outside the composer')
         const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
-        assert.equal(await items.count(), 83)
-        const initialOrder = await items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId))
-        const columns = panel.locator('.ptcPlusSessionCapabilityColumns')
-        assert.equal(await columns.getByRole('columnheader').count(), 6, 'session catalog exposes the five shared columns and pending changes')
-        for (const [index, key] of ['member', 'typesColumn', 'sourceColumn', 'enabledColumn', 'contextColumn'].entries()) {
-          const header = columns.getByRole('columnheader', { name: SETTINGS_COPY[locale]['capabilities.' + key], exact: true })
-          const trigger = header.getByRole('button')
-          await trigger.scrollIntoViewIfNeeded()
-          await trigger.focus()
-          for (const [activation, direction] of [['Enter', 'ascending'], ['Space', 'descending'], ['Enter', 'none']]) {
-            await page.keyboard.press(activation)
-            assert.equal(await header.getAttribute('aria-sort'), direction, 'keyboard activation cycles header sorting')
-            assert.equal(await trigger.evaluate(element => document.activeElement === element), true, 'sorting retains header focus')
-            if (direction !== 'none') {
-              assert.equal(await panel.locator('.ptcPlusSessionCapabilityGroup').count(), 0, 'column sorting compares across category groups')
-              const values = await items.evaluateAll((rows, column) => rows.map(row => (column === 0 ? row.querySelector('.ptcPlusSessionCapabilityName') : row.children[column]).textContent.toLowerCase()), index)
-              assert.ok(values.slice(1).every((value, offset) => direction === 'ascending'
-                ? values[offset] <= value : values[offset] >= value), 'rows follow the displayed effective column values')
-            } else assert.deepEqual(await items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId)), initialOrder,
-              'the third header activation restores the original groups and row order')
-          }
+        assert.equal(await items.count(), 83, 'one row per supplied capability and MCP source')
+        // Six columns, one owner each. A header states its column and offers nothing
+        // else: the v1 table's sort controls are gone, so the supply order is the only
+        // order this table states.
+        const table = panel.locator('.ptcPlusSessionCapabilityTable')
+        assert.equal(await table.count(), 1)
+        assert.equal(await table.locator('[data-capability-id]').count(), 83, 'every capability row lives in the one table')
+        const columnKeys = ['capabilities.column.name', 'capabilities.typesColumn', 'capabilities.sourceColumn',
+          'capabilities.column.saved', 'capabilities.column.session', 'capabilities.column.evidence']
+        assert.deepEqual(await table.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
+          'the table states its six columns in the documented order')
+        assert.equal(await panel.locator('[aria-sort]').count(), 0, 'no header claims a sort state')
+        assert.equal(await panel.locator('[role=columnheader] button').count(), 0, 'no header carries a sort control')
+        // The Host supplies the binding document whether or not this session used any
+        // of it, so the group is always present and a zero-row group is an empty table.
+        const bindings = panel.locator('.ptcPlusBindingGroup')
+        assert.equal(await bindings.count(), 1, 'the binding group renders for every session')
+        assert.equal(await bindings.locator('h3').innerText(), labels['bindings.title'])
+        assert.equal(await bindings.locator('.ptcPlusSessionCapabilityRow').count(), 0, 'this session used no binding')
+        assert.deepEqual(await bindings.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
+          'the binding group answers the same questions in the same places')
+        // The row set is the supply's order; the panel invents neither rows nor a ranking.
+        const order = () => items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId))
+        const initialOrder = await order()
+        assert.deepEqual(initialOrder.slice(0, 3), ['tools.probe0', 'tools.probe1', 'tools.probe2'])
+        assert.deepEqual(initialOrder.slice(-3), ['skills.design', 'mcpServers.docs', 'tools.mcp__docs__search'])
+        // Each cell states its own fact; no cell borrows another's answer.
+        const cell = (id, className) => panel.locator(`[data-capability-id="${id}"] .${className}`)
+        assert.equal(await panel.locator('[data-capability-id="tools.probe0"]').getAttribute('data-kind'), 'capability')
+        assert.equal(await panel.locator('[data-capability-id="mcpServers.docs"]').getAttribute('data-kind'), 'server')
+        assert.equal(await cell('tools.probe0', 'ptcPlusSessionCapabilityName').innerText(), 'probe0')
+        assert.equal(await cell('tools.probe0', 'ptcPlusCapabilityIdentityText').locator('code').innerText(), 'tools.probe0')
+        assert.equal(await cell('tools.probe0', 'ptcPlusCapabilityBadge').innerText(), labels['capabilities.type.tool'])
+        assert.equal(await cell('tools.probe0', 'ptcPlusCapabilitySource').innerText(), labels['capabilities.source.host'])
+        assert.equal(await cell('skills.design', 'ptcPlusCapabilityBadge').innerText(), labels['capabilities.type.skill'])
+        assert.equal(await cell('skills.design', 'ptcPlusCapabilitySource').innerText(), labels['capabilities.source.project-dsh'])
+        assert.equal(await cell('mcpServers.docs', 'ptcPlusCapabilityBadge').innerText(), labels['capabilities.type.server'])
+        assert.equal(await cell('mcpServers.docs', 'ptcPlusCapabilitySource').innerText(), labels['capabilities.source.mcp'])
+        assert.equal(await cell('tools.mcp__docs__search', 'ptcPlusCapabilityBadge').innerText(), labels['capabilities.type.resource'])
+        assert.equal(await cell('tools.mcp__docs__search', 'ptcPlusCapabilitySource').innerText(), 'docs')
+        // The saved column is the configuration's own answer and never a control.
+        assert.equal(await cell('tools.probe0', 'ptcPlusSessionCapabilitySaved').innerText(),
+          `${labels['capabilities.word.enabled']} · ${labels['capabilities.word.on-demand']}`)
+        assert.equal(await cell('skills.design', 'ptcPlusSessionCapabilitySaved').innerText(),
+          `${labels['capabilities.word.enabled']} · ${labels['capabilities.word.full']}`)
+        assert.equal(await cell('mcpServers.docs', 'ptcPlusSessionCapabilitySaved').innerText(), labels['capabilities.word.closed'])
+        assert.equal(await panel.locator('.ptcPlusSessionCapabilitySaved button, .ptcPlusSessionCapabilitySaved select, .ptcPlusSessionCapabilitySaved input').count(), 0,
+          'the saved column states a value instead of offering a control')
+        // The evidence column marks a proved row and leaves every other row empty.
+        assert.equal(await cell('tools.probe3', 'ptcPlusSessionCapabilityEvidence').innerText(), labels['capabilities.word.proven'])
+        assert.equal(await cell('tools.probe3', 'ptcPlusSessionCapabilityEvidence').getAttribute('data-proven'), 'true')
+        assert.equal(await cell('tools.probe4', 'ptcPlusSessionCapabilityEvidence').innerText(), '')
+        assert.equal(await cell('tools.probe4', 'ptcPlusSessionCapabilityEvidence').getAttribute('data-proven'), 'false')
+        // A capability decides availability and disclosure; a server states its own
+        // availability only, because a disclosure belongs to its members.
+        const availabilityOf = id => panel.getByRole('combobox', { name: labels['capabilities.policy.availabilityFor'].replace('{name}', id), exact: true })
+        const disclosureOf = id => panel.getByRole('combobox', { name: labels['capabilities.disclosureFor'].replace('{name}', id), exact: true })
+        assert.equal(await availabilityOf('tools.probe0').count(), 1)
+        assert.equal(await disclosureOf('tools.probe0').count(), 1)
+        assert.equal(await availabilityOf('mcpServers.docs').count(), 1)
+        assert.equal(await disclosureOf('mcpServers.docs').count(), 0, 'a server states no disclosure of its own')
+        // A session that recorded nothing states `inherit`, and a recorded choice is
+        // that session's own value: neither cell is blank or a denial.
+        assert.equal(await availabilityOf('tools.probe0').innerText(), labels['capabilities.word.inherit'])
+        assert.equal(await disclosureOf('tools.probe0').innerText(), labels['capabilities.word.inherit'])
+        assert.equal(await availabilityOf('tools.probe5').innerText(), labels['capabilities.word.closed'])
+        assert.equal(await disclosureOf('skills.design').innerText(), labels['capabilities.word.full'])
+        const rowText = (await table.innerText()).toLocaleLowerCase()
+        for (const word of ['unavailable', 'not available', 'denied', 'blocked', '不可用', '未观察', '未证明']) {
+          assert.equal(rowText.includes(word.toLowerCase()), false, `${caseLabel}: a session row states no denial word (${word})`)
         }
-        await columns.evaluate(element => { element.scrollLeft = 0 })
+        // Typography and control geometry are the panel's own, not the carrier's.
+        const typography = await panel.evaluate(element => {
+          const trigger = element.querySelector('.ptcPlusSelectTrigger')
+          const icon = trigger.querySelector('svg').getBoundingClientRect(), bounds = trigger.getBoundingClientRect()
+          return { modal: getComputedStyle(element).fontSize,
+            name: getComputedStyle(element.querySelector('.ptcPlusSessionCapabilityName')).fontSize,
+            saved: getComputedStyle(element.querySelector('.ptcPlusSessionCapabilitySaved')).fontSize,
+            evidence: getComputedStyle(element.querySelector('.ptcPlusSessionCapabilityEvidence')).fontSize,
+            iconOffset: Math.abs((icon.top + icon.bottom - bounds.top - bounds.bottom) / 2) }
+        })
+        assert.equal(typography.modal, '13px', 'the workbench owns its readable body typography')
+        assert.equal(typography.name, viewport.width <= 650 && viewport.height <= 480 ? '12px' : '13px',
+          'a row name keeps the readable scale the compact surface declares')
+        assert.equal(typography.saved, '12px')
+        assert.equal(typography.evidence, '11px')
+        assert.ok(typography.iconOffset < 1, 'Select SVG is vertically centered')
+        const controls = await assertVisualSurface(page, panel, 'session capability workbench')
+        assert.ok(controls.includes('select'), 'session workbench Select must receive visual coverage')
         await panel.locator('.ptcPlusSessionCapabilityList').evaluate(element => { element.scrollTop = 0 })
         const geometry = await panel.evaluate(element => {
           const rect = element.getBoundingClientRect(), list = element.querySelector('.ptcPlusSessionCapabilityList')
@@ -647,17 +742,24 @@ if (values.list) {
           return { width: element.clientWidth, scroll: element.scrollWidth, rectWidth: rect.width, children: [...element.children].map(child => ({ name: child.className, width: child.clientWidth, scroll: child.scrollWidth })) }
         }))}`)
         await page.screenshot({ path: `artifacts/button-styles/session-capabilities-${viewport.width}-${viewport.height}-${native ? 'native' : 'fallback'}-${locale}-${theme}.png` })
-        assert.equal(await items.first().evaluate(element => {
-          const row = element.getBoundingClientRect(), clip = element.closest('.ptcPlusSessionCapabilityList').getBoundingClientRect()
-          return row.top >= clip.top && row.bottom <= clip.bottom
-        }), true, `${viewport.width}x${viewport.height}/${native ? 'native' : 'fallback'}/${locale}/${theme}: at least one complete catalog row must be readable ${JSON.stringify(await items.first().evaluate(element => {
-          const row = element.getBoundingClientRect(), list = element.closest('.ptcPlusSessionCapabilityList'), clip = list.getBoundingClientRect()
-          return { row: { top: row.top, bottom: row.bottom }, clip: { top: clip.top, bottom: clip.bottom }, sections: [...element.closest('[role=dialog]').children].map(child => ({ name: child.className, height: child.getBoundingClientRect().height })) }
-        }))}`)
-        const kind = panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.quick.kind'] })
+        // A reader must be able to read one catalog row completely, on every surface.
+        // The measured quantity is the row against the list viewport *under its sticky
+        // header*: every surface, the shortest captured one included, has to show one
+        // whole row, so no surface may buy its fit by asking for less than the row.
+        const rowFit = await items.first().evaluate(element => {
+          const row = element.getBoundingClientRect()
+          const list = element.closest('.ptcPlusSessionCapabilityList')
+          const clip = list.getBoundingClientRect()
+          const header = list.querySelector('.ptcPlusSessionCapabilityColumns').getBoundingClientRect()
+          return { height: row.height, top: row.top, bottom: row.bottom,
+            viewport: { top: clip.top + header.height, bottom: clip.bottom } }
+        })
+        const shortfall = Math.max(0, rowFit.viewport.top - rowFit.top) + Math.max(0, rowFit.bottom - rowFit.viewport.bottom)
+        assert.equal(shortfall, 0, `${caseLabel}: one catalog row must be readable in full ${JSON.stringify(rowFit)}`)
+        const kind = panel.getByRole('combobox', { name: labels['capabilities.quick.kind'] })
         await kind.click()
         const popup = page.getByRole('listbox')
-        await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'] }).waitFor()
+        await page.getByRole('option', { name: labels['capabilities.quick.mcp_tools'] }).waitFor()
         assert.equal(await popup.evaluate(element => element.closest('[role=dialog]') === null), true,
           'Select must use its own portal above the native or fallback Modal')
         assert.equal(await popup.evaluate(element => {
@@ -669,7 +771,7 @@ if (values.list) {
         assert.equal(await panel.isVisible(), true, 'first Escape closes only the Select popup')
         assert.equal(await popup.count(), 0, 'Escape must dismiss the Select listbox')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
+          && document.activeElement.getAttribute('aria-label') === label, labels['capabilities.quick.kind'])
         assert.equal(await kind.evaluate(element => document.activeElement === element), true,
           'Select dismissal returns focus to its trigger')
         await kind.focus()
@@ -677,22 +779,24 @@ if (values.list) {
         await popup.waitFor()
         await page.keyboard.press('End')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
-          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'])
+          && document.activeElement.textContent.includes(label), labels['capabilities.quick.mcp_tools'])
         await page.keyboard.press('Enter')
-        assert.equal(await kind.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.mcp_tools'])
+        assert.equal(await kind.locator('span').first().innerText(), labels['capabilities.quick.mcp_tools'])
+        assert.deepEqual(await order(), ['tools.mcp__docs__search'], 'the category filter narrows the table to the supplied MCP tools')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
+          && document.activeElement.getAttribute('aria-label') === label, labels['capabilities.quick.kind'])
         await page.keyboard.press('ArrowDown')
         await popup.waitFor()
         await page.keyboard.press('Home')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'option'
-          && document.activeElement.textContent.includes(label), SETTINGS_COPY[locale]['capabilities.quick.all'])
+          && document.activeElement.textContent.includes(label), labels['capabilities.quick.all'])
         await page.keyboard.press('Enter')
-        assert.equal(await kind.locator('span').first().innerText(), SETTINGS_COPY[locale]['capabilities.quick.all'])
+        assert.equal(await kind.locator('span').first().innerText(), labels['capabilities.quick.all'])
+        assert.deepEqual(await order(), initialOrder, 'clearing the category restores the supplied order')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-          && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.quick.kind'])
+          && document.activeElement.getAttribute('aria-label') === label, labels['capabilities.quick.kind'])
         await page.keyboard.press('Tab')
-        assert.equal(await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.sourceFilter'] }).evaluate(element => document.activeElement === element), true,
+        assert.equal(await panel.getByRole('combobox', { name: labels['capabilities.sourceFilter'] }).evaluate(element => document.activeElement === element), true,
           `Tab from the category Select reaches the source filter: ${await page.evaluate(() => document.activeElement?.outerHTML)}`)
         await kind.focus()
         await page.keyboard.press('ArrowDown')
@@ -701,62 +805,103 @@ if (values.list) {
         await page.waitForFunction(() => document.activeElement?.getAttribute('role') === 'option'
           && document.activeElement.textContent.startsWith('Skills'))
         await page.keyboard.press('Enter')
-        assert.equal(await items.count(), 1, 'typeahead chooses the Skills filter')
-        await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.quick.kind'], SETTINGS_COPY[locale]['capabilities.quick.all'])
-        const typography = await panel.evaluate(element => {
-          const detail = element.querySelector('.ptcPlusSessionCapabilityDetail')
-          const trigger = element.querySelector('.ptcPlusSelectTrigger')
-          const icon = trigger.querySelector('svg').getBoundingClientRect(), bounds = trigger.getBoundingClientRect()
-          return { bodySize: getComputedStyle(detail).fontSize, iconOffset: Math.abs((icon.top + icon.bottom - bounds.top - bounds.bottom) / 2) }
+        assert.deepEqual(await order(), ['skills.design'], 'typeahead chooses the Skills filter')
+        await chooseSelect(panel, labels['capabilities.quick.kind'], labels['capabilities.quick.all'])
+        // Non-interactive space inside a row belongs to the row: it stays hit-testable
+        // and issues no command, because the table has no row-selection state to enter.
+        // These read-only checks run before the first write, because a write's receipt
+        // is what the shortest captured surface renders at the expense of the list.
+        const probeRow = panel.locator('[data-capability-id="tools.probe79"]')
+        await probeRow.scrollIntoViewIfNeeded()
+        const gutter = await probeRow.evaluate(element => {
+          const row = element.getBoundingClientRect()
+          const list = element.closest('.ptcPlusSessionCapabilityList')
+          const clip = list.getBoundingClientRect()
+          const header = list.querySelector('.ptcPlusSessionCapabilityColumns').getBoundingClientRect()
+          const top = Math.max(row.top, clip.top + header.height) + 2
+          const bottom = Math.min(row.bottom, clip.bottom) - 2
+          return { x: row.left + 3, y: (top + bottom) / 2 }
         })
-        assert.equal(typography.bodySize, '13px', 'capability detail owns its readable body typography')
-        assert.ok(typography.iconOffset < 1, 'Select SVG is vertically centered')
-        const controls = await assertVisualSurface(page, panel, 'session capability workbench')
-        assert.ok(controls.includes('select'), 'session workbench Select must receive visual coverage')
+        const gutterHit = await probeRow.evaluate((element, point) => {
+          const hit = document.elementFromPoint(point.x, point.y)
+          const list = element.closest('.ptcPlusSessionCapabilityList')
+          return { inside: hit !== null && element.contains(hit), interactive: hit === null || hit.closest('button,label,input,a,select') !== null,
+            hit: hit === null ? null : `${hit.tagName}.${hit.className}`,
+            row: element.getBoundingClientRect().toJSON(), clip: list.getBoundingClientRect().toJSON(),
+            point }
+        }, gutter)
+        assert.equal(gutterHit.inside, true, `${caseLabel}: the row keeps non-interactive space of its own ${JSON.stringify(gutterHit)}`)
+        assert.equal(gutterHit.interactive, false, `${caseLabel}: a row gutter is not a control ${JSON.stringify(gutterHit)}`)
+        const callsBeforeGutter = await page.evaluate(() => window.sessionCapabilityCalls.length)
+        await page.mouse.click(gutter.x, gutter.y)
+        assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.length), callsBeforeGutter,
+          'clicking a row gutter issues no command')
+        await panel.getByRole('searchbox').fill('probe79')
+        assert.deepEqual(await order(), ['tools.probe79'])
+        await panel.getByRole('searchbox').fill('')
+        assert.deepEqual(await order(), initialOrder, 'clearing the search restores the supplied order')
+        assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.length), callsBeforeGutter,
+          'reading, filtering and arranging are not writes')
+        // A row's own control writes this session's record: one command per decision,
+        // and the row then states the value a re-read returns.
         for (const index of [0, 79]) {
-          if (index !== 0 && viewport.width <= 650) await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
-          const member = panel.locator('.ptcPlusSessionCapabilityName').filter({ hasText: new RegExp(`^probe${index}$`) })
-          await member.scrollIntoViewIfNeeded()
-          await member.focus()
-          await page.keyboard.press('Enter')
-          await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
-            && document.activeElement.getAttribute('aria-label') === label, SETTINGS_COPY[locale]['capabilities.policy.availability'])
-          await chooseSelect(panel, SETTINGS_COPY[locale]['capabilities.policy.disclosure'], SETTINGS_COPY[locale]['capabilities.full'])
-          await panel.getByRole('combobox', { name: SETTINGS_COPY[locale]['capabilities.policy.availability'] }).click()
-          await page.getByRole('option', { name: SETTINGS_COPY[locale]['capabilities.action.close'] }).click()
-          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.applySession'], exact: true }).click()
-          await page.waitForFunction(index => window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} availability closed`)
-            && window.sessionCapabilityCalls.some(call => call.input === `set session tools.probe${index} disclosure full`), index)
-          assert.equal(await panel.getByRole('combobox', {name: SETTINGS_COPY[locale]['capabilities.policy.disclosure']}).innerText(), SETTINGS_COPY[locale]['capabilities.full'])
-          assert.equal(await panel.locator(`[data-capability-id="tools.probe${index}"] .ptcPlusCapabilityAvailability`).textContent(),
-            SETTINGS_COPY[locale]['capabilities.quick.temporaryState'].replace('{state}', SETTINGS_COPY[locale]['capabilities.closed']),
-            'a session temporary availability choice is marked in its row')
-          if (index === 0) {
-            assert.equal(await panel.locator('[data-capability-id="tools.probe1"] .ptcPlusCapabilityAvailability').textContent(),
-              SETTINGS_COPY[locale]['capabilities.quick.enabled'], 'rows without a temporary choice keep the unmarked state')
-            assert.equal(await panel.evaluate(element => element.scrollWidth > element.clientWidth + 1), false,
-              'a marked temporary state must not overflow the dialog horizontally')
-          }
+          const id = `tools.probe${index}`
+          const availability = labels['capabilities.policy.availabilityFor'].replace('{name}', id)
+          const disclosure = labels['capabilities.disclosureFor'].replace('{name}', id)
+          // Align the row's decision line with the list's own end: on the shortest
+          // captured surface the sticky header overlaps the scrollport's first pixels,
+          // and a control hidden beneath it could not be operated at all.
+          const alignSessionLine = () => panel.locator(`[data-capability-id="${id}"] .ptcPlusSessionCapabilitySession`)
+            .evaluate(element => element.scrollIntoView({ block: 'end' }))
+          await alignSessionLine()
+          await chooseSelect(panel, availability, labels['capabilities.word.closed'])
+          await page.waitForFunction(({ name, aria, text }) => {
+            const trigger = document.querySelector(`[data-capability-id="${name}"] [aria-label="${aria}"]`)
+            return trigger?.textContent?.trim() === text
+          }, { name: id, aria: availability, text: labels['capabilities.word.closed'] })
+          assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.at(-1).input),
+            `set session ${id} availability closed`, 'the availability control writes only its own dimension')
+          await alignSessionLine()
+          await chooseSelect(panel, disclosure, labels['capabilities.word.full'])
+          await page.waitForFunction(({ name, aria, text }) => {
+            const trigger = document.querySelector(`[data-capability-id="${name}"] [aria-label="${aria}"]`)
+            return trigger?.textContent?.trim() === text
+          }, { name: id, aria: disclosure, text: labels['capabilities.word.full'] })
+          assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.at(-1).input),
+            `set session ${id} disclosure full`, 'the disclosure control writes only its own dimension')
+          assert.equal(await availabilityOf(id).innerText(), labels['capabilities.word.closed'],
+            'the row states the value its own write recorded')
         }
-        if (viewport.width <= 650) {
-          await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
-          assert.equal(await panel.locator('[data-capability-id="tools.probe79"] .ptcPlusSessionCapabilityName')
-            .evaluate(element => document.activeElement === element), true, 'Back to list returns focus to the selected capability')
+        // The v1 table opened a detail pane from a selected row and staged pending
+        // drafts; neither form is part of this table any more.
+        for (const selector of ['.ptcPlusSessionCapabilityDetail', '.ptcPlusSessionCapabilityPending',
+          '[data-capability-id="tools.probe0"] .ptcPlusCapabilityAvailability']) {
+          assert.equal(await panel.locator(selector).count(), 0, `${caseLabel}: ${selector} is not part of the session table`)
         }
-        // Multi-select batch: explicit row selection stages one choice for every
-        // picked target, and nothing is submitted until the footer applies it.
+        assert.equal(await panel.locator('[role=row][aria-selected]').count(), 0, 'a row states no selection')
+        assert.equal(await panel.locator('.ptcPlusSessionCapabilityName').evaluateAll(names =>
+          names.filter(name => name.closest('button,a') !== null).length), 0,
+          'a row name is not a navigation control: the table states values instead of opening a pane')
+        // Multi-select batch: the dialog lists exactly the picked rows and the footer
+        // writes one record per row and dimension.
         const beforeBatchCalls = await page.evaluate(() => window.sessionCapabilityCalls.length)
-        await panel.getByLabel(SETTINGS_COPY[locale]['capabilities.selectForBatch'].replace('{name}', 'probe1'), { exact: true }).check()
-        await panel.getByLabel(SETTINGS_COPY[locale]['capabilities.selectForBatch'].replace('{name}', 'probe2'), { exact: true }).check()
-        assert.equal((await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true })
+        const pickRow = async name => {
+          const box = panel.getByLabel(labels['capabilities.selectForBatch'].replace('{name}', name), { exact: true })
+          await box.check()
+        }
+        await pickRow('probe1')
+        await pickRow('probe2')
+        assert.equal((await panel.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true })
           .textContent()).includes('2'), true, 'the batch button reports the selected count')
-        await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true }).click()
-        const sessionBatch = page.getByRole('dialog', { name: SETTINGS_COPY[locale]['capabilities.batchSettings'], exact: true })
+        await panel.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
+        const sessionBatch = page.getByRole('dialog', { name: labels['capabilities.batchSettings'], exact: true })
         await sessionBatch.waitFor()
         assert.equal(await sessionBatch.locator('.ptcPlusCapabilityBatchTargets li').count(), 2,
           'the batch window lists exactly the picked rows')
-        await chooseSelect(sessionBatch, SETTINGS_COPY[locale]['capabilities.batch.availability'],
-          SETTINGS_COPY[locale]['capabilities.action.close'])
+        assert.deepEqual(await sessionBatch.locator('.ptcPlusCapabilityBatchTargets li code').allTextContents(),
+          ['tools.probe1', 'tools.probe2'])
+        assert.equal(await sessionBatch.getByText(labels['capabilities.batch.selected'].replace('{count}', '2'), { exact: true }).count(), 1)
+        await chooseSelect(sessionBatch, labels['capabilities.policy.availability'], labels['capabilities.word.closed'])
         const sessionBatchGeometry = await sessionBatch.evaluate(element => {
           const bounds = element.getBoundingClientRect()
           return { width: bounds.width, left: bounds.left, right: bounds.right, overflow: element.scrollWidth > element.clientWidth + 1 }
@@ -764,61 +909,53 @@ if (values.list) {
         assert.ok(sessionBatchGeometry.width <= 480 && sessionBatchGeometry.left >= -1 && sessionBatchGeometry.right <= viewport.width + 1,
           'session batch stays a small in-viewport surface')
         assert.equal(sessionBatchGeometry.overflow, false, 'session batch does not overflow horizontally')
-        await sessionBatch.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.batch.stage'].replace('{count}', '2') }).click()
+        await sessionBatch.getByRole('button', { name: labels['capabilities.batch.record'].replace('{count}', '2') }).click()
         await sessionBatch.waitFor({ state: 'hidden' })
-        assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.length), beforeBatchCalls,
-          'staging a batch must not run commands')
-        assert.equal(await panel.evaluate(element => ['tools.probe1', 'tools.probe2'].filter(id =>
-          element.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilityPending[data-changed="true"]`)).length), 2,
-          'staging marks both picked rows as pending')
-        await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.discard'], exact: true }).click()
-        assert.equal(await panel.locator('[data-capability-id="tools.probe1"] .ptcPlusSessionCapabilityPending').getAttribute('data-changed'),
-          'false', 'discarding clears the staged batch')
-        const probeRow = panel.locator('[data-capability-id="tools.probe79"]')
-        const detailId = async () => panel.locator('.ptcPlusSessionCapabilityDetail code').evaluate(element => element.textContent)
-        const backToList = async () => {
-          if (viewport.width <= 650) {
-            await panel.getByRole('button', { name: SETTINGS_COPY[locale]['capabilities.quick.backToList'] }).click()
-          }
-        }
-        // Selection must follow the row element rather than its text: click the empty end of another
-        // row, so a missing row handler leaves the previous selection in place and fails the check.
-        const otherRow = panel.locator('[data-capability-id="tools.probe78"]')
-        await otherRow.scrollIntoViewIfNeeded()
-        const otherBox = await otherRow.boundingBox()
-        await otherRow.click({ position: { x: otherBox.width - 6, y: otherBox.height / 2 } })
-        assert.equal(await detailId(), 'tools.probe78', 'empty space at the end of a capability row selects that row')
-        await backToList()
-        // The gap between two cells belongs to the row itself, so it must select the row without
-        // hitting any control. Bring the probed row into the list's visible clip first: at the
-        // shortest captured sizes an earlier auto-scrolled probe can leave it outside the clip,
-        // where the hit test would read the viewport instead of the row.
-        await probeRow.scrollIntoViewIfNeeded()
-        const rowGap = await probeRow.evaluate(element => {
-          const row = element.getBoundingClientRect()
-          const cells = [...element.children].map(child => child.getBoundingClientRect())
-          for (let index = 1; index < cells.length; index += 1) {
-            const left = cells[index - 1].right, right = cells[index].left
-            if (Math.abs(cells[index - 1].top - cells[index].top) < 2
-              && left > row.left && right < row.right && right - left >= 3) {
-              return { x: (left + right) / 2, y: (cells[index].top + cells[index].bottom) / 2 }
-            }
-          }
-          return null
+        await page.waitForFunction(() => window.sessionCapabilityCalls.length >= 2)
+        assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.length), beforeBatchCalls + 2,
+          'a batch writes exactly one record per picked row')
+        assert.deepEqual(await page.evaluate(() => window.sessionCapabilityCalls.slice(-2).map(call => call.input)),
+          ['set session tools.probe1 availability closed', 'set session tools.probe2 availability closed'])
+        await page.waitForFunction(() => document.querySelector('.ptcPlusSessionCapabilityFooter [role=status]'))
+        const receipt = await panel.locator('.ptcPlusSessionCapabilityFooter [role=status]').innerText()
+        // The footer states the record this write named, in the current language and
+        // with no degree of proof: which entry, which choice, which session.
+        assert.equal(receipt, labels['capabilities.receipt.record']
+          .replace('{session}', 'fallback-session')
+          .replace('{record}', `tools.probe2 · ${labels['capabilities.policy.availability']} ${labels['capabilities.word.closed']}`),
+        'the panel states the record its command wrote')
+        assert.equal(receipt.includes('ptc-capability-command/v1'), false, 'the footer shows no raw payload')
+        for (const word of ['Saved:', 'Delivered:', 'Usable:', 'unproven', '未证明', '不可用', '未记录'])
+          assert.equal(receipt.includes(word), false, `the receipt states no proof verdict (${word})`)
+        // The receipt is bounded to the two lines the footer may spend on it and stays
+        // readable through its own scrollbar: a receipt is a log line, not a layout
+        // that may take the list's height or cover a control below it.
+        const receiptBox = await panel.locator('.ptcPlusSessionCapabilityFooter [role=status]').evaluate(element => {
+          const style = getComputedStyle(element)
+          const bounds = element.getBoundingClientRect()
+          return { height: bounds.height, maxHeight: parseFloat(style.maxHeight), lineHeight: parseFloat(style.lineHeight),
+            scrollHeight: element.scrollHeight, clientHeight: element.clientHeight, overflowY: style.overflowY }
         })
-        assert.ok(rowGap, 'a capability row must keep an empty gap between its cells')
-        assert.equal(await probeRow.evaluate((element, point) => {
-          const hit = document.elementFromPoint(point.x, point.y)
-          return element.contains(hit) && hit.closest('button,label,input,a,select') === null
-        }, rowGap), true, 'the row gap must be empty, non-interactive space')
-        await page.mouse.click(rowGap.x, rowGap.y)
-        assert.equal(await detailId(), 'tools.probe79', 'the empty gap between two cells selects that row')
-        await backToList()
-        await panel.locator('[data-capability-id="tools.probe78"] .ptcPlusCapabilitySource').click()
-        assert.equal(await detailId(), 'tools.probe78', 'a non-interactive cell selects its row')
-        await backToList()
-        await panel.getByRole('searchbox').fill('probe79')
-        assert.equal(await items.count(), 1)
+        assert.equal(receiptBox.height <= receiptBox.maxHeight + 1, true,
+          `the receipt keeps the footer's height budget ${JSON.stringify(receiptBox)}`)
+        assert.equal(receiptBox.height <= receiptBox.lineHeight * 2 + 1, true,
+          `the receipt stops at two lines ${JSON.stringify(receiptBox)}`)
+        assert.equal(receiptBox.scrollHeight <= receiptBox.clientHeight + 1 || receiptBox.overflowY === 'auto', true,
+          `a receipt longer than its two lines stays readable by scrolling ${JSON.stringify(receiptBox)}`)
+        const listAfterReceipt = await panel.locator('.ptcPlusSessionCapabilityList').evaluate(element => {
+          const clip = element.getBoundingClientRect()
+          const header = element.querySelector('.ptcPlusSessionCapabilityColumns').getBoundingClientRect()
+          return { viewport: clip.bottom - clip.top - header.height, row: element.querySelector('[data-capability-id]').getBoundingClientRect().height }
+        })
+        assert.ok(listAfterReceipt.viewport >= listAfterReceipt.row,
+          `a receipt never costs the list its row ${JSON.stringify(listAfterReceipt)}`)
+        assert.equal(await panel.evaluate(element => {
+          const footer = element.querySelector('.ptcPlusSessionCapabilityFooter').getBoundingClientRect()
+          const list = element.querySelector('.ptcPlusSessionCapabilityList').getBoundingClientRect()
+          return list.bottom <= footer.top + 1 && footer.top >= list.top
+        }), true, 'the receipt stays in the footer and never reaches into the list')
+        assert.equal(await availabilityOf('tools.probe1').innerText(), labels['capabilities.word.closed'])
+        assert.equal(await availabilityOf('tools.probe2').innerText(), labels['capabilities.word.closed'])
         await page.keyboard.press('Escape')
         await panel.waitFor({ state: 'hidden' })
         assert.equal(await page.locator('.ptcPlusAuthorButton').evaluate(element => document.activeElement === element), true,
@@ -826,7 +963,7 @@ if (values.list) {
         await page.evaluate(() => window.showCapabilityReceipt())
         const notice = page.locator('.ptcPlusCapabilityCommandNotice')
         await notice.waitFor()
-        assert.equal(await notice.innerText(), SETTINGS_COPY[locale]['capabilities.card.recorded'])
+        assert.equal(await notice.innerText(), labels['capabilities.card.recorded'])
         assert.equal(await notice.locator('code, details, .ptcPlusCapabilityReceiptState').count(), 0)
         assert.equal(await page.locator('.ptcPlusCapabilityReceipt').count(), 0, 'refresh renders no command card')
         assert.equal(await notice.evaluate(element => getComputedStyle(element).fontSize), '13px')
@@ -835,12 +972,12 @@ if (values.list) {
         if (viewport.width === 1440 && native) {
           await page.evaluate(() => window.showCapabilityReceipt('list all', JSON.stringify({schema:'ptc-capability-catalog/v1',entries:window.capabilityEntries})))
           const card = page.locator('.ptcPlusCapabilityReceipt')
-          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.catalogCount'].replace('{count}', '83'), {exact:true}).waitFor()
+          await card.getByText(labels['capabilities.card.catalogCount'].replace('{count}', '83'), {exact:true}).waitFor()
           assert.ok((await card.boundingBox()).height < 190, 'catalog does not dump JSON into the conversation')
-          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.browse'], {exact:true}).click()
+          await card.getByText(labels['capabilities.card.browse'], {exact:true}).click()
           assert.equal(await card.locator('tbody tr').count(), 83)
           await card.screenshot({path:`artifacts/button-styles/capability-catalog-command-card-native-${locale}-${theme}.png`})
-          await card.getByText(SETTINGS_COPY[locale]['capabilities.card.source'], {exact:true}).click()
+          await card.getByText(labels['capabilities.card.source'], {exact:true}).click()
           await page.waitForFunction(() => document.querySelector('.ptcPlusCapabilityReceiptSource pre'))
           assert.equal(await card.locator('pre').innerText(), await page.evaluate(() => JSON.stringify({schema:'ptc-capability-catalog/v1',entries:window.capabilityEntries})))
 
@@ -1180,8 +1317,11 @@ if (values.list) {
         await workbench.getByRole('button', { name: labels['capabilities.batchSettings'], exact: true }).click()
         const batch = page.getByRole('dialog', { name: labels['capabilities.batchSettings'], exact: true })
         await batch.waitFor()
-        assert.equal(await batch.locator('.ptcPlusCapabilityBatchTargets li').count(), 8)
-        assert.match(await batch.innerText(), new RegExp(labels['capabilities.batch.targets'].replace('{count}', '8')))
+        assert.equal(await batch.locator('.ptcPlusCapabilityBatchTargets li').count(), 9)
+        assert.match(await batch.innerText(), new RegExp(labels['capabilities.batch.targets'].replace('{count}', '9')))
+        // The identity the last complete catalog read did not declare stays in the target
+        // list and is reported there instead of being dropped from it.
+        assert.ok((await batch.innerText()).includes(labels['capabilities.batch.changedTargets'].replace('{count}', '1')))
         await chooseSelect(batch, labels['capabilities.batch.disclosure'], labels['capabilities.full'])
         assert.equal(await page.evaluate(() => window.settingsWrites.length), writesBeforeBatch, 'batch edits must not save before confirmation')
         const batchGeometry = await batch.evaluate(element => {
@@ -1247,10 +1387,10 @@ if (values.list) {
         const toolIds = (await workbench.locator('.ptcPlusCapabilityIdentity code').allTextContents()).filter(id => ['tools.read','tools.edit','tools.bash'].includes(id))
         assert.deepEqual(toolIds, ['tools.read', 'tools.edit', 'tools.bash'])
         await capabilitySort.press('Enter')
-        await openFilters()
-        await chooseSelect(filterDialog, labels['capabilities.availabilityFilter'], labels['capabilities.availability.unavailable'])
+        // The saved-only identity is reached through search: the table states each
+        // row's own rule and carries no per-row catalog-availability state to filter.
+        await workbench.getByRole('searchbox').fill('tools.previous')
         assert.equal(await workbench.locator('.ptcPlusCapabilityItem').count(), 1)
-        await closeFilters()
         await openEntry('tools.previous')
         await editor.getByRole('button', { name: labels['capabilities.removeSaved'], exact: true }).click()
         await page.waitForFunction(() => window.settingsWrites.some(([key]) => key === 'capabilityPolicy'))

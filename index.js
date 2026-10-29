@@ -9,6 +9,7 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
+import { CAPABILITY_DISCLOSURES } from './internal/capability-policy.js'
 import { CapabilityStatisticsStore } from './internal/capability-statistics-store.js'
 import { createCapabilityEnvironment } from './internal/capability-environment.js'
 import { capabilityCommandReceipt } from './internal/capability-command-receipt.js'
@@ -121,6 +122,25 @@ function replGuidance({ bindingPolicy, rewritesEnabled, languageSemantics, durab
  */
 function runCodeDefinitionFor(tools, scope) {
   return hostTransportDefinition(tools, scope, RUN_CODE)
+}
+
+/**
+ * One catalogue row in the shape `/capabilities list` publishes.
+ *
+ * The command's table states one selection per column while a row states availability
+ * and disclosure separately, so each column names the selection those two dimensions
+ * already spell, and a rule that decides neither keeps the column's own undecided
+ * word. No column reports the composition: the panel states supply, record and
+ * evidence, and this listing is the same read rather than a second one that could
+ * answer for what a runtime built.
+ */
+function capabilityListingEntry(row) {
+  const selection = (rule, undecided) => rule?.availability === 'closed' ? 'closed'
+    : rule?.availability === 'enabled' && CAPABILITY_DISCLOSURES.includes(rule.disclosure) ? rule.disclosure
+      : undecided
+  return { id: row.id, name: row.name, category: row.category, source: row.source,
+    ...(typeof row.description === 'string' ? { description: row.description } : {}),
+    saved: selection(row.saved, 'automatic'), temporary: selection(row.session, 'inherit') }
 }
 
 /** Register the session-bound REPL runtime. */
@@ -375,7 +395,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       valueLimits: valueLimitsFromConfig(activeConfig),
     })
     capabilityEnvironment = createCapabilityEnvironment({ ctx, config: activeConfig,
-      toolSchemasForAgent: toolSdkSchemasForAgent, modelSchemasForAgent: toolSchemasForAgent,
+      toolSchemasForAgent: toolSdkSchemasForAgent,
       // The panel's binding rows report the same catalog `/binding` acts on, so the
       // read borrows the bindings owner's `list()` instead of opening a second store.
       readUserBindings: () => userBindings.list(),
@@ -465,7 +485,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
       const capabilitiesRpc = ctx.inject(['ptcPlusRpc'], scope => {
         scope.effect(() => scope.ptcPlusRpc.register(RPC_CONTRACTS.capabilities, async (operation, payload, signal) => {
           signal.throwIfAborted()
-          if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(signal) }
+          if (operation === 'catalog') return { ok: true, value: await capabilityEnvironment.describeCatalog(payload, signal) }
           if (operation === 'targets') return { ok: true, value: capabilityEnvironment.describeTargets() }
           if (operation === 'session-catalog') return { ok: true, value: await capabilityEnvironment.describeSessionCatalog(payload, signal) }
           if (operation === 'allocation') return { ok: true, value: await capabilityEnvironment.observeAllocation(payload, signal) }
@@ -481,41 +501,55 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
           input: { hint: 'refresh | list [all|skills|tools|mcp|mcp_tools] [query] | set session|global <id> [availability|disclosure] <choice>' },
           handler: async ({ commandId, agent, rawInput, signal }) => {
             const input = rawInput.trim()
-            const receipt = (state, error, proof) => capabilityCommandReceipt(state, String(agent.session.id), error,
+            const receipt = (state, error, record) => capabilityCommandReceipt(state, String(agent.session.id), error,
               state === 'pending' && capabilityEnvironment.pendingChoiceMessage(agent)
                 ? { commandId, rawInput, message: capabilityEnvironment.pendingChoiceMessage(agent) } : undefined,
-              proof)
+              record)
             const selection = /^set (session|global) (\S+) (?:(availability|disclosure) )?(full|on-demand|closed|automatic|inherit|enabled|host|adaptive)$/.exec(input)
             if (selection) {
-              if (!capabilityEnvironment.canRefresh(agent)) return { kind: 'error', text: receipt('unavailable') }
+              // The write is stated before it happens: the receipt names the record
+              // this command asked for, and whether that record exists is the answer
+              // the command itself returns.
+              const record = { scope: selection[1], id: decodeURIComponent(selection[2]),
+                ...(selection[3] === undefined ? {} : { dimension: selection[3] }), selection: selection[4] }
               const changed = await capabilityEnvironment.change(agent, {
-                scope: selection[1], id: decodeURIComponent(selection[2]), dimension: selection[3], selection: selection[4], commandId,
+                scope: record.scope, id: record.id, dimension: selection[3], selection: record.selection,
               }, signal, settingsForCommand?.())
-              // A save states what it changed and what it did not prove: the
-              // model-visible catalog and a cell that reached the capability are
-              // separate facts, reported by the layer that owns each one.
-              const proof = capabilityEnvironment.describeCapabilityProof(agent, decodeURIComponent(selection[2]))
+              // A receipt states what this command wrote — which entry, which choice
+              // and which session or global configuration now records it. What a cell
+              // later obtained is the panel's evidence column, not a sentence here.
+              const state = !changed.sessionApplied ? 'saved-only'
+                : changed.publication === 'pending' ? 'pending' : 'recorded'
               return { kind: changed.sessionApplied ? 'success' : 'error',
-                text: receipt(changed.sessionApplied ? changed.publication === 'pending' ? 'pending' : 'recorded' : 'saved-only', changed.error, proof) }
+                text: receipt(state, changed.error, state === 'recorded' ? record : undefined) }
             }
             const listing = /^list(?: (all|skills|tools|mcp|mcp_tools))?(?: (.*))?$/.exec(input)
             if (listing) {
-              const entries = await capabilityEnvironment.catalogFor(agent, signal)
+              // The listing is the panel's own read: one session catalogue, projected
+              // into the columns this command states. Nothing about a runtime enters
+              // it, so a session with no live agent lists exactly like one with an
+              // agent — the log, the Host's declaration and the saved configuration
+              // are the whole answer in both cases.
+              const catalog = await capabilityEnvironment.describeSessionCatalog({
+                sessionId: String(agent.session.id ?? agent.id),
+              }, signal)
               const query = (listing[2] ?? '').toLocaleLowerCase()
               const kind = listing[1] ?? 'all'
-              return { kind: 'success', text: JSON.stringify({ schema: 'ptc-capability-catalog/v1', entries: entries.filter(entry => (
-                kind === 'all' || kind === 'skills' && entry.category === 'skill'
-                || kind === 'tools' && entry.category === 'tool' && entry.source?.kind !== 'mcp'
-                || kind === 'mcp' && ['server', 'resource'].includes(entry.category)
-                || kind === 'mcp_tools' && entry.category === 'tool' && entry.source?.kind === 'mcp'
-              ) && (!query || `${entry.id} ${entry.description}`.toLocaleLowerCase().includes(query))) }) }
+              const entries = catalog.rows
+                .filter(row => row.kind !== 'binding')
+                .filter(row => kind === 'all' || kind === 'skills' && row.category === 'skill'
+                  || kind === 'tools' && row.category === 'tool' && row.source?.kind !== 'mcp'
+                  || kind === 'mcp' && ['server', 'resource'].includes(row.category)
+                  || kind === 'mcp_tools' && row.category === 'tool' && row.source?.kind === 'mcp')
+                .filter(row => !query || `${row.id} ${row.name ?? ''} ${row.description ?? ''}`.toLocaleLowerCase().includes(query))
+                .map(capabilityListingEntry)
+              return { kind: 'success', text: JSON.stringify({ schema: 'ptc-capability-catalog/v1', entries }) }
             }
             if (input !== '' && input !== 'refresh') return { kind: 'error', text: receipt('usage') }
             if (input === 'refresh') {
-              if (!capabilityEnvironment.canRefresh(agent)) {
-                return { kind: 'error', text: receipt('unavailable') }
-              }
-              await capabilityEnvironment.refresh(agent, undefined, signal, commandId)
+              // The command acts on the session it was invoked in; the agent is the
+              // argument that states which composition to replace.
+              await capabilityEnvironment.refresh(agent, undefined, signal)
               // A refresh always republishes the saved configuration; when that
               // configuration has capability management or context off, report
               // the off state instead of claiming an updated environment.

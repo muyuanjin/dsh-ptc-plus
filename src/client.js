@@ -203,8 +203,13 @@ export function createClientPlugin(require) {
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability plans unavailable')
           return result.value
         },
-        async inspectCapabilityCatalog(signal) {
-          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'catalog', {}, signal)
+        async inspectCapabilityCatalog(sessionId, signal) {
+          // The list is the supply for one session's workspace directory, so the
+          // request names the session the settings page observes. Naming none asks
+          // for the Host's own declaration, which is what a page with no observed
+          // session can still state.
+          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'catalog',
+            typeof sessionId === 'string' && sessionId ? { sessionId } : {}, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability catalog unavailable')
           return result.value
         },

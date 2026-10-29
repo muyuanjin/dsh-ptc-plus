@@ -212,7 +212,10 @@ export function createPtcSettingsView(React, deps) {
       if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityCatalog) return
       const controller = new AbortController()
       setCatalogError(null)
-      Promise.resolve().then(() => inspectCapabilityCatalog(controller.signal)).then(available => {
+      // The observed session, when one is selected, names the workspace directory the
+      // Host's declaration is read for; with none selected the read states the Host's
+      // own declaration. Neither read needs a live agent behind the session.
+      Promise.resolve().then(() => inspectCapabilityCatalog(refreshSessionId || undefined, controller.signal)).then(available => {
         if (controller.signal.aborted) return
         setCatalog(available)
       }, error => {
@@ -220,7 +223,7 @@ export function createPtcSettingsView(React, deps) {
         setCatalogError(String(error?.message ?? error))
       })
       return () => controller.abort()
-    }, [enabled, open, view, planConfiguration, planRevision])
+    }, [enabled, open, view, planConfiguration, planRevision, refreshSessionId])
     React.useEffect(() => {
       if (!plansEnabled) {
         setPlans(null)

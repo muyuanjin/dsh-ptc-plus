@@ -19,7 +19,15 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const BEHAVIOUR_ROOTS = ['index.js', 'internal', 'src']
+// The shipped Client entry is behaviour code too: the host loads `client.cjs`, so a
+// literal that reaches it from the generator or from a bundled dependency would branch
+// on a host release without ever passing through `src/`. The vendored compiler bundles
+// (`compiler-*.cjs`) stay out because the host-token heuristic cannot tell a dependency
+// version from a host one in minified vendor code — scanning them reports eight lines in
+// `compiler-core.cjs` and `compiler-typescript.cjs` that are dependency strings beside
+// identifiers containing `dsh`, and a literal there comes from a dependency build rather
+// than from this repository's behaviour.
+const BEHAVIOUR_ROOTS = ['index.js', 'internal', 'src', 'client.cjs']
 const SKIP = new Set(['node_modules', '.git', 'coverage', 'artifacts'])
 // Two components are enough: `dshVersion.startsWith('0.2.')` and `dsh >= '0.2'`
 // branch on a host release exactly like a full three-part comparison does.

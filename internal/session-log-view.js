@@ -9,8 +9,37 @@ import { deepEqualJson, isJsonValue } from '@deepseek-ai/dsh-util-values'
 import { deepFreeze, isRecord } from './record-utils.js'
 import { advanceRuntimeHistory, createRuntimeHistory } from './recovery-tips.js'
 
-import { isHostRuntimeContextSource } from './message-sources.js'
+import { isHostRuntimeContextSource, isPtcMessageSource } from './message-sources.js'
+import { BINDING_ADOPTION_FORM, readBindingAdoption } from './binding-adoption.js'
 const SYSTEM_PROMPT_CLEARED = 'Current runtime context: none. Earlier runtime-context snapshots no longer apply.'
+
+/**
+ * A PTC binding-adoption statement, readable or not.
+ *
+ * The fold has to recognize the statement even when this build cannot resolve its
+ * wording: the fact it keeps is what a restored checkpoint replays, so a fact that
+ * dropped the form could not reproduce the record the fold appended.
+ */
+function isBindingAdoptionStatement(message) {
+  const source = message?.source
+  return isPtcMessageSource(source) && source.form === BINDING_ADOPTION_FORM
+}
+
+/**
+ * An adoption statement this build cannot resolve, kept as the statement it is.
+ *
+ * Both the panel and the `/binding` command answer from this projection, and the
+ * answer has to be this session's *newest* statement. A projection that dropped a
+ * statement it could not resolve would let the record the session superseded answer
+ * instead, so the statement is retained with no declined list — the absence is what
+ * marks it unreadable. It never reaches the model-visible surface, which is built
+ * from resolvable runtime messages only.
+ */
+function unreadableBindingAdoption(message) {
+  if (!isBindingAdoptionStatement(message)) return undefined
+  if (readBindingAdoption(message) !== undefined) return undefined
+  return Object.freeze({ form: BINDING_ADOPTION_FORM })
+}
 
 /** DSH's empty aggregate uses an exact owner marker without a snapshot form. */
 export function systemPromptSnapshotSections(message) {
@@ -72,7 +101,8 @@ export function runtimeMessageFacts(records, initial = {}) {
 
 function presentationEvent(event) {
   const recognized = event?.type === 'user/message'
-    && (systemPromptSnapshotSections(event.data) !== undefined || readRuntimeMessage(event.data) !== undefined)
+    && (systemPromptSnapshotSections(event.data) !== undefined || readRuntimeMessage(event.data) !== undefined
+      || isBindingAdoptionStatement(event.data))
   const data = recognized ? { source: event.data.source, content: event.data.content }
     : event?.type === 'user/message' && typeof event.data?.source?.kind === 'string'
       ? { source: { kind: event.data.source.kind } } : undefined
@@ -86,11 +116,14 @@ function applyLogEvent(state, event, index = event?.seq,
   timeline = advanceSessionTimeline(state.timeline, event, index)) {
   const sections = event?.type === 'user/message' ? systemPromptSnapshotSections(event.data) : undefined
   const ptc = event?.type === 'user/message' ? readRuntimeMessage(event.data) : undefined
+  // An adoption statement this build cannot resolve is still this session's statement,
+  // so it stays in the projection as the newest one rather than disappearing.
+  const unresolvedAdoption = ptc === undefined ? unreadableBindingAdoption(event?.data) : undefined
   const contextStep = state.contextStep + (isContextStep(event) ? 1 : 0)
   const surfaceNodes = advanceSessionSurface(state.surfaceNodes, event)
   let visibleRuntimeMessages = state.visibleRuntimeMessages
-  if (timeline === state.timeline && sections === undefined && ptc === undefined && contextStep === state.contextStep
-    && surfaceNodes === state.surfaceNodes) return state
+  if (timeline === state.timeline && sections === undefined && ptc === undefined && unresolvedAdoption === undefined
+    && contextStep === state.contextStep && surfaceNodes === state.surfaceNodes) return state
   const next = { ...state, timeline, contextStep,
     logFacts: [...state.logFacts, deepFreeze({ index, event: presentationEvent(event) })],
   }
@@ -110,6 +143,11 @@ function applyLogEvent(state, event, index = event?.seq,
     const record = Object.freeze({ ...ptc, index, contextStep: state.contextStep, producer: 'ptc-plus' })
     next.ptcMessages = [...state.ptcMessages, record]
     next.runtimeMessagesBySeq = { ...next.runtimeMessagesBySeq, [`k${event.seq}`]: record }
+  } else if (unresolvedAdoption !== undefined) {
+    // Listed as this session's newest statement, but not as a resolvable runtime
+    // message: the ordered surface below is built from `runtimeMessagesBySeq`.
+    next.ptcMessages = [...state.ptcMessages,
+      Object.freeze({ ...unresolvedAdoption, index, contextStep: state.contextStep, producer: 'ptc-plus' })]
   }
   if (event?.surfaceOp === 'append') {
     const record = next.runtimeMessagesBySeq[`k${event.seq}`]
@@ -133,7 +171,11 @@ export function createSessionLogProjection(options = {}) {
   const replayBudget = admissionReplayBudget(options.replayBudgetBytes)
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    stateVersion: 13,
+    // 14 records the binding-adoption statement this build cannot resolve: the fact it
+    // keeps now carries the form its own replay needs, and `ptcMessages` gained a record
+    // for it. A checkpoint written by an earlier fold answers a different question, so
+    // the version moves and stored checkpoints are refolded rather than admitted.
+    stateVersion: 14,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'

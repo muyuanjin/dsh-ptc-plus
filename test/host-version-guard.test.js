@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { hostVersionLiteralViolations, scanHostVersionLiterals } from '../scripts/check-host-version-literals.mjs'
 
@@ -52,4 +55,22 @@ test('importing the guard does not scan the checkout as a side effect', () => {
   // process.exitCode from an unrelated file.
   assert.equal(process.exitCode, undefined)
   assert.deepEqual(scanHostVersionLiterals(process.cwd()), [])
+})
+
+test('the shipped client entry is behaviour code the guard reads', async () => {
+  // The host loads `client.cjs`, so a literal there branches on a host release even
+  // though no file under `src/` contains it. Scanning only the source roots would call
+  // this tree clean while the shipped bundle decides on a version.
+  const root = await mkdtemp(join(tmpdir(), 'ptc-guard-'))
+  try {
+    await mkdir(join(root, 'internal'), { recursive: true })
+    await mkdir(join(root, 'src'), { recursive: true })
+    for (const file of ['index.js', join('internal', 'owner.js'), join('src', 'client.js')]) {
+      await writeFile(join(root, file), 'export const ok = 1\n')
+    }
+    await writeFile(join(root, 'client.cjs'), "const dshVersion = '0.2.1'\n")
+    assert.deepEqual(scanHostVersionLiterals(root), ["client.cjs:1: const dshVersion = '0.2.1'"])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })

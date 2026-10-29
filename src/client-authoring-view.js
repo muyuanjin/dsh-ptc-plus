@@ -69,7 +69,11 @@ export function createAuthoringView(React, deps) {
   }) {
     const input = useInput?.(snapshot => snapshot)
     const available = useBindingCommand(snapshot => snapshot)
-    const capabilityAvailable = useCapabilityCommand?.(snapshot => snapshot) === true
+    // The capability command source publishes nothing until a session observes it, and
+    // this entry is the surface that keeps it observed while mounted. Its value decides
+    // no branch here: whether `/capabilities` is listed is the command's own answer when
+    // it runs, so the refresh shortcut stays usable and the refusal carries its reason.
+    useCapabilityCommand?.(() => undefined)
     const settings = usePtcSettings(snapshot => snapshot)
     const [review, view] = useBindingReview(sessionId)
     const anchorRef = React.useRef(null)
@@ -113,8 +117,7 @@ export function createAuthoringView(React, deps) {
     const pluginEnabled = featureEnabled(settings, 'plugin') && (hasDraft || featureEnabled(settings, 'ptcMenu'))
     const canPrefill = typeof useInput === 'function' && typeof inputActions?.setDraft === 'function'
     const canAuthor = quickAccess && available && canPrefill
-    const canRefresh = pluginEnabled && settings.status === 'ready' && settings.writable === true
-      && capabilityAvailable && canPrefill
+    const canRefresh = pluginEnabled && settings.status === 'ready' && settings.writable === true && canPrefill
     const menuOpen = pluginEnabled && view.reachable && !managing && !capabilitiesOpen && !settingsOpen
       && menu !== null && menu.key === view.candidateKey
     // The dialog owns the management session; losing the input surface only
@@ -411,8 +414,7 @@ export function createAuthoringView(React, deps) {
     const actionButton = (id, copy) => h('button', {
       type: 'button', role: 'menuitem', className: 'ptcPlusMenuButton',
       disabled: id === 'refresh' && !canRefresh,
-      title: id === 'refresh' && !capabilityAvailable ? t('capabilities.refreshUnavailable')
-        : id === 'settings' ? settingsPath(t) : t(copy),
+      title: id === 'settings' ? settingsPath(t) : t(copy),
       onClick: () => selectMenuItem(id),
     }, actionCopy(id, copy))
     const actionSections = [
@@ -496,7 +498,6 @@ export function createAuthoringView(React, deps) {
         }) : null,
       SessionCapabilityControls && capabilitiesOpen && view.reachable
         ? h(SessionCapabilityControls, { sessionId, open: true, t,
-          enabled: pluginEnabled && settings.status === 'ready' && settings.writable === true,
           onClose: () => {
             setCapabilitiesOpen(false)
             queueMicrotask(() => anchorRef.current?.querySelector('.ptcPlusAuthorButton')
@@ -747,8 +748,6 @@ export function createAuthoringView(React, deps) {
       node.outcome?.kind !== 'error' ? null : h('p', { className: 'ptcPlusMessage ptcPlusDanger' },
         node.outcome.text ?? t('bindings.commandFailed')),
       canOpen ? h(ActionButton, { onClick: () => openBindingReview(review) }, t('bindings.reviewOpen')) : null,
-      !current.mounted && (candidate !== null || matches && projection.phase === 'ready')
-        ? h('p', { className: 'ptcPlusMessage' }, t('bindings.reviewUnavailable')) : null,
       candidate === null ? null : h('details', { className: 'ptcPlusBindingSourceDetails' },
         h('summary', null, t('tool.source')), h(BindingCandidateContent, { candidate, t })))
   }

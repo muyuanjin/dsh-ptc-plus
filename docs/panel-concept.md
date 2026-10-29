@@ -1,147 +1,148 @@
-# 能力与上下文面板：概念文档
+# 能力面板：施工契约
 
-## 0. 状态：设计意图与已交付范围
+## 0. 权威
 
-**这是一份设计文档，不是已发布契约。** 它描述面板应成为的形状；与代码冲突处一律以代码为准，本文中相应的句子标注为「未来工作」。
+本文决定面板的形状。代码与本文不一致处，代码是缺陷。本文与 §1 不一致处，本文是缺陷。两者都不由「谁先写下」决定。
 
-**0.5.4 交付的形状**（下列各条与当前代码一致；版本号只标明这些形状随哪个版本交付，不构成兼容性判断，也不描述发布通道的状态）
+非目标：不跨会话检索能力；不改冻结语义与 `/capabilities refresh` 的同步含义；不展示 prompt 原文、恢复快照或 worker 内部；不改 REPL 控制台与工作台的分工；**本面板不陈述物化**——方案由运行时在执行前构建，面板只陈述供给、记录与证据；不新增写入器、RPC 写操作或第二写通道。
 
-- **读不需要活会话。** `describeSessionCatalog` 找不到可刷新 agent 时不再失败，仍从绑定存储与会话日志给出绑定组，并把能力清单报成「未观察」（`internal/capability-environment.js:1445-1461`）。
-- **「未观察」与「空」分开。** `live:false` + `entries:[]` 配 `capabilities.quick.notObserved` 文案，客户端不画空表（`src/client-capabilities-view.js:1545`、`:2038`、`src/client-copy.js:172`）。
-- **绑定行 `{id, name, enabled, declined}`。** `enabled` 来自 `list()` 的条目，`declined` 来自本会话日志的最新取用记录；「本会话使用」就是 `declined` 读出来的同一个比特，不另发 `adopted`（`internal/capability-environment.js:531-535`）。
-- **绑定行三种状态：** 本会话使用、本会话不使用、全局停用（`src/client-capabilities-view.js:1877`）。
-- **绑定组缺席有两个原因：** `supply-off`（`userBindingsEnabled` 关闭）与 `unreadable`（`list()` 抛错、返回损坏文档，或本会话的取用记录读不出——日志读失败同样出不了行），各有一句文案（`internal/capability-environment.js:509`、`:515`、`:521-526`）。
+## 1. 红线：取值不得由面板之外的开关决定
 
-**尚未交付（本文其余部分，按未来工作阅读）**
+一个字段、一句文案、一个控件状态，若它的取值能被面板之外的任何来源改变——某个进程／服务／运行时／命令没有在运行，或任何全局开关没有启用——它就是缺陷。
 
-- `ptc-capability-session-catalog/v2` 与 `rows` 行模型、`capabilities:null` 契约：当前响应是 `/v1`，用 `entries` + `bindings`／`bindingsReason`。
-- 删除 `subject.live`：`live` 仍在响应里，并被客户端读取（`src/client-capabilities-view.js:1545`）。
-- `readUserBindings()` 返回 `{enabled, entries}`：当前注入的是 `userBindings.list()`（返回 `{revision, path, entries}`），插件开关由环境自己读 `currentConfig.userBindingsEnabled`。
-- 行模型里的 `supply`／`choice`／`control{editable,blockedBy}` 与 `blockedBy` 枚举：当前行只有 `{id, name, enabled, declined}`；`command-unlisted` 由客户端从 `/binding` 命令可用性派生，不来自响应字段。
-- `SessionCatalogReadFailure`、逐行 `editable`、`rows.bindings:null` 等 §4、§5、§8 的形状。
+判定只有一句：**把那个来源摘掉，这个值会变吗？会变，它就不许存在。**
 
-§1–§8 的行号按编写设计时的版本记录，用来指出当时依据的代码位置；它们不是当前候选的定位依据。当前代码的引用只由 §0 维护。
+这条覆盖两类来源，不是一类。「没有在跑」和「没有启用」是同一个错误的两种写法：都让面板去陈述一件它没有资格陈述的事。屏幕上的「未观察／尚未清点／暂不可用／未启用」之所以禁止，是因为它们都是同一个翻译动作的产物：把面板之外的缺失，翻译成面板之内的状态。
 
-## 1. 面板是什么
+推论：面板不需要知道有没有活运行时，也不需要知道某个开关是开是关；它一旦知道，就一定会在某处把这个知识画到屏幕上。行不存在，是唯一合法的「不能做这件事」的写法。
 
-面板回答**这个会话看到什么**：给定 `sessionId`，列出它取用的已供给绑定条目与受管能力，每个结论落在「已保存／已投递／已证明可用」某层。它不是能力目录浏览器（`describeCatalog` `capability-environment.js:1405`、`observeAllocation` `:1386`），也不是 REPL 控制台（`CONTEXT.md:53`）。
+## 2. 概念
 
-## 2. 不变式
+| 概念 | 回答的问题 | 边界（属于 / 不属于） | 属于它的后果 | 不得混淆的邻居 |
+| --- | --- | --- | --- | --- |
+| **供给** | 宿主此刻声明存在什么 | 属于：工具注册表全局视图、prompt 段的 MCP／资源服务声明、按会话目录的 Skill 目录。不属于：这个会话选了它没有、它有没有被证明用过 | 一条供给至少一行；供给没有，行就没有 | 记录：供给说「存在」，记录说「选了什么」 |
+| **记录** | 这个会话写下过哪些决定 | 属于：绑定取用事件、能力选择事件。不属于：运行时构建出的方案、worker 装了什么 | 没有记录 ⇒ 该格取跟随保存的值；记录损坏 ⇒ 该格报记录损坏 | 供给：记录不能说某条目存在 |
+| **证据** | 这个会话里有没有一条被接受的执行证明它被拿到过 | 属于：`tool/result` 的 `meta.dshPtcPlusCapabilities.used` 含该 id。不属于：方案、安装、模型是否知道 | 有 ⇒ 一个标记；没有 ⇒ 空格子，不是否定的词 | 记录：记录说「选了」，证据说「拿到过」 |
+| **行** | 哪些对象各自构成一个可决定的单位 | 属于：宿主声明的能力、声明的 MCP 服务、全局绑定文档里 `enabled` 的条目。不属于：没有声明的、没有被供给的、统计聚合出来的 | 一行至少一个控件；对象不能被单独决定，它就不是行 | 组与批量：批量是「对已存在的行同时做同一个决定」，不产生行 |
+| **控件** | 把一条新记录写进这个会话 | 属于：本会话的决定。不属于：全局配置（在设置页）、运行时动作 | 一行必有，永远可点，没有失败分支；写不进去说明该行不该存在 | 设置页的全局开关：它不决定这一行 |
 
-- **I1 读不需要 agent** 唯一生产者是新增的 `readSessionCatalog({sessionId}, signal)`（§8；未来工作：当前由 `describeSessionCatalog` 的未观察分支承担，见 §0），只读日志、绑定存储与配置。证伪：无活 agent 时重读，行数与控件不变。
-- **I2 保存不代答执行** `saved`／`temporary`／`effective` 只来自配置与方案记录；cell 结果只进 `usability`。
-- **I3 供给边界每 kind 一条** 绑定行由条目 `enabled` 决定（§4）；能力行没有 agent-free 供给边界——host 是否仍声明它只由写入时的 `change()` `:1010` 判定，全局 `closed` 也可被会话改成 `enabled`（`sessionCapabilitySettings` `:91-98`），故不预判。
-- **I4 三件事不互答** `saved`／`delivery`／`usability` 各有唯一来源，只在能承载它的行上出现（§4）；`saved:true` 不得显示为已投递或可用。
-- **I5 没有整块不可用** `scope.*`／`plan` 只决定该层文案；行集存在时行区与控件仍在，写只由逐行 `control.editable` 收窄。
-- **I6 字段要有 agent-free 生产者** 产不出就删（文末清单）。
+被删除的概念：清单可用性、就绪、处境、投递、`scope`、`plan`、`management`、`live`、`unreadableSupply`。它们不回答任何别的决定，只把面板之外的缺失翻译成界面。**没有这个概念，就没有它的词。**
 
-## 3. 读取契约（v2 契约：未发布，见 §0）
+## 3. 行
 
-`readSessionCatalog` 只调三处：`readSessionLog({id: sessionId}, sessionQuery)`（`session-events.js:49-77`）、**外部传入的 `readUserBindings()`**、`capabilityConfiguration(currentConfig)`（`capability-environment.js:118-133`）。
+- **能力行**：每个宿主声明的能力一条，恒在。声明没有的条目不会因为配置、记录或运行时有无而出现或消失。
+- **服务行**：每个被声明的 MCP 服务一条，`mcpServers.<server>` 是它自己的决定。它是行，不是一批行：整台服务关掉是这个对象自己的决定，不是「筛选后批量」的替代品。
+- **绑定行**：全局绑定文档里 `enabled` 的条目一条。未被供给的条目不进本面板——把它画成一行只会得到一个按不动的按钮。
+- 行集只由供给决定；配置、记录、证据都不增减行。
 
-`readUserBindings` 必须新增：`createCapabilityEnvironment` 的 `store` 是 `CapabilityStatisticsStore`（`index.js:377-382`），够不到绑定存储；后者由 `createUserBindingsOwner` 私有（`user-bindings-owner.js:217`）。故由该 owner 暴露只读 `readUserBindings()`，返回 `{enabled, entries:[{id, enabled}], error?}`：`enabled` 是插件作用域的 `userBindingsEnabled`（`index.js:366` → `:222`，非条目级）；条目只经 `store.list()`（`user-bindings-store.js:150-153`，先 `load()`），**不经 `describe()`**——它在首次 `load()` 前给 `entries:[]` 且无 `error`（`:119`、`:141-153`），会被读成「没有条目」。注入点 `index.js:364-382` → `:444`；只读，写入口仍是 `mutate`（`user-bindings-store.js:177-219`）。（未来工作：当前注入的是 `userBindings.list()`，返回 `{revision, path, entries}`；`enabled` 不由它携带，见 §0。）
+列固定为 `名称 | 类型 | 来源 | 保存 | 本会话 | 证据`。
 
-它不调 `assemble`（`:1488`）、`inventory`（`:604`）、`observeHistory`（`:450`）、`prepare` 或 `session.append`；`canRefresh`（`:663`）不是前置。活输入与会话侧替代：
+- **保存**：当前配置里的值，只读文字。
+- **本会话**：本会话记录的值，**控件就在这一格**。能力行与服务行是可用性与（能力行的）披露；绑定行是取用。控件数等于该行能做的决定数，且永远不为零。
+- **证据**：能承载证据的行在有执行报告时出现标记，否则为空；不能承载证据的行（服务行、绑定行）这一格恒为空。空不等于否定的词。
 
-| 活输入 | 会话侧生产者 |
+## 4. 词表
+
+没有否定词。每个词陈述一件存在的事实。
+
+| 列 | 取值 |
 | --- | --- |
-| assembly sections（`:927`）| `sourcePlan(recordedPlan(events, id), id)`（`:449-470` → `:135-197`）冻结的 `snapshot.capabilities`／`snapshot.plan` |
-| `toolSchemasForAgent`／`observeSkills`（`:541`、`:558`）| 同一 `snapshot.capabilities`（`toolCapability` `:350-356`、`skillCapability` `:367-375`）|
-| `observeHistory(agent)`（`:442-448`）| `readSessionLog(...).events` |
-| 本会话绑定取用 | `projectSessionLog({session:{events}})`（`session-log-view.js:306-332`）→ `readRuntimeMessage`（`runtime-messages.js:112-123`）→ `latestBindingAdoption`（`binding-adoption.js:99-113`）|
+| 保存·可用性 | `开启`｜`关闭`｜`自动` |
+| 本会话·可用性 | `开启`｜`关闭`｜`自动`｜`继承` |
+| 保存·披露 | `宿主`｜`完整`｜`按需`｜`自适应`｜`自动` |
+| 本会话·披露 | `宿主`｜`完整`｜`按需`｜`自适应`｜`自动`｜`继承` |
+| 本会话·取用 | `使用`｜`不使用` |
+| 证据 | `已证明` |
 
-| 顶层字段 | 生产者 |
-| --- | --- |
-| `schema` | 恒 `ptc-capability-session-catalog/v2`；客户端 `:1520` 同步（未发布：当前为 `/v1`，客户端 `:1537`）|
-| `subject` | 只有 `{sessionId}`：无 agent-free 生产者能表示活会话，`live` 已删（未发布：`live` 仍在响应中并被客户端读取，`:1540`）|
-| `scope.log` | `observed`│`unreadable`（`session-events.js:51-56` 抛错即后者）|
-| `scope.supply` | `observed`│`disabled`│`unreadable`：`disabled` 来自 `userBindingsEnabled`（`index.js:366` → `user-bindings-owner.js:222`，同闸 `list()` `:1024`、`snapshotForAgent()` `:1018`、`/binding` 注册 `:753`）；`unreadable` 只由 `describe()` 的 `error`（`:146`）判定 |
-| `plan` | `recorded`（`:449-470` 找到方案且 `:135-197` 通过）│`absent`（没找到）│`damaged`（`sourcePlan` 在 `:152`、`:162`、`:174`、`:194` 抛错）│`unknown`（日志不可读）|
-| `management` | `managed`│`paused`│`off`│`unknown`（`:943-946`；`plan:'absent'` 时只能 `unknown`）|
-| `savedSettings` | `{enabled, contextEnabled}`（`:1379-1384`，只读配置）|
-| `rows` | `{bindings, capabilities}`，各是行数组或 `null`。`capabilities` 只在「方案已记录且确实清点过」时是数组（`requiresCapabilityInventory(snapshot.settings)` `:317-318`、`:844`）；`absent`／`damaged`／`scope.log:'unreadable'`／记录但未清点 → `null`。`bindings:null` 当 `scope.supply` 非 `observed` |
+`自动` 是「由宿主推导」，`继承` 是「跟随保存列」，两者不互答。没有记录时本会话列写 `继承`，不写空、不写「未记录」。
 
-## 4. 行模型（v2 行模型：未发布，见 §0）
+唯一的例外，且必须同时满足三条：**只由 `classifyBindingAdoption` 返回 `unreadable` 触发**（记录存在但无法解析；记录不存在返回 `none`，不产生这个词）；**陈述的是那条记录，不是面板的状态**；**同一行的控件仍然可点，写一条新记录即取代它**——`记录损坏`。它存在的理由只有一个：另一种做法是替会话报告一个它从未做过的决定。这个词只在面板的行上出现：模型可见的绑定目录没有位置表达「记录不可读」，它对同一条记录发布整份供给，所以 `记录损坏` 不能被读成模型目录的陈述（见 §9 的未交付项）。
 
-**绑定行** `id, kind:'binding', supply, choice, control{editable, blockedBy}`（未来工作：当前行只有 `{id, name, enabled, declined}`；`enabled===false` 即「全局停用」）
+## 5. 写通道
 
-| 字段 | 生产者 |
-| --- | --- |
-| `supply` | `readUserBindings().entries` 含该条且 `enabled===true` → `offered`，否则 `withheld`（`entryView` 保留 `enabled`：`user-bindings-store.js:64-77`）。写守卫只用启用条目（`:162-165` → `user-bindings.js:204`），`withheld` 行写入必被 `:347-349` 拒（"does not supply … cannot revive"）|
-| `choice` | `declinedBindingEntries(latestBindingAdoption(ptcMessages))`（`binding-adoption.js:99-121`）含该 id → `skip`，否则 `use`；`scope.log:'unreadable'` → `null`（§5）|
-| `control` | 有理由时 `editable:false` + `blockedBy`（§6，同时成立取第一个）；无理由时 `editable:true`、`blockedBy:null` |
+一个意图：把一条新记录写进这个会话。写者只有一个，回执只有一种。
 
-**`use` 不陈述历史**：未声明与使用同态（`binding-adoption.js:8-13`），显式 `use` 只删 `declined` 里的 id（`:124-130`）。
+- 绑定 → 取用事件。能力／服务 → 选择事件（携带 id 与选择）。两者同形，都是这个会话的日志事件：`user/message` 携带 PTC 的 `source.form`，不新增事件类型（未知类型会让整份日志拒读）。
+- 写者是**这个会话当前的写所有权**，不是「有没有 PTC 运行时」：
+  - 会话在 DSH 里活着（`sessions.get(id)` 有它，即使没有 PTC 运行时）：用它的 `session.append`。
+  - 会话是冷的（不在 `sessions.get`）：用持久化写句柄 `open(id, 'write')` → `append` → `flush` → **close**，并照运行时交还路径的做法先 `snapshotSessionEvent` 再 `foldSurface` 验证，再 append。
+  - 两个分支写的是同一条记录，回执由写者统一给出。**新会话不进入 PTC 模式时，它是活着的会话，走 append**——这正是今天会抛「select an active PTC session」的那一格。
+- 命令事务（`/binding`、`/capabilities set`）与面板控件走同一个 owner、写同一条记录、给同一种回执。人类输入与面板不是两条路。
+- 记录的物化在运行时：`preStep` 发现记录摘要与现有方案摘要不同时重建方案；`reconcilePendingChoice`、`pendingCommand`／`pendingPrevious` 失去依据，删除。
+- **控件没有失败分支。** 没有禁用、没有预检、没有「先启用某开关」。凡是「这一行现在不能改」的情形，都说明该行不该存在。
 
-**能力行** `id, kind:'capability', category, name, description, mcpServer?, mcpServerCandidates?, enclosingClosure‡, saved, savedRule?, temporary, temporaryRule?, effective, sourceRule?, sourceDimensions?, effectiveDimensions?, delivery†, usability†, pendingRefresh, control`（`?` 逐字段有因，见 `mcpServer`、rules 两行；`†` 只在非 `category:'server'` 行，`‡` 只在 server 行且恒 boolean——行只由记录方案生成，`:971` 的 `state===undefined` 不可达）
+一个必然的推论：会话记录了选择，这个会话就是被管理的。全局开关只决定**没有记录时**的默认，不决定有记录时是否生效；否则它就成了 §1 禁止的那个来源。
 
-| 字段 | 生产者 |
-| --- | --- |
-| `category`／`name` | 记录里的 `category`；`name` 取 `schema.name`／`selector.name`／`selector.server`（`:352`、`:374`、`:584`），server 行取 server 名（`:979`）|
-| `description` | `snapshot.capabilities[].description`（`:356`、`:374`、`:583`），server 行 `MCP server <name>`（`:979`）；客户端 `:1593`、`:1929` |
-| `mcpServer`／`mcpServerCandidates` | `:962` 无条件转发 `capability.mcpServer`：唯一归属见 `:547`（`mcp__<server>__` 前缀）、`:578`，多 server 只记 `mcpServerCandidates`（`:548`）；与 policy 无关；server 聚合行不带它，以 `name` 标识（`:979`）|
-| `saved`＋`savedRule` | `manual.overrides[id] ?? 'automatic'`（`:963`），policy 拼写按 `item:<id>` 补齐（`:1324-1327`）|
-| `temporary`＋`temporaryRule` | `sessionOverrides[id]`（`:965`）：对象形（按维度）→ `inherit`，真值在 `temporaryRule`（`:955` → `:321-325`）；字符串形（旧拼写，可与 policy 共存 `:101-113`、`:842`）→ 原值 |
-| `savedRule?`／`sourceRule?`／`sourceDimensions?`／`effectiveDimensions?`／`temporaryRule?` | `dimensions()`（`:947-959`）：保存配置与方案都无 policy 时 `:949` 提前返回；否则 `temporaryRule` 恒有（`:955`），`savedRule`／`sourceRule`＋`sourceDimensions`／`effectiveDimensions` 分别随保存配置 policy（`:953`）、方案 `sourceSettings.policy`（`:950`、`:954`）、方案 `settings.policy`（`:956`）|
-| `effective` | 方案条目 `selection`（`:966-968`），`planManaged` 见 `:943` |
-| `delivery`† | 不在 `plan.entries` 或 `selection:'closed'` → `absent`（`:1331-1333`），已提交 → `delivered`；`pending` 是内存态（`pendingCommand` `:873-875`），日志读无生产者 |
-| `usability`† | `tool/result` 的 `meta.dshPtcPlusCapabilities`（`EVIDENCE_KEY` `:22-23`）满足 `schema`、`planDigest`、id ∈ `used` → `proven`（写 `:1287-1288`，读回 `:672-675`，判 `:1343`）；`restoreEvidence` 的 `supplied` 门槛（`:676`）属恢复预算 |
-| `pendingRefresh` | `digest(capabilityConfiguration(currentConfig)) !== digest(snapshot.sourceSettings ?? snapshot.settings)`（`:1353`）|
-| `enclosingClosure` | server 行：有 policy 时 `policy.mcpServers[server].availability==='closed'`，否则 `manual.overrides['mcpServers.'+server]==='closed'`（`:971-973`）|
+## 6. 面板形状（出稿依据）
 
-**server 行是聚合行**：合成于 `:969-984`，不进 `plan.entries`（`capability-plan.js:152-153`）、不在 `snapshot.capabilities`（`:676`），故 `delivery`／`usability` 只能恒为同一值（`absent`／`unproven` 会把「成员已投递」读成「未投递」）；该 kind 只答成员是否被关闭：`enclosingClosure`＋`effective`。
+一个 Modal（`管理会话能力`），五区，顺序固定：
 
-**已保存 ≠ 本会话在跑。** `saved:true`＋`pendingRefresh:true` 才是「还没换上」（`CONTEXT.md:43,47`）；`saved:true`＋`delivery:'delivered'` 只说明方案已投递。
+1. **头**：标题 + 当前会话标识 + 关闭。
+2. **工具栏**：搜索、类型筛选、来源筛选、批量（对筛选结果做同一个决定）。
+3. **行区**：表格，§3 的列；点行在同一 Modal 内展开详情。
+4. **绑定组**：表格下方，同一套行与列语义；组永远在，行可以为零，零行就是空表，不配一句解释。
+5. **底部**：最近一次写入的回执，按当前界面语言陈述这次写了哪条记录、什么选择、写进哪个会话或全局设置；回执不陈述证明程度，原始载荷留在命令自己的结果里。
 
-## 5. 行处境（按 v2 行模型描述：未发布，见 §0）
+禁止出现在截图上：侧栏、产品名、版本号、服务状态、整块 `disabled` 的区域、空表头配一句解释的整块区域、任何否定词。
 
-| 处境 | 取值 |
-| --- | --- |
-| 记录损坏 | `plan:'damaged'` + `rows.capabilities:null` + `SessionCatalogReadFailure`：行集未知 |
-| 无方案记录 | `plan:'absent'` + `rows.capabilities:null` + 「本会话没有能力方案记录」+ `management:'unknown'`：从未记录方案，`:869` 的 `message:undefined` 后重启，进程态由 `:1432` 清 |
-| 未清点能力 | `plan:'recorded'` 而 `requiresCapabilityInventory(snapshot.settings)` 为假（`:317-318`、`:844`）→ `rows.capabilities:null` + 「能力管理未启用，本会话未清点」：默认配置（`config-spec.js:21`）下会话仍看到整个 host 面 |
-| 全局未供给（绑定） | `supply:'withheld'` + `editable:false` + `blockedBy:'entry-disabled'` |
-| 供给关闭（绑定） | `scope.supply:'disabled'` + `rows.bindings:null` + 「全局绑定未启用」：`userBindingsEnabled:false`（`index.js:366`）下 `/binding` 不注册（`user-bindings-owner.js:753`）、worker 无目录（`:1019`）；已启用条目不得读成 `offered`／`editable` |
-| 已保存未刷新（能力） | `saved` 有值 + `pendingRefresh:true`，`effective` 仍是旧方案 |
-| 已投递未证明 | `delivery:'delivered'` + `usability:'unproven'` |
-| 日志不可读 | `scope.log:'unreadable'` + `plan:'unknown'` + `rows.capabilities:null`；绑定行照常（`supply` 来自存储），`choice:null`——读不出的记录不能替它说「没有否决」（`binding-adoption.js:119-121` 会把 `undefined` 变成空 `declined`）|
-| 存储不可读 | `scope.supply:'unreadable'` + `rows.bindings:null`；能力行照常 |
+**图与词的分工**：稿决定版式、层级、控件形态与密度；**版式以本节文字为准，稿是它的实现目标**；文字一律按 §4 的词表写，图片模型生成的文字不作为契约。两者冲突时以本节与 §4 为准。
 
-**空态各有生产者，互不串。** 无方案记录、未清点、读不出都是行组 `null`，各配一句；数组只意味着清点过，空数组才是真没有成员；筛选空只在原始行非空时出现（`:1632` → `:2029`）；结论未知另走 `choice:null`。
+本版设计稿：`artifacts/panel-mock/panel-0.5.5.png`（生成物，不入库）。
 
-## 6. 唯一写通道
+## 7. 读契约
 
-只有一条：**按行发起与人类输入相同的 DSH 命令事务**，不加写入器。能力行 → `/capabilities set session|global …`：`commands.run`（`src/client-capabilities-view.js:1683`）→ 处理器（`index.js:485-497`）→ `change()`（`:990-1074`）。绑定行 → `/binding use|skip|reset <id>`：`createBindingCommandAvailability`（`src/client-transport.js:192-194`）→ `remote.execute`（`:181`）→ `commandHandler`（`user-bindings-owner.js:702-711`）→ `stateAdoption`（`:339-351`），后者在 `requireEnabled()`（`:340`→`:307-309`）、供给成员校验（`:343`、`:347-349`）与活 `session.append`（`:331-333`）之下；面板不调 `recordAdoption`。
+一次读，三个来源，全成功或全失败：
 
-`blockedBy` 只列行上能观察到的值：绑定行 `entry-disabled`（§5）、`command-unlisted`（命令目录没列出 `/binding`：`client-transport.js:97`、`:126`、`:128-133`，`run` 抛错 `:178-180`）；能力行 `management-off`／`paused`（`:943-946`）、`saved-management-off`／`saved-context-off`（`:1438-1439` → 客户端 `:2007-2008`）、`command-unlisted`（`createCommandAccess(ctx,'capabilities')` `src/client.js:180` 给出 `available`，同一 `:128-133`／`:178-180`；§8 让 `:1569` 只留 `!open`，能力行照样渲染，故写在这里）。（未来工作：当前没有 `blockedBy` 字段；客户端从 `/binding` 命令可用性派生禁用与原因，见 §0。）
+1. **会话头**：`sessionPersistence` 的 header（含工作目录），不依赖事件日志。目录取自它，不取自日志切面——事件读不出时目录仍在，Skill 供给不会因此缩小。
+2. **事件**：`readSessionLog({id}, query)`，只用于取记录与证据。
+3. **供给**：`hostSupply({ cwd })`，不传 agent。它允许调用 `assemble({ signal, ptcPlusCapabilityObservation: true })`——不带 agent 的全局装配没有会话副作用，MCP 与工具契约文本只能从它取。被禁的是**带 agent 的观察**（`inventory` 的会话分支、`observeSkills(agent)`）、任何写（`session.append`）与 reconcile 待处理提案。配置：`capabilityConfiguration(currentConfig)`。
 
-**不列在 `blockedBy` 的原因。** 行级 `bindings-disabled` 删：供给关断没有行可挂（`rows.bindings:null`），由 `scope.supply:'disabled'` 承担（§3、§5）；`direct-tool-absent`（`:755` → `host-tool-sdk.js:258`）只在 agent-scoped 注册闸判定，读看不到，删；`plan:'damaged'` 无行承载，交给 `SessionCatalogReadFailure`。`available:false` 上游有多种（`:753`、`:755`、`:97`、`:135-143`），面板只报「目录没列出这条命令」；「没有活会话」也不是理由。
+来源在实现里各自读，便于定位错误；但**任何一步失败就是整次读失败**：不做部分成功的响应。少了几行而屏幕不说，就是谎。
 
-## 7. 模型被告知什么
+这条读只有一个入口：`describeSessionCatalog`。设置页的 `catalog` 是它的第二个投影：调用方指名会话时读同一条日志与同一次 `hostSupply`，只把供给行摊成设置条目；未指名时只读 `hostSupply({})`，即宿主自己的声明。两条分支都不传 agent，因此冷会话与活会话给出同一批行。读路径不得带 agent 观察（`inventory` 的会话分支、`observeSkills(agent)`）、不得写（`session.append`）、不得 reconcile 待处理提案：读不产生写，不改变进程态。
 
-绑定取用由一条 `binding-adoption` 文本承担（`binding-adoption.js:64-66`），能力选择随方案投递，三分陈述只来自 `describeCapabilityProof`（`:1314-1345`）。**只追加、不改前缀**：system 文本与有序 tool schema 字节稳定（`docs/architecture.md:93-102`），追加凭日志与 ordered surface 去重（`:104`，ADR 0010）。
+读要么给出完整行集，要么整次失败。不存在部分成功的响应：少了几行而屏幕不说，就是谎。失败不是状态，是缺陷——面板给出原始错误、出错的文件或来源，以及重试；空表只表示「宿主真的没有声明」。
 
-## 8. 改动落点（未发布：本节是待实施清单，见 §0）
+响应（`ptc-capability-session-catalog/v2`）：
 
-服务端：在 `capability-environment.js` 增 `readSessionCatalog`，并在 `createCapabilityEnvironment`（`:444`）加 `readUserBindings` 选项（由 `index.js:364-382` 传入，§3）；它按方案记录判定是否清点过（`requiresCapabilityInventory` `:317-318`，与 `:844` 同一判据），否则默认配置把「未清点」画成空列表；`describeSessionCatalog`（`:1367-1385`）删 `:1370-1373`、`:1375-1378` 后改调它并升 `v2`；`catalogObservation`（`:925-986`）撤出读路径，仍供 `/capabilities list`（`index.js:500`）与回执（`:494`）。**不得复用 `:821-828` 的降级分支**：`:828`→`:759 publishPlan`→`:610 session.append` 会写日志，`:824-825` 把损坏记录画成「管理关闭 + 0 行」；改走 §5 的 `damaged`，只读。`index.js:467` 的 operation 名与 `RPC_CONTRACTS`（`rpc-contract.js:17-21`）不变。
+```
+{ schema: 'ptc-capability-session-catalog/v2', sessionId,
+  rows: [ { id, kind: 'capability'|'server'|'binding',
+            name, category, source,
+            saved,        // 能力/服务行
+            session,      // 本会话记录的值
+            evidence } ],  // 能力行：boolean
+  config: { bindingsEnabled } }
+```
 
-客户端：`load` 读 `payload.rows`，`:1542` 改 `v2` 且允许任一行为 `null`；`:1569` 只留 `!open`（读不停，写由逐行 `blockedBy` 说明）；`:1501` 改 `setRows(null)`；`writesBlocked`（`:1587`）降为逐行 `control.editable`；`:2028` 的 `role="alert"` 换成同位置新增 `SessionCatalogReadFailure`（`role="status"` + 重读按钮），`error` 仍由 `:1531-1532`、`:1542` 产生；行组 `null` 时渲染 §5 选中的那句，不出 `:2029` 文案；`noMatches` 改「没有行符合当前筛选」，只在原始行非空时出现；来源列与筛选改由 `category`＋`mcpServer`／`mcpServerCandidates` 派生（`:1557-1563`、`:1931`），成员列表取 `row.mcpServer===server.name`、server 行以 `name` 定位（`:1945-1962`），`:1933`、`:1950-1952` 不再读已删的 `managementEnabled`／`sessionSourceSelection`（改用顶层 `management`：`managed`／`paused` 即开；以及 `sourceRule`，无则不显示该项）；绑定行写通道复用 `createBindingCommandAvailability`（`src/client.js:369`）。文案进 `settings.ptcPlus` locale（`CONTEXT.md:133`）。
+- 没有 `live`、没有 `scope`、没有 `plan`、没有 `management`、没有 `unreadableSupply`、没有 `capabilities: null`、没有 `defect` 字段。
+- 失败走 RPC 错误通道，带原始错误；错误不分类来源枚举——来源枚举正是运行时重新溜回来的入口。
 
-## 9. 非目标
+## 8. 验收
 
-不跨会话检索能力（`describeCatalog`／`observeAllocation` 拥有）；不加写入器、RPC 写操作或第二写通道，不绕过 `store.mutate`；不改冻结语义，同步仍只能 `/capabilities refresh`（`CONTEXT.md:45`）；不展示 worker 内部、prompt 原文或恢复快照；不为绑定加存储或缓存（`binding-adoption.js:26-28`）；不改 REPL 控制台与工作台分工（`CONTEXT.md:53,57`）。
+截图必须能判定：
 
-## 本次修订解决的点
+1. 五区齐备且顺序正确；没有 §6 的禁止项。
+2. 行区有真实的能力行与工具行（`tools.*`，含 `tools.mcp__<server>__*`）与 Skill 行（`skills.*`），条数可数；有被声明的 MCP 服务行。
+3. 每一行都有控件，形态是下拉或按钮，不是开关。
+4. 绑定组在表格下方，每行一个取用控件；组存在，即使零行。
+5. 全屏文字不含否定词族：`未观察`、`尚未清点`、`不可用`、`暂不可用`、`未记录`、`未证明`、`未启用`。
+6. 没有整块 `disabled` 区域。
+7. 新会话、不进入 PTC 模式打开面板：1–6 全部成立；进入 PTC 模式再打开：行集、行数与控件数不变。
+8. 点任一控件都能得到一种回执，底栏文字，与有无运行时无关。
 
-**早前六项已解决**（细节在 §3–§6 正文）：删 `origin`；日志不可读时 `choice:null`；能力行补 `command-unlisted` 并删行级 `bindings-disabled`／`direct-tool-absent`／`plan-damaged`；绑定读的注入点；server 行不设 `delivery`／`usability`；`description` 入行模型。
+**证伪方式**：把运行时摘掉重开面板，行数与控件数必须不变；把任一全局开关关掉重开，行集必须只按供给变化（开关关掉的是供给，不是行里的值）。若变而本文没有授权，实现即缺陷。
 
-**本轮（第四轮复审）**
+## 9. 实施落点
 
-| 项 | 改动 | 落到 |
-| --- | --- | --- |
-| A | `plan:'absent'`、记录但未清点、读不出 → `rows.capabilities:null` 并按因分句；数组只在清点过时存在，`:1918` 文案只给筛选空。默认配置（`config-spec.js:21`）因此读作「未清点」，不把整个 host 面读成「没有能力」 | §3、§5、§8 |
-| B | `mcpServer` 改注生产者（`:547`、`:578`、`:962`）并补 `mcpServerCandidates`（`:548`）；`enclosingClosure` 恒 boolean（`:971-973`）；§8 的来源列、筛选、成员列表改由 `category`＋`mcpServer` 派生，`:1950-1952` 不再读已删的 `managementEnabled`／`sessionSourceSelection` | §4、§8 |
-| C | 恢复供给级 `scope.supply:'disabled'`（`index.js:366` → `user-bindings-owner.js:222`，同闸 `:753`、`:1019`、`:1025`）＋ `rows.bindings:null` 与原因句；`readUserBindings()` 定死走 `store.list()`（`user-bindings-store.js:150-153`），不走首次 `load()` 前给 `entries:[]` 且无 `error` 的 `describe()`（`:119`） | §3、§5、§6 |
-| 小项 | `temporary` 不再声称「有 policy 恒 `inherit`」——旧字符串形原样保留（`:101-113`、`:842`、`:965`）；`delivery:'pending'` 改注 `:873-875` | §4 |
+本节只陈述已交付的落点；未交付的部分单列在末尾，读到它们不算读到授权。
 
-**删除的字段／取值**：`choice.origin`；server 行的 `delivery`／`usability`；行级 `blockedBy` 的 `bindings-disabled`／`direct-tool-absent`／`plan-damaged`；早前已删：`installed`、能力行 `supply`、`applicable`、`source`、`sessionSourceSelection`、`notes[]`、行级 `managementEnabled`、`subject.live`。
+- `internal/capability-selection.js`：`ptc-capability-selection/v1` 的正文与词表、`CAPABILITY_ENTRY_ID`（条目 id 的唯一词表）、`normalizeCapabilitySelection`；`capabilitySelectionText` 是一份记录的唯一正文字面；`classifyCapabilitySelection` 与 `capabilitySelectionOf` 是「本会话」列与组合入口共用的三态读（`none`／`decided`／`unreadable`），记录不存在不产生第三种状态。
+- `internal/capability-environment.js`：`change()` 是唯一写者，按词表判断后 append 一条记录，不比较方案、不查运行时、不跑预检；`recordSelection` 写完后把这条记录并进本次观察的切面，紧接着的读不会回到被取代的那条；`prepare()` 在记录与已交付组合的 choices 不一致时重建，重建沿用该组合的 `sourceSettings`（普通刷新仍以冻结来源为准，只有 `refresh` 读当前保存配置）；`describeSessionCatalog` 按 §7 三源读，`hostSupply` 不带 agent，`inventory` 接受 `access` 提供的注册表视图与 Skill 观察结果；server 行在 `capabilityRows` 合成且没有自己的披露；`bindingRows` 用 `bindingAdoptionOf` 的三态写「本会话」列。
+- `internal/capability-command-receipt.js`：回执只校验它自己那句话需要的形式（无空白、有界长度）。条目 id 的词表由记录 owner 决定，回执不再保留第二个更窄的词表——更窄的那一个会拒掉会话已经写下的记录，于是写成功而回执成文为失败。
+- `src/client-capabilities-view.js`：六列行模型、常驻绑定组、行内控件直接走命令通道、底栏与聊天卡片共用 `capabilityReceiptNotice`；`src/client-copy.js` 只保留 §4 的词与 §6 的区域标题；`client.cjs` 是 `src/` 的构建产物，与 `scripts/client-fallback-smoke.mjs` 的断言在同一次改动里一起走。
+
+未交付，不得读成已交付：
+
+- **模型可见的绑定目录没有「记录不可读」的表达。** 不可读的最新取用记录只在面板的行上读作 `记录损坏`；同一条记录交给模型目录时按「没有否决」处理，因此整份供给仍然发布给模型。要让模型也知道这条记录不可读，需要一个新增的模型可见陈述，本文没有授权它，也就没有它的词。
+- **绑定写所有权只有活会话这一条分支。** `internal/user-bindings-owner.js` 的 `recordAdoption` 要求活的 `session.append`；§5 的冷会话持久化写分支没有实现，冷会话写不了取用记录。

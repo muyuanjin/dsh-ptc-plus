@@ -1159,9 +1159,10 @@ test('managed PTC prompts retain run_code and the scoped editor across empty and
 })
 
 
-test('registered capability command filters public inventory and reports pending or unavailable choices', async t => {
+test('registered capability command lists public inventory and records the choice it states', async t => {
   const { ptcAgent, appendOnlySession } = await import('./plugin-fixture.js')
   const { readCapabilityCommandReceipt } = await import('../internal/capability-command-receipt.js')
+  const { capabilitySelectionOf } = await import('../internal/capability-selection.js')
   let command
   const state = fixture({ capabilityManagementEnabled: true }, { commands: { register(definition) { command = definition; return () => {} } },
     schemas: [{ name: 'probe', description: 'Ordinary probe', parameters: {} },
@@ -1171,7 +1172,8 @@ test('registered capability command filters public inventory and reports pending
   state.ctx.skills = { snapshot: async () => ({ complete: true, skills: [{ name: 'research', description: 'Research skill',
     provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable: true } }] }) }
   const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }]
-  const agent = ptcAgent('command-choices', appendOnlySession('command-choices'))
+  const session = appendOnlySession('command-choices')
+  const agent = ptcAgent('command-choices', session)
   const signal = new AbortController().signal
   agent.signal = signal; agent.runMaintenance = operation => operation(signal)
   await state.assemble({ sections: hostSections, contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })
@@ -1187,14 +1189,35 @@ test('registered capability command filters public inventory and reports pending
   assert.equal((await list('list all no-matching-entry')).length, 0)
   const changed = await invoke('set session tools.probe availability closed')
   assert.equal(changed.kind, 'success')
-  assert.equal(readCapabilityCommandReceipt(changed.text).state, 'pending')
-  assert.equal(JSON.parse((await invoke('')).text).effective.entries.find(entry => entry.id === 'tools.probe').selection, 'closed')
+  // A session choice is the record the command appends: the plan is composed by the
+  // next accepted step, so the receipt states what the log now holds and not a plan
+  // delivery this command never made.
+  assert.equal(readCapabilityCommandReceipt(changed.text).state, 'recorded')
+  // The receipt names the record this command wrote: which entry, which choice and
+  // which owner recorded it. What a cell later reached is not its question.
+  assert.deepEqual(readCapabilityCommandReceipt(changed.text).record,
+    { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' })
+  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+    { 'tools.probe': { availability: 'closed' } })
+  assert.deepEqual(JSON.parse((await invoke('')).text).sessionOverrides, { 'tools.probe': 'closed' })
+  // The record vocabulary is asked before anything is appended, so an id it cannot name
+  // fails as that diagnostic instead of reaching the message writer, and the session's
+  // recorded choices are untouched by the refused command.
+  for (const rawInput of ['set session probe closed', 'set session tools. closed']) {
+    await assert.rejects(() => invoke(rawInput),
+      /a capability choice names an entry as tools\.<name>, skills\.<name>, mcp\.<server> or mcpServers\.<server>/u)
+  }
+  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+    { 'tools.probe': { availability: 'closed' } })
+  // A refresh does compose a plan, and before the first accepted step that plan is a
+  // proposal the receipt has to carry so a cold restart can recover it.
   const refreshed = await invoke('refresh')
   assert.equal(readCapabilityCommandReceipt(refreshed.text).state, 'pending')
+  assert.equal(readCapabilityCommandReceipt(refreshed.text).proposal.rawInput, 'refresh')
+  // Withdrawing the declaration removes the row; the record it was about stays as it
+  // was written, because a choice states a decision and never claims supply.
   state.ctx.tools.schemas = () => []
-  for (const rawInput of ['set session tools.probe closed', 'refresh']) {
-    const result = await invoke(rawInput)
-    assert.equal(result.kind, 'error')
-    assert.equal(readCapabilityCommandReceipt(result.text).state, 'unavailable')
-  }
+  assert.deepEqual(await list('list tools'), [])
+  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+    { 'tools.probe': { availability: 'closed' } })
 })

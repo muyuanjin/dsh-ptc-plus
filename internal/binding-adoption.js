@@ -92,24 +92,62 @@ export function readBindingAdoption(value) {
 }
 
 /**
- * The newest adoption this session recorded, or `undefined` while it recorded
- * none. The newest record replaces earlier ones, because stating a decision
- * again is how a session changes its mind.
+ * How this session's newest adoption statement reads.
+ *
+ * `none` is the absence of a decision, `decided` is a statement this build can
+ * read, and `unreadable` is a statement it cannot. The third state is not the
+ * first: an unreadable newest statement still supersedes every earlier record,
+ * so no consumer may answer from the older one in its place. `latestBindingAdoption`
+ * collapses the last two into `undefined`, which is why the panel asks this
+ * function instead: `undefined` there means "no decision to apply", not "the
+ * session declined nothing".
  */
-export function latestBindingAdoption(records) {
-  if (!Array.isArray(records)) return undefined
+export function classifyBindingAdoption(records) {
+  if (!Array.isArray(records)) return Object.freeze({ state: 'none' })
   for (let index = records.length - 1; index >= 0; index -= 1) {
     const record = records[index]
     if (record?.form !== BINDING_ADOPTION_FORM) continue
     try {
-      return normalizeBindingAdoption({ schema: BINDING_ADOPTION_SCHEMA, declined: record.declined })
+      return Object.freeze({ state: 'decided',
+        adoption: normalizeBindingAdoption({ schema: BINDING_ADOPTION_SCHEMA, declined: record.declined }) })
     } catch {
       // A record that cannot be read is not evidence for an earlier record
       // either: the newest statement is the current one, and it is unreadable.
-      return undefined
+      return Object.freeze({ state: 'unreadable' })
     }
   }
-  return undefined
+  return Object.freeze({ state: 'none' })
+}
+
+/**
+ * This session's newest adoption statement, read from its own log events.
+ *
+ * The log is the owner of the decision, so every adoption statement it carries is
+ * classified, including one this build cannot read. Extracting the statements and
+ * classifying them here keeps every reader on the same cut: a reader that filtered
+ * to the readable statements first would hand a superseded record the answer, and
+ * the panel and the `/binding` command would then disagree about which record
+ * governs this session.
+ */
+export function bindingAdoptionOf(events) {
+  const records = []
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type !== 'user/message') continue
+    const source = event.data?.source
+    if (!isPtcMessageSource(source) || source.form !== BINDING_ADOPTION_FORM) continue
+    records.push({ form: BINDING_ADOPTION_FORM, declined: readBindingAdoption(event.data)?.declined })
+  }
+  return classifyBindingAdoption(records)
+}
+
+/**
+ * The newest adoption this session recorded, or `undefined` while it recorded
+ * none this build can read. The newest record replaces earlier ones, because
+ * stating a decision again is how a session changes its mind.
+ */
+export function latestBindingAdoption(records) {
+  const statement = classifyBindingAdoption(records)
+  return statement.state === 'decided' ? statement.adoption : undefined
 }
 
 /**

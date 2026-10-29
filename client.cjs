@@ -11476,6 +11476,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
     const source = React32.useMemo(() => commands.source(sessionId), [sessionId]);
     const available = React32.useSyncExternalStore(source.subscribe, source.getSnapshot);
     const [catalog, setCatalog] = React32.useState([]);
+    const [live, setLive] = React32.useState(true);
     const [management, setManagement] = React32.useState("unknown");
     const [savedSettings, setSavedSettings] = React32.useState(null);
     const [loading, setLoading] = React32.useState(false);
@@ -11540,6 +11541,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
         if (payload?.schema !== "ptc-capability-session-catalog/v1" || !Array.isArray(payload.entries)) {
           throw new Error("Invalid capability catalog");
         }
+        setLive(payload.live !== false);
         setCatalog(payload.entries);
         setPicked((current) => current.filter((id2) => payload.entries.some((entry) => entry.id === id2)));
         setManagement(["managed", "paused", "off", "unknown"].includes(payload.management) ? payload.management : "unknown");
@@ -12031,7 +12033,7 @@ function createSessionCapabilityControlsView(React32, { commands, Modal, Select:
           ),
           loading ? h("p", { role: "status" }, t2("state.syncing")) : null,
           error ? h("p", { role: "alert" }, t2("capabilities.quick.catalogError", { error })) : null,
-          !loading && !error && matches.length === 0 ? h("p", null, t2("capabilities.noMatches")) : null,
+          !loading && !error && matches.length === 0 ? h("p", null, live ? t2("capabilities.noMatches") : t2("capabilities.quick.notObserved")) : null,
           ...sort2 ? [h("div", { key: "sorted", role: "rowgroup" }, ...matches.map(renderRow))] : groups.filter((group) => matches.some((entry) => category(entry) === group)).map((group) => h(
             "section",
             { key: group, className: "ptcPlusSessionCapabilityGroup" },
@@ -41472,6 +41474,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.unknown": "\u672A\u786E\u8BA4",
     "capabilities.quick.choice": "\u9009\u62E9\u7B56\u7565",
     "capabilities.quick.members": "\u80FD\u529B\u6E05\u5355",
+    "capabilities.quick.notObserved": "\u672C\u4F1A\u8BDD\u6CA1\u6709\u6D3B\u52A8\u8FD0\u884C\u65F6\uFF0C\u80FD\u529B\u6E05\u5355\u5C1A\u672A\u6E05\u70B9\uFF1B\u4F1A\u8BDD\u4ECD\u53EF\u4F7F\u7528\u5BBF\u4E3B\u7684\u5168\u90E8\u5DE5\u5177\u3002",
     "capabilities.quick.catalogError": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}",
     "capabilities.quick.changes": "{count} \u9879\u5F85\u5E94\u7528",
     "capabilities.quick.applySession": "\u5E94\u7528\u5230\u4F1A\u8BDD",
@@ -42197,6 +42200,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.unknown": "Unknown",
     "capabilities.quick.choice": "Selection strategy",
     "capabilities.quick.members": "Capabilities",
+    "capabilities.quick.notObserved": "This session has no live runtime, so its capability inventory has not been observed; the session can still use every host tool.",
     "capabilities.quick.catalogError": "Could not read capabilities: {error}",
     "capabilities.quick.changes": "{count} pending changes",
     "capabilities.quick.applySession": "Apply to session",

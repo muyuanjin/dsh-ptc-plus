@@ -1458,6 +1458,10 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
     const source = React.useMemo(() => commands.source(sessionId), [sessionId])
     const available = React.useSyncExternalStore(source.subscribe, source.getSnapshot)
     const [catalog, setCatalog] = React.useState([])
+  // A session with no live runtime is a fact about this session, not a failure:
+  // the panel says which layer it has not observed instead of pretending the
+  // inventory is empty.
+  const [live, setLive] = React.useState(true)
     const [management, setManagement] = React.useState('unknown')
     const [savedSettings, setSavedSettings] = React.useState(null)
     const [loading, setLoading] = React.useState(false)
@@ -1520,7 +1524,8 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
         if (payload?.schema !== 'ptc-capability-session-catalog/v1' || !Array.isArray(payload.entries)) {
           throw new Error('Invalid capability catalog')
         }
-        setCatalog(payload.entries)
+        setLive(payload.live !== false)
+      setCatalog(payload.entries)
         setPicked(current => current.filter(id => payload.entries.some(entry => entry.id === id)))
         setManagement(['managed', 'paused', 'off', 'unknown'].includes(payload.management)
           ? payload.management : 'unknown')
@@ -1915,7 +1920,7 @@ export function createSessionCapabilityControlsView(React, { commands, Modal, Se
           h('span', { role: 'columnheader' }, t('capabilities.quick.changed'))),
         loading ? h('p', { role: 'status' }, t('state.syncing')) : null,
         error ? h('p', { role: 'alert' }, t('capabilities.quick.catalogError', { error })) : null,
-        !loading && !error && matches.length === 0 ? h('p', null, t('capabilities.noMatches')) : null,
+        !loading && !error && matches.length === 0 ? h('p', null, live ? t('capabilities.noMatches') : t('capabilities.quick.notObserved')) : null,
         ...(sort ? [h('div', { key: 'sorted', role: 'rowgroup' }, ...matches.map(renderRow))]
           : groups.filter(group => matches.some(entry => category(entry) === group))
           .map(group => h('section', { key: group, className: 'ptcPlusSessionCapabilityGroup' },

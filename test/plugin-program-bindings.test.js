@@ -1171,7 +1171,8 @@ test('registered capability command lists public inventory and records the choic
   t.after(() => state.dispose())
   state.ctx.skills = { snapshot: async () => ({ complete: true, skills: [{ name: 'research', description: 'Research skill',
     provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable: true } }] }) }
-  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }]
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server owner instructions' }]
   const session = appendOnlySession('command-choices')
   const agent = ptcAgent('command-choices', session)
   const signal = new AbortController().signal
@@ -1184,6 +1185,12 @@ test('registered capability command lists public inventory and records the choic
   assert.ok((await list('list tools')).every(entry => entry.category === 'tool' && entry.source.kind !== 'mcp'))
   assert.deepEqual((await list('list skills')).map(entry => entry.id), ['skills.research'])
   assert.ok((await list('list mcp')).every(entry => ['resource', 'server'].includes(entry.category)))
+  // A server row states the one dimension it decides: its members carry the disclosure, so
+  // an entry that added one would answer for a choice the row does not have.
+  const serverEntry = (await list('list mcp docs')).find(entry => entry.id === 'mcpServers.docs')
+  assert.ok(serverEntry, 'the declared MCP server is listed')
+  assert.deepEqual({ saved: serverEntry.saved, temporary: serverEntry.temporary },
+    { saved: { availability: 'automatic' }, temporary: { availability: 'inherit' } })
   assert.deepEqual((await list('list mcp_tools')).map(entry => entry.id), ['tools.mcp__docs__search'])
   assert.ok((await list('list')).length > (await list('list tools')).length)
   assert.equal((await list('list all no-matching-entry')).length, 0)
@@ -1199,6 +1206,12 @@ test('registered capability command lists public inventory and records the choic
     { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' })
   assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
     { 'tools.probe': { availability: 'closed' } })
+  // The listing states the dimensions this row decides, each from its own source: the
+  // availability this session recorded and the disclosure it never did, which stays
+  // `inherit` rather than becoming a second claim about the same record.
+  assert.deepEqual((await list('list tools probe')).map(entry => ({ saved: entry.saved, temporary: entry.temporary })),
+    [{ saved: { availability: 'automatic', disclosure: 'automatic' },
+      temporary: { availability: 'closed', disclosure: 'inherit' } }])
   assert.deepEqual(JSON.parse((await invoke('')).text).sessionOverrides, { 'tools.probe': 'closed' })
   // The record vocabulary is asked before anything is appended, so an id it cannot name
   // fails as that diagnostic instead of reaching the message writer, and the session's

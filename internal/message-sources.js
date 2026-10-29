@@ -7,6 +7,15 @@ export function isPtcMessageSource(source) {
     || (source?.kind === 'plugin' && source.plugin === 'ptc-plus')
 }
 
+/**
+ * The delivered capability plan form.
+ *
+ * The plan producer composes this message; naming its form here keeps the
+ * vocabulary of what this plugin writes in one module, so the record reader can
+ * recognize a delivered plan without importing the producer that composes one.
+ */
+export const CAPABILITY_PLAN_FORM = 'capability-plan'
+
 /** DSH owns aggregate runtime-context messages independently of PTC messages. */
 export function isHostRuntimeContextSource(source) {
   return source?.kind === 'runtime-context'

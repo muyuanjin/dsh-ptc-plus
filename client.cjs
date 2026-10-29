@@ -9262,6 +9262,53 @@ function capabilityRuleLabel(t2, rule, empty2 = "capabilities.policy.inheritRule
 function validCatalogRule(rule, temporary = false) {
   return rule !== null && typeof rule === "object" && !Array.isArray(rule) && Object.entries(rule).every(([dimension, choice]) => ["availability", "disclosure"].includes(dimension) && (temporary && choice === "automatic" || (dimension === "availability" ? ["enabled", "closed"].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))));
 }
+var CATALOG_DIMENSIONS = ["availability", "disclosure"];
+var CATALOG_STATEMENT_WORDS = Object.freeze({
+  saved: Object.freeze({
+    availability: ["enabled", "closed", "automatic"],
+    disclosure: [...CAPABILITY_DISCLOSURES, "automatic"]
+  }),
+  temporary: Object.freeze({
+    availability: ["enabled", "closed", "automatic", "inherit"],
+    disclosure: [...CAPABILITY_DISCLOSURES, "automatic", "inherit"]
+  })
+});
+function validCatalogStatement(column, value) {
+  if (typeof value === "string") return true;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const dimensions = Object.entries(value);
+  return dimensions.length > 0 && dimensions.every(([dimension, choice]) => Object.hasOwn(CATALOG_STATEMENT_WORDS[column], dimension) && CATALOG_STATEMENT_WORDS[column][dimension].includes(choice));
+}
+function catalogStatementLabel(t2, statement) {
+  return CATALOG_DIMENSIONS.filter((dimension) => statement[dimension] !== void 0).map((dimension) => t2(`capabilities.word.${statement[dimension]}`)).join(" \xB7 ");
+}
+var SKILL_SOURCE_BUCKETS = Object.freeze([
+  "project-dsh",
+  "project-agents",
+  "user-dsh",
+  "user-agents",
+  "runtime",
+  "bundled",
+  "custom"
+]);
+var mcpServersOf = (source) => Array.isArray(source?.servers) ? source.servers.filter((server) => typeof server === "string") : typeof source?.server === "string" ? [source.server] : [];
+var namespaceSource = (entry) => {
+  const namespace = typeof entry.id === "string" ? entry.id.slice(0, entry.id.indexOf(".")) : "";
+  return { kind: namespace === "skills" ? "skill" : namespace === "mcp" || namespace === "mcpServers" ? "mcp" : "host" };
+};
+function capabilitySourceText(t2, entry) {
+  if (entry.kind === "server") return t2("capabilities.source.mcp");
+  const source = entry.source ?? namespaceSource(entry);
+  const servers = mcpServersOf(source);
+  if (servers.length > 0) return servers.join(t2("capabilities.source.separator"));
+  if (source.kind === "skill") {
+    return SKILL_SOURCE_BUCKETS.includes(source.bucket) ? t2(`capabilities.source.${source.bucket}`) : source.bucket ? `${t2("capabilities.source.other-skill")} \xB7 ${source.bucket}` : t2("capabilities.source.skill");
+  }
+  if (source.kind === "unknown") return t2("capabilities.source.multiple-servers");
+  const namespace = namespaceSource(entry).kind;
+  if (source.kind === "mcp" || namespace === "mcp") return t2("capabilities.source.mcp");
+  return t2(`capabilities.source.${namespace === "skill" ? "skill" : "host"}`);
+}
 var noSnapshot = () => void 0;
 function firstHumanMessageSeq(nodes) {
   if (nodes === null || nodes === void 0 || typeof nodes.values !== "function") return null;
@@ -9310,9 +9357,10 @@ function createCapabilityCommandCard(React32) {
       } catch {
       }
     }
-    const entries = json?.schema === "ptc-capability-catalog/v1" && Array.isArray(json.entries) && json.entries.every((entry) => entry && typeof entry.id === "string" && ["name", "description", "saved", "temporary"].every((key) => entry[key] === void 0 || typeof entry[key] === "string") && ["savedRule", "temporaryRule"].every((key) => entry[key] === void 0 || validCatalogRule(entry[key], key === "temporaryRule"))) ? json.entries : null;
+    const entries = json?.schema === "ptc-capability-catalog/v1" && Array.isArray(json.entries) && json.entries.every((entry) => entry && typeof entry.id === "string" && ["name", "description"].every((key) => entry[key] === void 0 || typeof entry[key] === "string") && ["saved", "temporary"].every((key) => entry[key] === void 0 || validCatalogStatement(key, entry[key])) && ["savedRule", "temporaryRule"].every((key) => entry[key] === void 0 || validCatalogRule(entry[key], key === "temporaryRule"))) ? json.entries : null;
     const outcome = entries ? t2("capabilities.card.catalogCount", { count: entries.length }) : json ? t2("capabilities.card.details") : node.outcome ? capabilityCommandText(t2, text) ?? t2(node.outcome.kind === "error" ? "capabilities.commandFailed" : "capabilities.refreshAcknowledged") : t2("capabilities.refreshing");
     const label = (entry, key) => {
+      if (typeof entry[key] === "object") return catalogStatementLabel(t2, entry[key]);
       const rule = entry[key === "saved" ? "savedRule" : "temporaryRule"];
       return rule === void 0 ? capabilityChoiceLabel(t2, entry[key]) : capabilityRuleLabel(t2, rule, key === "temporary" ? "capabilities.quick.noOverride" : "capabilities.policy.inheritRule");
     };
@@ -9742,21 +9790,18 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline);
     const policy = capabilityPolicyForConfig(value);
     const entries = capabilitySettingsEntries(value, catalog, plans, Boolean(catalogError));
-    const sourceKey = (entry2) => JSON.stringify([
-      entry2.source?.kind ?? "unknown",
-      entry2.source?.server ?? null,
-      entry2.source?.bucket ?? null,
-      entry2.source?.provider ?? null
-    ]);
+    const sourceKey = (entry2) => JSON.stringify(entry2.source ?? namespaceSource(entry2));
     const sourceLabel = (entry2) => {
       if (entry2.source?.kind === "skill") {
         const bucket = entry2.source.bucket;
-        const known = ["project-dsh", "project-agents", "user-dsh", "user-agents", "runtime", "bundled", "custom"];
-        const label = known.includes(bucket) ? t2(`capabilities.source.${bucket}`) : bucket ? `${t2("capabilities.source.other-skill")} \xB7 ${bucket}` : t2("capabilities.source.unknown");
+        const label = SKILL_SOURCE_BUCKETS.includes(bucket) ? t2(`capabilities.source.${bucket}`) : bucket ? `${t2("capabilities.source.other-skill")} \xB7 ${bucket}` : t2("capabilities.source.skill");
         return `${label}${entry2.source.provider ? ` \xB7 ${entry2.source.provider}` : ""}`;
       }
-      if (entry2.source?.kind === "mcp") return `MCP${entry2.source.server ? ` \xB7 ${entry2.source.server}` : ""}`;
-      return t2(`capabilities.source.${entry2.source?.kind === "host" ? "host" : "unknown"}`);
+      if (entry2.source?.kind === "mcp") {
+        const servers = mcpServersOf(entry2.source);
+        return servers.length > 0 ? `MCP \xB7 ${servers.join(t2("capabilities.source.separator"))}` : t2("capabilities.source.mcp");
+      }
+      return capabilitySourceText(t2, entry2);
     };
     const matchesKind = (entry2, type2) => type2 === "all" || (type2 === "resource" ? entry2.source?.kind === "mcp" : type2 === "tool" ? entry2.kind === "tool" && entry2.source?.kind !== "mcp" : type2 === entry2.kind);
     const sources = new Map(entries.filter((entry2) => matchesKind(entry2, kind)).map((entry2) => [sourceKey(entry2), sourceLabel(entry2)]));
@@ -9773,7 +9818,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const defaultOrder = (a, b) => compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.id, b.id);
     const state = (item) => value.capabilityContextEnabled === false || value.capabilityManagementEnabled !== true ? "unapplied" : item.resolvedRule.availabilitySource.startsWith("mcp:") && item.resolvedRule.availability === "closed" ? "source-closed" : item.resolvedRule.availability;
     const type = (item) => item.source?.kind === "mcp" ? "resource" : item.kind;
-    const displayedSource = (item) => item.source?.kind === "mcp" ? item.source.server ?? sourceLabel(item) : sourceLabel(item);
+    const displayedSource = (item) => item.source?.kind === "mcp" ? mcpServersOf(item.source).join(t2("capabilities.source.separator")) || sourceLabel(item) : sourceLabel(item);
     const groups = /* @__PURE__ */ new Map();
     for (const entry2 of filtered) {
       const group = entry2.source?.kind === "mcp" && entry2.source.server ? `mcp:${entry2.source.server}` : entry2.kind;
@@ -11598,9 +11643,13 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
     const choiceOptions = (dimension) => (dimension === "availability" ? AVAILABILITY_CHOICES : DISCLOSURE_CHOICES).map((value) => ({ value, label: word(value) }));
     const familyOf = (row) => row.kind === "binding" ? "bindings" : row.kind === "server" ? "mcp" : row.category === "skill" ? "skills" : row.category === "resource" ? "mcp" : row.source?.kind === "mcp" ? "mcp_tools" : "tools";
     const badgeOf = (row) => row.kind === "binding" ? "binding" : row.kind === "server" ? "server" : row.category === "skill" ? "skill" : row.category === "resource" || row.source?.kind === "mcp" ? "resource" : "tool";
-    const sourceKeyOf = (row) => row.kind === "binding" ? "bindings" : row.source?.kind === "mcp" ? `mcp:${row.source.server ?? ""}` : row.source?.kind === "skill" ? `skill:${row.source.bucket ?? ""}` : row.source?.kind === "host" ? "host" : "unknown";
-    const sourceText = (row) => row.kind === "binding" ? t2("capabilities.source.bindings") : row.kind === "server" ? t2("capabilities.source.mcp") : row.source?.kind === "mcp" ? String(row.source.server ?? t2("capabilities.source.mcp")) : row.source?.kind === "skill" ? t2(`capabilities.source.${row.source.bucket ?? "unknown"}`) : t2(`capabilities.source.${row.source?.kind === "host" ? "host" : "unknown"}`);
-    const listedSourceLabel = (key) => key === "bindings" ? t2("capabilities.source.bindings") : key.startsWith("mcp:") ? `MCP \xB7 ${key.slice("mcp:".length) || t2("capabilities.source.mcp")}` : key.startsWith("skill:") ? `Skill \xB7 ${t2(`capabilities.source.${key.slice("skill:".length) || "unknown"}`)}` : t2(`capabilities.source.${key === "host" ? "host" : "unknown"}`);
+    const sourceKeyOf = (row) => row.kind === "binding" ? "bindings" : JSON.stringify(row.source ?? namespaceSource(row));
+    const sourceText = (row) => row.kind === "binding" ? t2("capabilities.source.bindings") : capabilitySourceText(t2, row);
+    const sourceFilterLabel = (row) => {
+      const servers = mcpServersOf(row.source);
+      if (row.source?.kind === "mcp" && servers.length > 0) return `MCP \xB7 ${servers.join(t2("capabilities.source.separator"))}`;
+      return row.source?.kind === "skill" ? `Skill \xB7 ${sourceText(row)}${row.source.provider ? ` \xB7 ${row.source.provider}` : ""}` : sourceText(row);
+    };
     const savedText = (row) => row.kind === "binding" ? "" : row.kind === "server" ? word(row.saved?.availability ?? "automatic") : `${word(row.saved?.availability ?? "automatic")} \xB7 ${word(row.saved?.disclosure ?? "automatic")}`;
     const recordedAvailability = (row) => row.session?.availability ?? "inherit";
     const recordedDisclosure = (row) => row.session?.disclosure ?? "inherit";
@@ -11692,12 +11741,21 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
     };
     const listed = capabilities.filter((row) => (family === "all" || familyOf(row) === family) && (source === "all" || sourceKeyOf(row) === source) && matches(row));
     const bindings = rows.filter((row) => row.kind === "binding");
-    const sources = [...new Set(capabilities.filter((row) => family === "all" || familyOf(row) === family).map(sourceKeyOf))].sort();
+    const sources = /* @__PURE__ */ new Map();
+    for (const row of capabilities) {
+      if (family !== "all" && familyOf(row) !== family) continue;
+      const key = sourceKeyOf(row);
+      if (!sources.has(key)) sources.set(key, sourceFilterLabel(row));
+    }
     const pickedRows = capabilities.filter((row) => picked.includes(row.id));
     const batchLines = () => pickedRows.flatMap((row) => DIMENSIONS2.filter((dimension) => batchChoices[dimension] !== "keep" && (dimension === "availability" || row.kind === "capability")).map((dimension) => ({ row, dimension, choice: batchChoices[dimension] })));
     const applyBatch = async () => {
       const lines = batchLines();
       setBatchOpen(false);
+      if (lines.length === 0) {
+        setReceipt({ text: { key: "capabilities.batch.kept", params: {} } });
+        return;
+      }
       for (const { row, dimension, choice } of lines) {
         await record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${choice}`, row.id);
       }
@@ -11782,7 +11840,7 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
           t2("capabilities.sourceFilter"),
           source,
           chooseSource,
-          [["all", t2("capabilities.allSources")], ...sources.map((key) => [key, listedSourceLabel(key)])]
+          [["all", t2("capabilities.allSources")], ...[...sources].sort(([a], [b]) => compare(a, b))]
         ),
         h(
           "button",
@@ -41124,6 +41182,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.word.proven": "\u5DF2\u8BC1\u660E",
     "capabilities.source.bindings": "\u5168\u5C40\u7ED1\u5B9A",
     "capabilities.batch.record": "\u5199\u5165 {count} \u9879",
+    "capabilities.batch.kept": "\u672C\u6B21\u6279\u91CF\u4FDD\u6301\u5F53\u524D\u8BBE\u7F6E\uFF0C\u5199\u5165 0 \u6761\u8BB0\u5F55\u3002",
     "capabilities.quick.noOverride": "\u65E0\u8986\u76D6",
     "capabilities.quick.enabled": "\u5DF2\u542F\u7528",
     "capabilities.quick.pending": "\u5F85\u751F\u6548",
@@ -41288,7 +41347,9 @@ var CHROME_COPY = Object.freeze({
     "capabilities.group.other": "\u5176\u5B83\u80FD\u529B / \u7C7B\u578B\u5F85\u786E\u8BA4",
     "capabilities.source.host": "DSH \u5DE5\u5177",
     "capabilities.source.mcp": "MCP",
-    "capabilities.source.unknown": "\u6765\u6E90\u672A\u786E\u8BA4",
+    "capabilities.source.skill": "\u6280\u80FD",
+    "capabilities.source.multiple-servers": "\u591A\u4E2A\u670D\u52A1\u5668",
+    "capabilities.source.separator": "\u3001",
     "capabilities.source.project-dsh": "\u9879\u76EE\u6280\u80FD\uFF08.dsh\uFF09",
     "capabilities.source.project-agents": "\u9879\u76EE\u6280\u80FD\uFF08.agents\uFF09",
     "capabilities.source.user-dsh": "\u7528\u6237\u6280\u80FD\uFF08.dsh\uFF09",
@@ -41801,6 +41862,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.word.proven": "Proven",
     "capabilities.source.bindings": "Global bindings",
     "capabilities.batch.record": "Record {count} entries",
+    "capabilities.batch.kept": "This batch keeps the current settings and writes 0 records.",
     "capabilities.quick.noOverride": "None",
     "capabilities.quick.enabled": "Enabled",
     "capabilities.quick.pending": "Pending",
@@ -41965,7 +42027,9 @@ var CHROME_COPY = Object.freeze({
     "capabilities.group.other": "Other capabilities / Unconfirmed type",
     "capabilities.source.host": "DSH tools",
     "capabilities.source.mcp": "MCP",
-    "capabilities.source.unknown": "Unconfirmed source",
+    "capabilities.source.skill": "Skill",
+    "capabilities.source.multiple-servers": "Multiple servers",
+    "capabilities.source.separator": ", ",
     "capabilities.source.project-dsh": "Project skill (.dsh)",
     "capabilities.source.project-agents": "Project skill (.agents)",
     "capabilities.source.user-dsh": "User skill (.dsh)",

@@ -1,5 +1,6 @@
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
-import { PLAN_NAVIGATION } from '../internal/prompt-text.js'
+import { PLAN_NAVIGATION, PLAN_OVERAGE, PLAN_OVERAGE_HOLE } from '../internal/prompt-text.js'
+import { createCapabilityPlan } from '../internal/capability-plan.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
@@ -21,7 +22,7 @@ import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool, renderToolsSdk } from '@deepseek-ai/dsh-tools'
-import { createCapabilityEnvironment as createEnvironment, capabilityPlanText, capabilityPlanTextFromMessage, readCapabilityContextMessage, sessionCapabilitySettings } from '../internal/capability-environment.js'
+import { createCapabilityEnvironment as createEnvironment, capabilityPlanText, capabilityPlanTextFromMessage, CAPABILITY_PLAN_FORM, readCapabilityContextMessage, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 import { BINDING_ADOPTION_SCHEMA, bindingAdoptionMessage } from '../internal/binding-adoption.js'
@@ -54,8 +55,9 @@ test('session catalog lists every supplied row with its saved and recorded colum
   t.after(() => env.dispose())
   await acceptPreparation(env, agents[0], [])
   // The saved column is the configuration's answer and the session column is this
-  // session's own record, so the record is written as one: no plan is read as a
-  // decision, and no decision is derived from a plan.
+  // session's own record, so the record is written as one: a session that recorded a
+  // choice is answered from the record, and the plan it delivered is not read in the
+  // record's place.
   session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
     choices: { 'tools.probe': { availability: 'closed', disclosure: 'on-demand' } } }), { surfaceOp: 'append' })
   const call = session.append('tool/call', { turn: 1, step: 1, name: 'run_code', callId: 'proved', arguments: '{}' })
@@ -872,6 +874,160 @@ test('a cold composition builds the plan from the record when the log holds no p
   assert.deepEqual(Object.fromEntries(state.snapshot.plan.entries.map(entry => [entry.id, entry.selection])),
     { 'tools.probe': 'closed', 'tools.other': 'full' })
   assert.deepEqual(state.snapshot.sessionOverrides, { 'tools.probe': 'closed', 'tools.other': 'full' })
+})
+
+test('a session whose choices live only in its delivered plan keeps them after the upgrade', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const schemas = [schema('run_code'), schema('probe'), schema('other')]
+  const writing = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas })
+  t.after(() => writing.dispose())
+  const agent = agentFor(Session.create('delivered-plan-choices')); agent.runMaintenance = operation => operation(agent.signal)
+  await acceptPreparation(writing, agent, [])
+  await writing.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  await writing.change(agent, { scope: 'session', id: 'tools.other', selection: 'full' }, agent.signal)
+  await settle(writing, agent)
+  const events = structuredClone(agent.session.snapshotEvents())
+  const plan = events.findLast(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+  assert.deepEqual(plan.data.source.snapshot.sessionOverrides, { 'tools.probe': 'closed', 'tools.other': 'full' })
+  // 0.5.4 and earlier never appended a record: their log states the same decisions
+  // only in the snapshot it delivered. Both logs below are that one session, one per
+  // record form, and a cold composition must answer them the same way.
+  const delivered = events.filter(event => event.data?.source?.form !== CAPABILITY_SELECTION_FORM)
+    .map((event, seq) => ({ ...event, seq }))
+  const recorded = events.filter(event => event.data?.source?.form !== CAPABILITY_PLAN_FORM)
+    .map((event, seq) => ({ ...event, seq }))
+  assert.ok(delivered.some(event => event.data?.source?.form === CAPABILITY_PLAN_FORM))
+  assert.ok(!delivered.some(event => event.data?.source?.form === CAPABILITY_SELECTION_FORM))
+  assert.ok(recorded.some(event => event.data?.source?.form === CAPABILITY_SELECTION_FORM))
+  assert.ok(!recorded.some(event => event.data?.source?.form === CAPABILITY_PLAN_FORM))
+  // Both forms answer as one statement; the marker is the only thing that says which
+  // form answered, and it is what proves the plan branch is the one read here.
+  assert.equal(capabilitySelectionOf(delivered).legacy, true)
+  assert.equal(capabilitySelectionOf(recorded).legacy, undefined)
+  for (const [form, log] of [['delivered plan', delivered], ['selection record', recorded]]) {
+    const restored = agentFor(Session.create(agent.session.id, log, agent.session.header))
+    const cold = createCapabilityEnvironment({ ctx: { agents: { list: () => [restored] },
+      systemPrompt: { assemble: async () => ({ sections: [] }) } },
+      config: config(), toolSchemasForAgent: () => schemas })
+    t.after(() => cold.dispose())
+    const state = await cold.prepare(restored, [])
+    // The upgrade's first composition keeps every choice the session already had:
+    // reading the plan form is not a reason to recompose from an empty set.
+    assert.deepEqual(Object.fromEntries(state.snapshot.plan.entries.map(entry => [entry.id, entry.selection])),
+      { 'tools.probe': 'closed', 'tools.other': 'full' }, form)
+    // The composition is the recorded one, restored in place: the identity of the message
+    // it restores is the delivered message's identity, while a rebuild composes a new
+    // message with a new identity and prepare publishes neither before an accepted step.
+    const recordedPlanEvent = log.findLast(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+    if (recordedPlanEvent === undefined) {
+      assert.equal(state.message?.source?.refresh, false, `a log with no delivered plan composes one: ${form}`)
+    } else {
+      assert.equal(state.message?.id, recordedPlanEvent.data.id, `the delivered plan is restored in place: ${form}`)
+    }
+    assert.deepEqual(cold.describe(restored).sessionOverrides, { 'tools.probe': 'closed', 'tools.other': 'full' }, form)
+    // The panel's session column is that same statement, never `inherit`.
+    const rows = (await cold.describeSessionCatalog({ sessionId: restored.session.id }, restored.signal)).rows
+    assert.deepEqual(rows.find(row => row.id === 'tools.probe').session,
+      { availability: 'closed', disclosure: 'inherit' }, form)
+    assert.deepEqual(rows.find(row => row.id === 'tools.other').session,
+      { availability: 'enabled', disclosure: 'full' }, form)
+    // A write that follows a plan-form read restates every choice it answered with:
+    // the record it appends may not withdraw a decision it did not touch.
+    await cold.change(restored, { scope: 'session', id: 'mcpServers.docs', selection: 'closed' }, restored.signal)
+    const migrated = capabilitySelectionOf(restored.session.snapshotEvents())
+    assert.deepEqual(migrated.selection.choices, {
+      'tools.probe': { availability: 'closed' },
+      'tools.other': { availability: 'enabled', disclosure: 'full' },
+      'mcpServers.docs': { availability: 'closed' },
+    }, form)
+    // The record this write appended now outvotes the older plan: an upgrade must not
+    // turn the delivered snapshot into a statement a later decision cannot replace.
+    assert.equal(migrated.legacy, undefined, `a newer record outvotes the plan: ${form}`)
+  }
+  // A plan that states the map unreadably is `unreadable`, not `none`: it supersedes what
+  // came before it, and reporting that nothing was decided would let the composition
+  // withdraw a decision the log still holds. A snapshot that states no map at all (the v1
+  // generation) stays `none`, because it recorded nothing to migrate.
+  for (const overrides of [null, ['tools.probe'], 'tools.probe', JSON.parse('{"__proto__": "closed"}')]) {
+    const damaged = delivered.map(event => event.data?.source?.form === CAPABILITY_PLAN_FORM
+      ? { ...event, data: { ...event.data, source: { ...event.data.source,
+        snapshot: { ...event.data.source.snapshot, sessionOverrides: overrides } } } } : event)
+    assert.equal(capabilitySelectionOf(damaged).state, 'unreadable', JSON.stringify(overrides))
+  }
+  // A plan that states no choice map at all and one that states an empty map are the same
+  // absence of a decision: the session inherited everything, so the read is none rather than
+  // a decided statement with no choices.
+  for (const overrides of [undefined, {}]) {
+    const empty = delivered.map(event => {
+      if (event.data?.source?.form !== CAPABILITY_PLAN_FORM) return event
+      const snapshot = { ...event.data.source.snapshot }
+      if (overrides === undefined) delete snapshot.sessionOverrides
+      else snapshot.sessionOverrides = overrides
+      return { ...event, data: { ...event.data, source: { ...event.data.source, snapshot } } }
+    })
+    assert.equal(capabilitySelectionOf(empty).state, 'none', JSON.stringify(overrides))
+  }
+  // A plan message names the session it was composed for, and the readers that restore one
+  // require that identity. The statement read applies the same rule, so a message re-tagged
+  // for another session is not this session's decision; the record form carries no
+  // identity, which is why the log it was appended to is its only one.
+  const foreign = delivered.map(event => event.data?.source?.form === CAPABILITY_PLAN_FORM
+    ? { ...event, data: { ...event.data, source: { ...event.data.source, sessionId: 'other-session' } } } : event)
+  assert.equal(capabilitySelectionOf(foreign, agent.session.id).state, 'none')
+  assert.equal(capabilitySelectionOf(foreign).legacy, true)
+  // 0.5.4 recorded a dimension command as the rule it decided, so the same decision can
+  // reach the replay in the other spelling. The delivered plan is still the composition
+  // this session keeps: the comparison asks what each map decides, so the recorded
+  // message is restored instead of a replacement being composed for the spelling alone.
+  const policyConfig = { ...config(), capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+    defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {}, items: {},
+    allocation: { baseline: true, statistics: false, budget: true } }) }
+  const dimensionWriting = createCapabilityEnvironment({ ctx, config: policyConfig, toolSchemasForAgent: () => schemas })
+  t.after(() => dimensionWriting.dispose())
+  const dimensionAgent = agentFor(Session.create('delivered-plan-dimensions'))
+  dimensionAgent.runMaintenance = operation => operation(dimensionAgent.signal)
+  await acceptPreparation(dimensionWriting, dimensionAgent, [])
+  await dimensionWriting.change(dimensionAgent,
+    { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' }, dimensionAgent.signal)
+  await settle(dimensionWriting, dimensionAgent)
+  const dimensionEvents = structuredClone(dimensionAgent.session.snapshotEvents())
+  const dimensionPlan = dimensionEvents.findLast(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+  // This build wrote that decision in the compact spelling the saved configuration uses.
+  assert.deepEqual(dimensionPlan.data.source.snapshot.sessionOverrides, { 'tools.probe': 'closed' })
+  // The other spelling of the same decision, composed from the plan's own saved inputs so
+  // it is a plan this build can validate: 0.5.4 stored the dimension rule, not the word.
+  const dimensionSnapshot = dimensionPlan.data.source.snapshot
+  const objectOverrides = { 'tools.probe': { availability: 'closed' } }
+  const objectSettings = sessionCapabilitySettings(dimensionSnapshot.sourceSettings, objectOverrides)
+  const objectPlan = createCapabilityPlan({ ...objectSettings, capabilities: dimensionSnapshot.capabilities,
+    coverage: dimensionSnapshot.coverage, navigationText: dimensionSnapshot.navigationText,
+    configurationRevision: createHash('sha256').update(JSON.stringify(objectSettings)).digest('hex') })
+  const overage = dimensionSnapshot.promptText?.overageSentence ?? PLAN_OVERAGE
+  const objectText = (objectPlan.enabled
+    ? ['PTC Plus session capability environment:', objectPlan.directoryText, objectPlan.catalogText,
+      ...(objectPlan.budgets.overageBytes ? [overage.replace(PLAN_OVERAGE_HOLE, String(objectPlan.budgets.overageBytes))] : [])]
+      .filter(Boolean).join('\n\n')
+    : 'PTC Plus capability management is off for this session. Use the host-provided capability contracts.')
+  const objectSnapshot = { ...dimensionSnapshot, sessionOverrides: objectOverrides, settings: objectSettings, plan: objectPlan }
+  const dimensionSpelling = { ...structuredClone(dimensionPlan.data),
+    source: { ...dimensionPlan.data.source, refresh: false, snapshot: objectSnapshot,
+      digest: createHash('sha256').update(JSON.stringify(objectSnapshot)).digest('hex') },
+    content: [{ type: 'text', text: objectText }] }
+  const dimensionLog = dimensionEvents.filter(event => event.data?.source?.form !== CAPABILITY_SELECTION_FORM)
+    .map(event => ({ ...event, data: event === dimensionPlan ? dimensionSpelling : event.data }))
+    .map((event, seq) => ({ ...event, seq }))
+  const dimensionRestored = agentFor(Session.create(dimensionAgent.session.id, dimensionLog, dimensionAgent.session.header))
+  const dimensionCold = createCapabilityEnvironment({ ctx: { agents: { list: () => [dimensionRestored] },
+    systemPrompt: { assemble: async () => ({ sections: [] }) } }, config: policyConfig, toolSchemasForAgent: () => schemas })
+  t.after(() => dimensionCold.dispose())
+  const dimensionState = await dimensionCold.prepare(dimensionRestored, [])
+  assert.deepEqual(Object.fromEntries(dimensionState.snapshot.plan.entries.map(entry => [entry.id, entry.selection])),
+    { 'tools.probe': 'closed', 'tools.other': 'host' })
+  // Restored in place and keeping the spelling it was delivered with: a rebuild composes
+  // the compact spelling, so the snapshot states which path answered the upgrade.
+  assert.equal(dimensionState.message?.id, dimensionPlan.data.id, 'the delivered plan is restored in place')
+  assert.deepEqual(dimensionState.snapshot.sessionOverrides, objectOverrides)
 })
 
 test('successful first-session refresh receipts retain the refreshed source after cold restore', async t => {
@@ -1737,6 +1893,24 @@ test('settings inventory integrates tools Skills and joint MCP resources and tem
   assert.equal(Object.hasOwn(state.snapshot.capabilities.find(entry => entry.id === 'skills.image-design'), 'source'), false)
   assert.equal(bodies, 0)
   assert.deepEqual(agent.session.snapshotEvents(), [])
+})
+
+test('a tool name declared by two server namespaces states both servers as its source', async t => {
+  const owner = new Context()
+  const env = createCapabilityEnvironment({ ctx: owner, config: config(),
+    toolSchemasForAgent: () => ['run_code', 'probe', 'mcp__docs__search', 'mcp__docs__deep__search'].map(name => schema(name)) })
+  t.after(async () => { await env.dispose(); await owner.fiber.dispose() })
+  owner.effect(() => owner.provide('systemPrompt', { assemble: async () => ({ sections: [
+    { name: 'mcp:docs', text: 'Docs server owner instructions' },
+    { name: 'mcp:docs__deep', text: 'Deep docs server owner instructions' }] }) }))
+  const catalog = await env.describeCatalog()
+  const source = id => catalog.find(entry => entry.id === id).source
+  // `mcp__docs__deep__search` begins with both `mcp__docs__` and `mcp__docs__deep__`,
+  // so both declared servers name it. The catalogue states the whole list: dropping it
+  // would leave the panel's source column with no server to name.
+  assert.deepEqual(source('tools.mcp__docs__deep__search'), { kind: 'mcp', servers: ['docs', 'docs__deep'] })
+  assert.deepEqual(source('tools.mcp__docs__search'), { kind: 'mcp', server: 'docs' })
+  assert.deepEqual(source('tools.probe'), { kind: 'host' })
 })
 
 test('capability contracts keep the Host SDK member shape for valid and exotic names', async t => {

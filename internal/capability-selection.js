@@ -1,5 +1,5 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { CAPABILITY_DISCLOSURES } from './capability-policy.js'
 
 /**
@@ -26,6 +26,21 @@ import { CAPABILITY_DISCLOSURES } from './capability-policy.js'
  * row, and nothing reads the record as a supply. `change()` asks this module's
  * vocabulary before it appends, so a decision about an entry this vocabulary
  * cannot name never becomes a record.
+ *
+ * A record is not the only shape this session's decision has ever had. Before
+ * this record existed, the plugin wrote a session's choices into a plan snapshot —
+ * the one it delivered, or the one a pending command receipt carried when no step
+ * had accepted it yet — and those sessions have no record at all. Reading such
+ * a session as `none` would recompose it from an empty set and withdraw choices
+ * its own log still holds, so this module reads the newest delivered plan's
+ * `sessionOverrides` as the same statement (`decided`, marked `legacy`) when the
+ * session recorded none. The delivered plan is the equivalent form of one
+ * statement, never a second owner: a record outvotes it, and the next write
+ * restates every choice this read answered with. Only a plan that delivered a
+ * choice is such a statement — an empty override map says the session inherited
+ * everything, which is the state a session without a record already reads as — and
+ * a plan that states the map unreadably reports `unreadable` for the same reason a
+ * record does.
  */
 export const CAPABILITY_SELECTION_FORM = 'capability-selection'
 export const CAPABILITY_SELECTION_SCHEMA = 'ptc-capability-selection/v1'
@@ -125,16 +140,104 @@ export function classifyCapabilitySelection(records) {
   return Object.freeze({ state: 'none' })
 }
 
-/** This session's newest selection record, read from its own log events. */
-export function capabilitySelectionOf(events) {
+/**
+ * The dimension rule one selection states, or `{}` when it states no decision.
+ *
+ * One selection is the vocabulary a saved decision, a command intent and a
+ * delivered plan's override all use; a record states dimensions. This function
+ * is the only place the two spellings meet, so a writer that copies a selection
+ * into a record and a reader that turns a delivered override back into one
+ * cannot disagree about what that selection meant. Anything narrower — a rule
+ * naming only one dimension — is already in this shape and is copied as it is.
+ */
+export function capabilityRuleOfSelection(selection) {
+  if (isRecord(selection)) return { ...selection }
+  return selection === undefined || selection === 'inherit' ? {}
+    : selection === 'automatic' ? { availability: 'automatic', disclosure: 'automatic' }
+      : selection === 'closed' ? { availability: 'closed' } : { availability: 'enabled', disclosure: selection }
+}
+
+/**
+ * The dimension form of one recorded-by-plan override.
+ *
+ * A delivered plan recorded this session's choices in the compact vocabulary a
+ * saved configuration uses — one whole selection per entry, or the dimensions a
+ * policy rule states — while a record states dimensions only. The two meet in
+ * `capabilityRuleOfSelection`, which is why the plan is an equivalent form of one
+ * statement rather than a second vocabulary: every value it reads maps back to
+ * the same compact selection, so a choice read from a plan and restated into a
+ * record says what the plan said.
+ */
+function planChoice(override) {
+  const choice = capabilityRuleOfSelection(override)
+  return Object.keys(choice).length === 0 ? undefined : choice
+}
+
+/**
+ * This session's statement as its newest delivered plan recorded it.
+ *
+ * Only a plan that delivered at least one choice is a statement: an empty
+ * override map says the session inherited everything, which is the state a
+ * session without a record already reads as, not a decision to migrate. A plan
+ * whose overrides cannot be read as this vocabulary is `unreadable` for the same
+ * reason a record is: it supersedes what came before it and this build cannot
+ * say what it decided.
+ */
+function planSelection(message) {
+  const snapshot = message?.source?.snapshot
+  const overrides = snapshot?.sessionOverrides
+  // A snapshot that states no choices at all (the v1 generation) recorded nothing to
+  // migrate. One that states them in a shape this vocabulary cannot read is
+  // `unreadable`: it supersedes what came before it, and reporting `none` would let
+  // the composition withdraw a decision the log still holds.
+  if (overrides === undefined) return Object.freeze({ state: 'none' })
+  if (!isRecord(overrides)) return Object.freeze({ state: 'unreadable' })
+  try {
+    // The entries are collected as pairs and materialized with own data properties: an
+    // override key the record vocabulary cannot name (for example `__proto__`) must reach
+    // the vocabulary check as a name it refuses, not silently become the map's prototype
+    // and leave the statement reading `none` where the record branch reads `unreadable`.
+    const entries = []
+    for (const [id, override] of sortedEntries(overrides)) {
+      const choice = planChoice(override)
+      if (choice !== undefined) entries.push([id, choice])
+    }
+    if (entries.length === 0) return Object.freeze({ state: 'none' })
+    return Object.freeze({ state: 'decided', legacy: true,
+      selection: normalizeCapabilitySelection({ schema: CAPABILITY_SELECTION_SCHEMA, choices: Object.fromEntries(entries) }) })
+  } catch {
+    return Object.freeze({ state: 'unreadable' })
+  }
+}
+
+/**
+ * How this session's newest statement reads, from its own log events.
+ *
+ * One entry answers for every consumer: a record when the session wrote one,
+ * otherwise the newest delivered plan as the equivalent form. Reading the plan
+ * only when no record exists keeps the record the newest word, so a session that
+ * upgraded and then decided again is not answered from an older plan.
+ *
+ * A caller that knows which session the log belongs to passes that identity, and a
+ * delivered plan that names a different session is then not read as this session's
+ * statement. A plan message carries the session it was composed for, and the writers
+ * that restore one require that identity; a record carries none, so the log it was
+ * appended to is its only identity.
+ */
+export function capabilitySelectionOf(events, sessionId) {
   const records = []
+  let delivered
   for (const event of Array.isArray(events) ? events : []) {
     if (event?.type !== 'user/message') continue
     const source = event.data?.source
-    if (!isPtcMessageSource(source) || source.form !== CAPABILITY_SELECTION_FORM) continue
-    records.push({ form: CAPABILITY_SELECTION_FORM, choices: readCapabilitySelection(event.data)?.choices })
+    if (!isPtcMessageSource(source)) continue
+    if (source.form === CAPABILITY_SELECTION_FORM) {
+      records.push({ form: CAPABILITY_SELECTION_FORM, choices: readCapabilitySelection(event.data)?.choices })
+    } else if (source.form === CAPABILITY_PLAN_FORM
+      && (sessionId === undefined || source.sessionId === sessionId)) delivered = event.data
   }
-  return classifyCapabilitySelection(records)
+  const recorded = classifyCapabilitySelection(records)
+  return recorded.state === 'none' ? planSelection(delivered) : recorded
 }
 
 /** The choice this session recorded for one entry, or `undefined` when it recorded none. */

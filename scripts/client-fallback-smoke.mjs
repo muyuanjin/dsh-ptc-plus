@@ -103,6 +103,7 @@ if (values.list) {
     });
     window.capabilityEntries=[...Array.from({length:80},(_,index)=>({id:'tools.probe'+index,name:'probe'+index,category:'tool',
       description:'A capability with its own choices.',source:{kind:'host'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'})),
+      {id:'tools.mcp__docs__deep__search',name:'deep search',category:'tool',source:{kind:'mcp',servers:['docs','docs__deep']},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'},
       {id:'skills.design',name:'design',category:'skill',source:{kind:'skill',bucket:'project-dsh'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'},
       {id:'mcpServers.docs',name:'docs',category:'server',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'enabled'},
       {id:'tools.mcp__docs__search',name:'docs search',category:'tool',source:{kind:'mcp',server:'docs'},saved:'automatic',sessionSourceSelection:'automatic',temporary:'inherit',effective:'on-demand'}];
@@ -639,13 +640,13 @@ if (values.list) {
           'workbench Modal must be portaled outside the composer')
         const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
-        assert.equal(await items.count(), 83, 'one row per supplied capability and MCP source')
+        assert.equal(await items.count(), 84, 'one row per supplied capability and MCP source')
         // Six columns, one owner each. A header states its column and offers nothing
         // else: the v1 table's sort controls are gone, so the supply order is the only
         // order this table states.
         const table = panel.locator('.ptcPlusSessionCapabilityTable')
         assert.equal(await table.count(), 1)
-        assert.equal(await table.locator('[data-capability-id]').count(), 83, 'every capability row lives in the one table')
+        assert.equal(await table.locator('[data-capability-id]').count(), 84, 'every capability row lives in the one table')
         const columnKeys = ['capabilities.column.name', 'capabilities.typesColumn', 'capabilities.sourceColumn',
           'capabilities.column.saved', 'capabilities.column.session', 'capabilities.column.evidence']
         assert.deepEqual(await table.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
@@ -679,6 +680,10 @@ if (values.list) {
         assert.equal(await cell('mcpServers.docs', 'ptcPlusCapabilitySource').innerText(), labels['capabilities.source.mcp'])
         assert.equal(await cell('tools.mcp__docs__search', 'ptcPlusCapabilityBadge').innerText(), labels['capabilities.type.resource'])
         assert.equal(await cell('tools.mcp__docs__search', 'ptcPlusCapabilitySource').innerText(), 'docs')
+        // A name declared by two server namespaces states both of them: the source
+        // column names what exists instead of reporting that its owner is unknown.
+        assert.equal(await cell('tools.mcp__docs__deep__search', 'ptcPlusCapabilitySource').innerText(),
+          ['docs', 'docs__deep'].join(labels['capabilities.source.separator']))
         // The saved column is the configuration's own answer and never a control.
         assert.equal(await cell('tools.probe0', 'ptcPlusSessionCapabilitySaved').innerText(),
           `${labels['capabilities.word.enabled']} · ${labels['capabilities.word.on-demand']}`)
@@ -707,7 +712,8 @@ if (values.list) {
         assert.equal(await availabilityOf('tools.probe5').innerText(), labels['capabilities.word.closed'])
         assert.equal(await disclosureOf('skills.design').innerText(), labels['capabilities.word.full'])
         const rowText = (await table.innerText()).toLocaleLowerCase()
-        for (const word of ['unavailable', 'not available', 'denied', 'blocked', '不可用', '未观察', '未证明']) {
+        for (const word of ['unavailable', 'not available', 'denied', 'blocked', 'unconfirmed', 'unknown',
+          '不可用', '未观察', '未证明', '未确认', '未知']) {
           assert.equal(rowText.includes(word.toLowerCase()), false, `${caseLabel}: a session row states no denial word (${word})`)
         }
         // Typography and control geometry are the panel's own, not the carrier's.
@@ -782,7 +788,8 @@ if (values.list) {
           && document.activeElement.textContent.includes(label), labels['capabilities.quick.mcp_tools'])
         await page.keyboard.press('Enter')
         assert.equal(await kind.locator('span').first().innerText(), labels['capabilities.quick.mcp_tools'])
-        assert.deepEqual(await order(), ['tools.mcp__docs__search'], 'the category filter narrows the table to the supplied MCP tools')
+        assert.deepEqual(await order(), ['tools.mcp__docs__deep__search', 'tools.mcp__docs__search'],
+          'the category filter narrows the table to the supplied MCP tools')
         await page.waitForFunction(label => document.activeElement?.getAttribute('role') === 'combobox'
           && document.activeElement.getAttribute('aria-label') === label, labels['capabilities.quick.kind'])
         await page.keyboard.press('ArrowDown')
@@ -972,10 +979,10 @@ if (values.list) {
         if (viewport.width === 1440 && native) {
           await page.evaluate(() => window.showCapabilityReceipt('list all', JSON.stringify({schema:'ptc-capability-catalog/v1',entries:window.capabilityEntries})))
           const card = page.locator('.ptcPlusCapabilityReceipt')
-          await card.getByText(labels['capabilities.card.catalogCount'].replace('{count}', '83'), {exact:true}).waitFor()
+          await card.getByText(labels['capabilities.card.catalogCount'].replace('{count}', '84'), {exact:true}).waitFor()
           assert.ok((await card.boundingBox()).height < 190, 'catalog does not dump JSON into the conversation')
           await card.getByText(labels['capabilities.card.browse'], {exact:true}).click()
-          assert.equal(await card.locator('tbody tr').count(), 83)
+          assert.equal(await card.locator('tbody tr').count(), 84)
           await card.screenshot({path:`artifacts/button-styles/capability-catalog-command-card-native-${locale}-${theme}.png`})
           await card.getByText(labels['capabilities.card.source'], {exact:true}).click()
           await page.waitForFunction(() => document.querySelector('.ptcPlusCapabilityReceiptSource pre'))

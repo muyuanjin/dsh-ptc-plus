@@ -10,16 +10,16 @@ import * as spillPolicy from '@deepseek-ai/dsh-spill-policy'
 import { readSessionLog } from './session-events.js'
 import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
 import { createCapabilityPlan } from './capability-plan.js'
-import { bindingAdoptionOf, declinedBindingEntries } from './binding-adoption.js'
-import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilitySelectionMessage, capabilitySelectionOf, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
-import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { bindingAdoptionOf } from './binding-adoption.js'
+import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilityRuleOfSelection, capabilitySelectionMessage, capabilitySelectionOf, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
+import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
 import { readRuntimeAvailability, readRuntimeMessage } from './runtime-messages.js'
 import { PLAN_CATEGORY_LINES, PLAN_NAVIGATION, PLAN_OVERAGE, PLAN_OVERAGE_HOLE,
   PROMPT_SLOT_IDS, planCategorySlotId, resolvePromptText, resolvePromptTextConfig } from './prompt-text.js'
 
-export const CAPABILITY_PLAN_FORM = 'capability-plan'
+export { CAPABILITY_PLAN_FORM }
 export const CAPABILITY_EVIDENCE_KEY = 'dshPtcPlusCapabilities'
 const EVIDENCE_KEY = CAPABILITY_EVIDENCE_KEY
 const DIRECT_TRANSPORT = 'run_code'
@@ -319,20 +319,13 @@ function requiresCapabilityInventory(settings) {
   return settings.enabled || settings.policy && (settings.statistics?.enabled === true || settings.recoveryEnabled)
 }
 
-function temporaryCapabilityRule(selection) {
-  if (selection && typeof selection === 'object') return { ...selection }
-  return selection === undefined || selection === 'inherit' ? {}
-    : selection === 'automatic' ? { availability: 'automatic', disclosure: 'automatic' }
-      : selection === 'closed' ? { availability: 'closed' } : { availability: 'enabled', disclosure: selection }
-}
-
 /**
  * The one-selection spelling of a recorded choice, or `undefined` when the
  * record states a dimension that spelling cannot carry.
  *
  * A record states dimensions, a saved decision states one selection, and the two
- * vocabularies meet exactly at the shapes `temporaryCapabilityRule` produces for
- * a whole selection. Anything narrower (a single dimension) stays a dimension
+ * vocabularies meet exactly at the shapes `capabilityRuleOfSelection` produces
+ * for a whole selection. Anything narrower (a single dimension) stays a dimension
  * rule, because writing it as a selection would also decide the other dimension.
  */
 function compactSelection(choice) {
@@ -364,11 +357,13 @@ function sessionOverridesOf(statement) {
 
 /** Two override maps state the same choices when they state the same decisions. */
 function sameChoices(left, right) {
-  const canonical = overrides => JSON.stringify(Object.keys(overrides ?? {}).sort().map(id => {
-    const choice = overrides[id]
-    return [id, typeof choice === 'object' && choice !== null
-      ? Object.keys(choice).sort().map(dimension => [dimension, choice[dimension]]) : choice]
-  }))
+  // One decision has two spellings: the whole selection a saved configuration states and
+  // the dimensions a record or a policy rule states. A plan delivered by an earlier
+  // release may hold either, so the comparison asks what each map decides — through the
+  // one mapping that owns that equivalence — rather than how this build spells it.
+  const canonical = overrides => JSON.stringify(Object.keys(overrides ?? {}).sort().map(id =>
+    [id, Object.entries(capabilityRuleOfSelection(overrides[id]))
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)]))
   return canonical(left) === canonical(right)
 }
 
@@ -522,53 +517,6 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
     return latest
   }
-  /**
-   * The binding half of one session catalog read: what the global catalog supplies
-   * and how this session stands on each entry.
-   *
-   * Supply is the store's `list()`. `snapshot()` answers a different question — it
-   * drops disabled entries, so a row could not report "offered but globally
-   * disabled" — and `describe()` answers before the first load, which would report
-   * a full catalog as empty. The plugin switch gates the same catalog everywhere
-   * else (the `/binding` command is not even registered while it is off), so an off
-   * switch is an absent group *with its reason*, never an empty one: a row that
-   * exists is never unknown, and a group that cannot exist says why.
-   */
-  async function bindingGroup(sessionId, history, signal) {
-    if (currentConfig.userBindingsEnabled !== true) return { bindings: null, bindingsReason: 'supply-off' }
-    let supply
-    try {
-      supply = typeof readUserBindings === 'function' ? await readUserBindings() : undefined
-    } catch { supply = undefined }
-    if (supply === null || typeof supply !== 'object' || !Array.isArray(supply.entries) || supply.error !== undefined) {
-      return { bindings: null, bindingsReason: 'unreadable' }
-    }
-    let events = history
-    if (events === undefined) {
-      // A session with no live runtime still has a log, so its adoption is read
-      // from that log rather than guessed from an absent in-memory state.
-      try {
-        events = (await readSessionLog({ id: sessionId }, sessionQueryService(), signal))?.events
-      } catch {
-        signal?.throwIfAborted()
-        return { bindings: null, bindingsReason: 'unreadable' }
-      }
-    }
-    // One owner answers which statement governs this session: the newest one, whether
-    // or not this build can read it.
-    const adoption = bindingAdoptionOf(events)
-    // An unreadable newest statement supersedes the readable ones before it, so
-    // the group cannot answer for any row: it reports that its adoption record is
-    // unreadable rather than publishing the state of a decision the session replaced.
-    if (adoption.state === 'unreadable') return { bindings: null, bindingsReason: 'unreadable' }
-    const declined = declinedBindingEntries(adoption.state === 'decided' ? adoption.adoption : undefined)
-    // One bit, one name: a row says whether this session declined the entry, and
-    // "uses it" is that same answer read by the consumer. Reporting `adopted` beside
-    // it would publish the negation under a second name and add a state
-    // (`{adopted:false, declined:false}`) nothing can reach.
-    return { bindings: supply.entries.map(entry => ({ id: entry.id, name: entry.name,
-      enabled: entry.enabled === true, declined: declined.has(entry.id) })) }
-  }
   const operations = new WeakMap()
   const completions = new WeakMap()
   const admitted = new WeakMap()
@@ -667,9 +615,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const servers = [...declaredServers].filter(server => capability.schema.name.startsWith(`mcp__${server}__`))
       if (servers.length === 1) capability.mcpServer = servers[0]
       else if (servers.length > 1) capability.mcpServerCandidates = servers
+      // The source names every declared server whose namespace begins this tool name.
+      // One name can begin with two (`mcp__docs__deep__search` is named by `docs` and
+      // by `docs__deep`), and that list is the supply's own fact: the panel states the
+      // servers it has, so dropping the list here leaves the row unable to name any.
       presentation?.set(capability.id, { name: capability.schema.name,
         source: servers.length === 1 ? { kind: 'mcp', server: servers[0] } : servers.length > 1
-          ? { kind: 'unknown' } : { kind: 'host' } })
+          ? { kind: 'mcp', servers } : { kind: 'host' } })
     }
     if (skillObservation) skillObservation.complete = true
     const hasOperation = name => (!frozenIds || frozenIds.has(`tools.${name}`)) && capabilities.some(item => item.id === `tools.${name}`
@@ -748,7 +700,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
     const choices = {}
     for (const [id, value] of Object.entries(overrides ?? {})) {
-      const rule = temporaryCapabilityRule(value)
+      const rule = capabilityRuleOfSelection(value)
       if (Object.keys(rule).length > 0) choices[id] = rule
     }
     const message = capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA, choices })
@@ -971,7 +923,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
     const history = await observeHistory(agent, signal)
     const id = String(agent.session.id ?? agent.id)
-    const statement = capabilitySelectionOf(history)
+    const statement = capabilitySelectionOf(history, id)
     const sessionOverrides = sessionOverridesOf(statement)
     const current = sessions.get(id)
     if (!force && current !== undefined) {
@@ -1177,8 +1129,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       name: display?.name ?? capability.name ?? capability.id,
       category: capability.category,
       description: capability.description,
+      // Without a display entry the identity is stated by the namespace it belongs to:
+      // a resource row is MCP's, a Skill row is a Skill's, and a tool row is the Host
+      // registry's. A category is not a source, so it cannot stand in for one here.
       source: display?.source
-        ?? (capability.mcpServer === undefined ? { kind: capability.category } : { kind: 'mcp', server: capability.mcpServer }),
+        ?? (capability.mcpServer === undefined
+          ? { kind: capability.category === 'skill' ? 'skill' : capability.category === 'resource' ? 'mcp' : 'host' }
+          : { kind: 'mcp', server: capability.mcpServer }),
     }
   }
 
@@ -1364,7 +1321,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // one starts from the log that holds the current statement — the same log the
       // panel reads. A stale or empty runtime view would silently restate the choice
       // just made and withdraw every decision recorded before it.
-      const statement = capabilitySelectionOf(await observeHistory(agent, signal))
+      const statement = capabilitySelectionOf(await observeHistory(agent, signal),
+        String(agent.session.id ?? agent.id))
       signal?.throwIfAborted()
       const choices = { ...(statement.state === 'decided' ? statement.selection.choices : {}) }
       const patch = { ...(choices[intent.id] ?? {}) }
@@ -1374,7 +1332,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       } else if (intent.selection === 'inherit') {
         delete patch.availability; delete patch.disclosure
       } else if (intent.selection === 'closed') patch.availability = 'closed'
-      else Object.assign(patch, temporaryCapabilityRule(intent.selection))
+      else Object.assign(patch, capabilityRuleOfSelection(intent.selection))
       if (Object.keys(patch).length > 0) choices[intent.id] = patch
       else delete choices[intent.id]
       recordSelection(agent, choices, signal)
@@ -1631,7 +1589,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // composition reports what it built, and this field reports what the session
       // decided. They agree once the composition has caught up, and until then only
       // this field is the answer.
-      const sessionOverrides = sessionOverridesOf(capabilitySelectionOf(sessionEvents(agent?.session)))
+      const sessionOverrides = sessionOverridesOf(capabilitySelectionOf(sessionEvents(agent?.session),
+        agent?.session === undefined ? undefined : String(agent.session.id ?? agent.id)))
       return state === undefined ? { configured: capabilityConfiguration(currentConfig), effective: null, sessionOverrides }
         : { configured: capabilityConfiguration(currentConfig), effective: state.snapshot.plan,
           publication: state.message === undefined ? 'not-required' : planCommitted(agent, state.message) ? 'accepted' : 'pending',
@@ -1643,7 +1602,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       return [...sessions].map(([sessionId, state]) => ({ sessionId, effective: state.snapshot.plan,
         publication: state.message === undefined ? 'not-required' : planCommitted({ session: state.session }, state.message) ? 'accepted' : 'pending',
         configuration: savedConfiguration(state.snapshot.sourceSettings ?? state.snapshot.settings),
-        sessionOverrides: sessionOverridesOf(capabilitySelectionOf(sessionEvents(state.session))),
+        sessionOverrides: sessionOverridesOf(capabilitySelectionOf(sessionEvents(state.session), sessionId)),
         pendingRefresh: digest(capabilityConfiguration(currentConfig)) !== digest(state.snapshot.sourceSettings ?? state.snapshot.settings) }))
     },
     /**
@@ -1665,7 +1624,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const { events, supply } = await sessionCatalogSupply(sessionId, signal)
       const configuration = capabilityConfiguration(currentConfig)
       const rows = capabilityRows(supply.capabilities, supply.presentation, configuration,
-        capabilitySelectionOf(events), capabilityProofOf(events))
+        capabilitySelectionOf(events, sessionId), capabilityProofOf(events))
       const bindingsEnabled = currentConfig.userBindingsEnabled === true
       if (bindingsEnabled) rows.push(...await bindingRows(events))
       signal?.throwIfAborted()

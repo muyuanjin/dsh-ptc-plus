@@ -91,6 +91,100 @@ function validCatalogRule(rule, temporary = false) {
         ? ['enabled', 'closed'].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))))
 }
 
+const CATALOG_DIMENSIONS = ['availability', 'disclosure']
+// The panel's own word table, column by column: a dimension keeps the word naming
+// where its value comes from, so the saved column can say `automatic` and the
+// session column can also say `inherit`, and neither stands in for a decision.
+const CATALOG_STATEMENT_WORDS = Object.freeze({
+  saved: Object.freeze({ availability: ['enabled', 'closed', 'automatic'],
+    disclosure: [...CAPABILITY_DISCLOSURES, 'automatic'] }),
+  temporary: Object.freeze({ availability: ['enabled', 'closed', 'automatic', 'inherit'],
+    disclosure: [...CAPABILITY_DISCLOSURES, 'automatic', 'inherit'] }),
+})
+
+/**
+ * One column statement as the listing publishes it: the panel's value for the
+ * dimensions that row decides.
+ *
+ * A capability row decides both dimensions and an MCP server row only
+ * availability, so a statement is a dimension object with one or two entries.
+ * Releases up to 0.5.4 stated one whole-selection word per column; a string stays
+ * readable as that word, and the earlier independent-rule form stays readable as
+ * the rule it was.
+ */
+function validCatalogStatement(column, value) {
+  if (typeof value === 'string') return true
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const dimensions = Object.entries(value)
+  // A dimension name resolves to this column's own word list or to nothing at all: an own
+  // key such as `constructor` would otherwise reach an inherited function and throw while
+  // the card is rendering, where every other out-of-table shape falls back to the source.
+  return dimensions.length > 0 && dimensions.every(([dimension, choice]) =>
+    Object.hasOwn(CATALOG_STATEMENT_WORDS[column], dimension)
+      && CATALOG_STATEMENT_WORDS[column][dimension].includes(choice))
+}
+
+/** The panel's words for one statement, in the panel's column order. */
+function catalogStatementLabel(t, statement) {
+  return CATALOG_DIMENSIONS.filter(dimension => statement[dimension] !== undefined)
+    .map(dimension => t(`capabilities.word.${statement[dimension]}`)).join(' · ')
+}
+
+// A Skill's declaring bucket is one of the public provider sources. A bucket this
+// build does not name is stated beside the generic Skill source rather than denied.
+const SKILL_SOURCE_BUCKETS = Object.freeze(['project-dsh', 'project-agents', 'user-dsh', 'user-agents',
+  'runtime', 'bundled', 'custom'])
+
+/** The declared MCP servers whose `mcp__<server>__` namespace begins one tool name. */
+const mcpServersOf = source => Array.isArray(source?.servers)
+  ? source.servers.filter(server => typeof server === 'string')
+  : typeof source?.server === 'string' ? [source.server] : []
+
+/**
+ * The source a row states when its payload names none.
+ *
+ * A settings row can name an identity that only the saved configuration or a frozen
+ * plan mentions. The identity still names its namespace — `tools.*` is the Host tool
+ * registry's, `skills.*` is a Skill's, `mcp.*`/`mcpServers.*` is MCP's — and stating
+ * the namespace is the same fact `inventory` states when no declared server names a
+ * tool.
+ */
+const namespaceSource = entry => {
+  const namespace = typeof entry.id === 'string' ? entry.id.slice(0, entry.id.indexOf('.')) : ''
+  return { kind: namespace === 'skills' ? 'skill'
+    : namespace === 'mcp' || namespace === 'mcpServers' ? 'mcp' : 'host' }
+}
+
+/**
+ * The source column's statement for one declared row.
+ *
+ * `servers` is every declared MCP server whose namespace names the row. One name can
+ * begin with two (`mcp__docs__deep__search` is named by `docs` and by `docs__deep`),
+ * and then the column states both of them: a source column that cannot name its
+ * source has nothing left to say but a denial, which §4 forbids. Payloads written
+ * before that list travelled said `kind: 'unknown'`; they still state that several
+ * servers match. Every other row states the source its payload names, or the
+ * namespace its identity belongs to.
+ */
+function capabilitySourceText(t, entry) {
+  // A server row is the declared server layer itself, so its source is MCP: naming
+  // the server there would state the row's own name as its source.
+  if (entry.kind === 'server') return t('capabilities.source.mcp')
+  const source = entry.source ?? namespaceSource(entry)
+  const servers = mcpServersOf(source)
+  if (servers.length > 0) return servers.join(t('capabilities.source.separator'))
+  if (source.kind === 'skill') {
+    return SKILL_SOURCE_BUCKETS.includes(source.bucket) ? t(`capabilities.source.${source.bucket}`)
+      : source.bucket ? `${t('capabilities.source.other-skill')} · ${source.bucket}` : t('capabilities.source.skill')
+  }
+  if (source.kind === 'unknown') return t('capabilities.source.multiple-servers')
+  // A source kind this build does not name falls back to the namespace the identity
+  // states, so each row keeps naming its own layer instead of another one's.
+  const namespace = namespaceSource(entry).kind
+  if (source.kind === 'mcp' || namespace === 'mcp') return t('capabilities.source.mcp')
+  return t(`capabilities.source.${namespace === 'skill' ? 'skill' : 'host'}`)
+}
+
 /** A Chat snapshot without a node store cannot order a receipt against the conversation. */
 const noSnapshot = () => undefined
 
@@ -173,8 +267,8 @@ export function createCapabilityCommandCard(React) {
     // columns and no third answer it could only guess.
     const entries = json?.schema === 'ptc-capability-catalog/v1' && Array.isArray(json.entries)
       && json.entries.every(entry => entry && typeof entry.id === 'string'
-        && ['name', 'description', 'saved', 'temporary']
-          .every(key => entry[key] === undefined || typeof entry[key] === 'string')
+        && ['name', 'description'].every(key => entry[key] === undefined || typeof entry[key] === 'string')
+        && ['saved', 'temporary'].every(key => entry[key] === undefined || validCatalogStatement(key, entry[key]))
         && ['savedRule', 'temporaryRule'].every(key => entry[key] === undefined || validCatalogRule(entry[key], key === 'temporaryRule'))) ? json.entries : null
     const outcome = entries ? t('capabilities.card.catalogCount', { count: entries.length })
       : json ? t('capabilities.card.details')
@@ -182,6 +276,7 @@ export function createCapabilityCommandCard(React) {
           ?? t(node.outcome.kind === 'error' ? 'capabilities.commandFailed' : 'capabilities.refreshAcknowledged')
           : t('capabilities.refreshing')
     const label = (entry, key) => {
+      if (typeof entry[key] === 'object') return catalogStatementLabel(t, entry[key])
       const rule = entry[key === 'saved' ? 'savedRule' : 'temporaryRule']
       return rule === undefined ? capabilityChoiceLabel(t, entry[key])
         : capabilityRuleLabel(t, rule, key === 'temporary' ? 'capabilities.quick.noOverride' : 'capabilities.policy.inheritRule')
@@ -460,18 +555,21 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline)
     const policy = capabilityPolicyForConfig(value)
     const entries = capabilitySettingsEntries(value, catalog, plans, Boolean(catalogError))
-    const sourceKey = entry => JSON.stringify([entry.source?.kind ?? 'unknown', entry.source?.server ?? null,
-      entry.source?.bucket ?? null, entry.source?.provider ?? null])
+    // Two entries share one source group exactly when they state the same source; an
+    // entry that states none is grouped by the namespace it belongs to.
+    const sourceKey = entry => JSON.stringify(entry.source ?? namespaceSource(entry))
     const sourceLabel = entry => {
       if (entry.source?.kind === 'skill') {
         const bucket = entry.source.bucket
-        const known = ['project-dsh', 'project-agents', 'user-dsh', 'user-agents', 'runtime', 'bundled', 'custom']
-        const label = known.includes(bucket) ? t(`capabilities.source.${bucket}`)
-          : bucket ? `${t('capabilities.source.other-skill')} · ${bucket}` : t('capabilities.source.unknown')
+        const label = SKILL_SOURCE_BUCKETS.includes(bucket) ? t(`capabilities.source.${bucket}`)
+          : bucket ? `${t('capabilities.source.other-skill')} · ${bucket}` : t('capabilities.source.skill')
         return `${label}${entry.source.provider ? ` · ${entry.source.provider}` : ''}`
       }
-      if (entry.source?.kind === 'mcp') return `MCP${entry.source.server ? ` · ${entry.source.server}` : ''}`
-      return t(`capabilities.source.${entry.source?.kind === 'host' ? 'host' : 'unknown'}`)
+      if (entry.source?.kind === 'mcp') {
+        const servers = mcpServersOf(entry.source)
+        return servers.length > 0 ? `MCP · ${servers.join(t('capabilities.source.separator'))}` : t('capabilities.source.mcp')
+      }
+      return capabilitySourceText(t, entry)
     }
     const matchesKind = (entry, type) => type === 'all' || (type === 'resource' ? entry.source?.kind === 'mcp'
       : type === 'tool' ? entry.kind === 'tool' && entry.source?.kind !== 'mcp' : type === entry.kind)
@@ -494,7 +592,12 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const state = item => value.capabilityContextEnabled === false || value.capabilityManagementEnabled !== true ? 'unapplied'
       : item.resolvedRule.availabilitySource.startsWith('mcp:') && item.resolvedRule.availability === 'closed' ? 'source-closed' : item.resolvedRule.availability
     const type = item => item.source?.kind === 'mcp' ? 'resource' : item.kind
-    const displayedSource = item => item.source?.kind === 'mcp' ? item.source.server ?? sourceLabel(item) : sourceLabel(item)
+    // The cell states the servers the supply names, and the `MCP · ` caption stays on
+    // the group and filter labels: a row's own cell answers which server, not that it
+    // is an MCP one.
+    const displayedSource = item => item.source?.kind === 'mcp'
+      ? mcpServersOf(item.source).join(t('capabilities.source.separator')) || sourceLabel(item)
+      : sourceLabel(item)
     const groups = new Map()
     for (const entry of filtered) {
       const group = entry.source?.kind === 'mcp' && entry.source.server ? `mcp:${entry.source.server}` : entry.kind
@@ -1643,19 +1746,23 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
       : row.kind === 'server' ? 'server'
         : row.category === 'skill' ? 'skill'
           : row.category === 'resource' || row.source?.kind === 'mcp' ? 'resource' : 'tool'
+    // Two rows share one source filter entry exactly when they state the same source,
+    // and the entry is named by the row that states it. A server group carries the
+    // `MCP · ` caption because it also holds the tools that name it.
     const sourceKeyOf = row => row.kind === 'binding' ? 'bindings'
-      : row.source?.kind === 'mcp' ? `mcp:${row.source.server ?? ''}`
-        : row.source?.kind === 'skill' ? `skill:${row.source.bucket ?? ''}`
-          : row.source?.kind === 'host' ? 'host' : 'unknown'
+      : JSON.stringify(row.source ?? namespaceSource(row))
     const sourceText = row => row.kind === 'binding' ? t('capabilities.source.bindings')
-      : row.kind === 'server' ? t('capabilities.source.mcp')
-        : row.source?.kind === 'mcp' ? String(row.source.server ?? t('capabilities.source.mcp'))
-          : row.source?.kind === 'skill' ? t(`capabilities.source.${row.source.bucket ?? 'unknown'}`)
-            : t(`capabilities.source.${row.source?.kind === 'host' ? 'host' : 'unknown'}`)
-    const listedSourceLabel = key => key === 'bindings' ? t('capabilities.source.bindings')
-      : key.startsWith('mcp:') ? `MCP · ${key.slice('mcp:'.length) || t('capabilities.source.mcp')}`
-        : key.startsWith('skill:') ? `Skill · ${t(`capabilities.source.${key.slice('skill:'.length) || 'unknown'}`)}`
-          : t(`capabilities.source.${key === 'host' ? 'host' : 'unknown'}`)
+      : capabilitySourceText(t, row)
+    const sourceFilterLabel = row => {
+      const servers = mcpServersOf(row.source)
+      if (row.source?.kind === 'mcp' && servers.length > 0) return `MCP · ${servers.join(t('capabilities.source.separator'))}`
+      // The option names the whole source its key identifies. A skill's bucket does not:
+      // two providers can declare into one bucket, and two options reading one word would
+      // offer a distinction this filter cannot state.
+      return row.source?.kind === 'skill'
+        ? `Skill · ${sourceText(row)}${row.source.provider ? ` · ${row.source.provider}` : ''}`
+        : sourceText(row)
+    }
     // The saved column is the configuration's own value, read-only: a control here
     // would write the global settings from a session panel.
     const savedText = row => row.kind === 'binding' ? ''
@@ -1719,8 +1826,12 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
     const listed = capabilities.filter(row => (family === 'all' || familyOf(row) === family)
       && (source === 'all' || sourceKeyOf(row) === source) && matches(row))
     const bindings = rows.filter(row => row.kind === 'binding')
-    const sources = [...new Set(capabilities
-      .filter(row => family === 'all' || familyOf(row) === family).map(sourceKeyOf))].sort()
+    const sources = new Map()
+    for (const row of capabilities) {
+      if (family !== 'all' && familyOf(row) !== family) continue
+      const key = sourceKeyOf(row)
+      if (!sources.has(key)) sources.set(key, sourceFilterLabel(row))
+    }
     const pickedRows = capabilities.filter(row => picked.includes(row.id))
     const batchLines = () => pickedRows.flatMap(row => DIMENSIONS
       .filter(dimension => batchChoices[dimension] !== 'keep' && (dimension === 'availability' || row.kind === 'capability'))
@@ -1730,6 +1841,14 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
     const applyBatch = async () => {
       const lines = batchLines()
       setBatchOpen(false)
+      // Every dimension kept its current setting, so this batch writes nothing. The
+      // click still owes the reader one sentence (§8.8), and it is the footer's own
+      // receipt expression that states it: a zero-write batch names no record, so it
+      // states the batch's outcome instead of widening the command receipt vocabulary.
+      if (lines.length === 0) {
+        setReceipt({ text: { key: 'capabilities.batch.kept', params: {} } })
+        return
+      }
       for (const { row, dimension, choice } of lines) {
         await record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${choice}`, row.id)
       }
@@ -1771,7 +1890,7 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
       filter(t('capabilities.quick.kind'), family, chooseFamily,
         [['all', t('capabilities.quick.all')], ...FAMILIES.map(key => [key, t(`capabilities.quick.${key}`)])]),
       filter(t('capabilities.sourceFilter'), source, chooseSource,
-        [['all', t('capabilities.allSources')], ...sources.map(key => [key, listedSourceLabel(key)])]),
+        [['all', t('capabilities.allSources')], ...[...sources].sort(([a], [b]) => compare(a, b))]),
       h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
         'aria-label': t('capabilities.batchSettings'),
         onClick: () => { setBatchChoices({ availability: 'keep', disclosure: 'keep' }); setBatchOpen(true) } },

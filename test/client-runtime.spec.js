@@ -2005,6 +2005,50 @@ test.each([null, [], { availability: 'full' }, { disclosure: 'inherit' }, { sour
   expect(card.querySelector('pre').textContent).toBe(text)
 })
 
+test('capability command catalog restates each row\'s own dimensions in the panel words', async () => {
+  // The listing carries the panel's column value, so the card states the dimensions that
+  // row decides — both for a capability, availability alone for an MCP server — and a
+  // dimension with no rule of its own keeps the word naming where its value comes from.
+  const entries = [
+    { id: 'tools.probe', name: 'probe',
+      saved: { availability: 'automatic', disclosure: 'full' },
+      temporary: { availability: 'inherit', disclosure: 'full' } },
+    { id: 'mcpServers.docs', name: 'docs',
+      saved: { availability: 'closed' }, temporary: { availability: 'inherit' } },
+  ]
+  const text = JSON.stringify({ schema: 'ptc-capability-catalog/v1', entries })
+  const commandNode = { commandId: 'dimension-catalog', args: 'list all', outcome: { kind: 'success', text } }
+  const { runtime, setLocale } = await fixture({ bindings: false, commandNode })
+  const view = runtime.renderRoot(); await runtime.flush()
+  const card = view.getByRole('region', { name: 'Session capabilities' })
+  const rows = () => within(card).getAllByRole('row', { hidden: true }).slice(1)
+    .map(row => within(row).getAllByRole('cell', { hidden: true }).slice(1).map(cell => cell.textContent))
+  expect(rows()).toEqual([['Automatic · Full', 'Inherit · Full'], ['Off', 'Inherit']])
+  setLocale('zh'); await runtime.flush()
+  expect(rows()).toEqual([['自动 · 完整', '继承 · 完整'], ['关闭', '继承']])
+  const disclosure = card.querySelector('.ptcPlusCapabilityReceiptSource')
+  disclosure.open = true; fireEvent(disclosure, new Event('toggle')); await runtime.flush()
+  expect(card.querySelector('pre').textContent).toBe(text)
+  expect(commandNode.outcome.text).toBe(text)
+})
+
+test.each([['temporary', { availability: 'full' }], ['temporary', { source: 'item' }], ['temporary', {}],
+  // A dimension name that resolves to an inherited property must be refused like any other
+  // out-of-table shape instead of throwing while the card renders.
+  ['temporary', { constructor: 'enabled' }], ['saved', { toString: 'host' }],
+  ['saved', { availability: 'inherit' }], ['saved', { disclosure: 'inherit' }]])
+('capability command catalog retains malformed column statement %s=%j as exact source', async (column, statement) => {
+  const text = JSON.stringify({ schema: 'ptc-capability-catalog/v1',
+    entries: [{ id: 'tools.probe', [column]: statement }] })
+  const { runtime } = await fixture({ bindings: false, commandNode: { args: 'list all', outcome: { kind: 'success', text } } })
+  const view = runtime.renderRoot(); await runtime.flush()
+  const card = view.getByRole('region', { name: 'Session capabilities' })
+  expect(card.querySelector('table')).toBeNull()
+  const disclosure = card.querySelector('.ptcPlusCapabilityReceiptSource')
+  disclosure.open = true; fireEvent(disclosure, new Event('toggle')); await runtime.flush()
+  expect(card.querySelector('pre').textContent).toBe(text)
+})
+
 test.each(['legacy', 'running', 'error', 'json-error', 'empty-error', 'whitespace-error', 'empty-success', 'whitespace-success'])
 ('capability refresh %s displays only its outcome line', async kind => {
   const text = kind === 'legacy' ? 'Session capability environment refreshed; the model-visible notification is recorded.'
@@ -2345,6 +2389,25 @@ test('session capability type and source filters keep their values compatible', 
   expect(view.baseElement.querySelector('[data-capability-id="skills.design"]')).toBeNull()
 })
 
+test('the source filter names the provider that declares a skill, so two providers in one bucket stay distinct', async () => {
+  // Several providers can declare into one bucket, so the option has to name the source its
+  // key identifies: two options reading one word would offer a distinction this filter
+  // cannot state, and the rows they filter would be indistinguishable.
+  const rows = [
+    capabilityRow('skills.office', { category: 'skill', source: { kind: 'skill', bucket: 'bundled', provider: 'dsh-office' } }),
+    capabilityRow('skills.badge', { category: 'skill', source: { kind: 'skill', bucket: 'bundled', provider: 'dsh-badge' } }),
+  ]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
+  await chooseCapabilityOption(view, 'Capability category', 'Skills')
+  const source = view.getByRole('combobox', { name: 'Capability source' })
+  fireEvent.keyDown(source, { key: 'ArrowDown' })
+  expect(view.getByRole('option', { name: 'Skill · Bundled skill · dsh-office' })).not.toBeNull()
+  expect(view.getByRole('option', { name: 'Skill · Bundled skill · dsh-badge' })).not.toBeNull()
+  fireEvent.click(view.getByRole('option', { name: 'Skill · Bundled skill · dsh-badge' })); await act(async () => {})
+  expect(view.baseElement.querySelectorAll('[data-capability-id]')).toHaveLength(1)
+  expect(view.baseElement.querySelector('[data-capability-id="skills.badge"]')).not.toBeNull()
+})
+
 test('a session capability batch records one decision for every selected row', async () => {
   let rows = [capabilityRow('tools.first'), capabilityRow('tools.second')]
   const run = vi.fn(async (sessionId, line) => {
@@ -2367,6 +2430,28 @@ test('a session capability batch records one decision for every selected row', a
   expect(commands.run.mock.calls.map(([, line]) => line)).toEqual([
     'set session tools.first availability closed', 'set session tools.second availability closed'])
   expect(view.baseElement.textContent).toContain('recorded tools.second')
+})
+
+test.each(['zh', 'en'])('a session capability batch that keeps every dimension still answers the click with one receipt in %s', async locale => {
+  const copy = SETTINGS_COPY[locale]
+  const { view, commands } = await sessionControlsFixture({
+    read: async () => sessionCatalog([capabilityRow('tools.first')]), locale })
+  fireEvent.click(view.getByLabelText(copy['capabilities.selectForBatch'].replace('{name}', 'tools.first')))
+  fireEvent.click(view.getByRole('button', { name: copy['capabilities.batchSettings'] }))
+  const dialog = view.getByRole('dialog', { name: copy['capabilities.batchSettings'] })
+  // Both dimensions keep their current setting, so this batch writes nothing. The
+  // click still owes the reader the footer's one receipt sentence.
+  fireEvent.click(within(dialog).getByRole('button', { name: copy['capabilities.batch.record'].replace('{count}', '0') }))
+  await act(async () => {})
+  expect(view.queryByRole('dialog', { name: copy['capabilities.batchSettings'] })).toBeNull()
+  const footer = view.baseElement.querySelector('.ptcPlusSessionCapabilityFooter')
+  expect(footer?.textContent).toBe(copy['capabilities.batch.kept'])
+  const text = String(footer?.textContent ?? '').toLowerCase()
+  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知',
+    'not observed', 'unavailable', 'not recorded', 'unproven', 'not enabled', 'unknown', 'unconfirmed']) {
+    expect(text).not.toContain(word)
+  }
+  expect(commands.run).not.toHaveBeenCalled()
 })
 
 test('a session switch discards an obsolete capability read', async () => {
@@ -2392,13 +2477,36 @@ test.each(['zh', 'en'])('the session capability panel states no absence and disa
   ]
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), locale })
   const text = view.baseElement.textContent
-  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用']) {
+  // The panel concept's whole ban list, in the panel that states it: a row may not report a
+  // denial of supply, a missing record or an unconfirmed source.
+  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知']) {
     expect(text).not.toContain(word)
   }
-  for (const word of ['not observed', 'not yet inventoried', 'unavailable', 'not recorded', 'unproven', 'not enabled']) {
+  for (const word of ['not observed', 'not yet inventoried', 'unavailable', 'not recorded', 'unproven',
+    'not enabled', 'unknown', 'unconfirmed']) {
     expect(text.toLowerCase()).not.toContain(word)
   }
   expect(view.baseElement.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
+})
+
+test.each(['zh', 'en'])('the source column names every server that declares an ambiguous capability name in %s', async locale => {
+  const rows = [
+    capabilityRow('tools.mcp__docs__search', { name: 'docs search', source: { kind: 'mcp', server: 'docs' } }),
+    // `mcp__docs__deep__search` begins with both `mcp__docs__` and `mcp__docs__deep__`,
+    // so the supply names it twice and the cell states both servers.
+    capabilityRow('tools.mcp__docs__deep__search', { name: 'deep search', source: { kind: 'mcp', servers: ['docs', 'docs__deep'] } }),
+    // A payload written before that list travelled said `unknown`: it still states that
+    // several servers match, and it never denies that a source exists.
+    capabilityRow('tools.mcp__legacy__search', { name: 'legacy search', source: { kind: 'unknown' } }),
+  ]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), locale })
+  const copy = SETTINGS_COPY[locale]
+  const sourceCell = id => view.baseElement.querySelector(`[data-capability-id="${id}"] .ptcPlusCapabilitySource`).textContent
+  expect(sourceCell('tools.mcp__docs__deep__search')).toBe(['docs', 'docs__deep'].join(copy['capabilities.source.separator']))
+  expect(sourceCell('tools.mcp__docs__search')).toBe('docs')
+  expect(sourceCell('tools.mcp__legacy__search')).toBe(copy['capabilities.source.multiple-servers'])
+  const text = view.baseElement.textContent.toLowerCase()
+  for (const word of ['未确认', 'unconfirmed', '未知', 'unknown']) expect(text).not.toContain(word.toLowerCase())
 })
 
 async function sessionControlsFixture({ read, run, bindingRun, sessionId = 'client-session', locale = 'en' } = {}) {
@@ -3641,7 +3749,7 @@ const sortableCapabilityDefaultIds = ['tools.a', 'tools.z', 'mcp.a', 'mcp.z', 's
 test.each([
   ['Capability', ['tools.a', 'skills.b', 'mcp.a', 'mcp.z', 'tools.missing', 'tools.z'], ['tools.z', 'tools.missing', 'mcp.a', 'mcp.z', 'skills.b', 'tools.a']],
   ['Type', ['mcp.a', 'mcp.z', 'tools.missing', 'skills.b', 'tools.a', 'tools.z'], ['tools.a', 'tools.z', 'skills.b', 'tools.missing', 'mcp.a', 'mcp.z']],
-  ['Source', ['mcp.a', 'skills.b', 'tools.a', 'tools.z', 'tools.missing', 'mcp.z'], ['mcp.z', 'tools.missing', 'tools.a', 'tools.z', 'skills.b', 'mcp.a']],
+  ['Source', ['mcp.a', 'skills.b', 'tools.a', 'tools.z', 'tools.missing', 'mcp.z'], ['mcp.z', 'tools.a', 'tools.z', 'tools.missing', 'skills.b', 'mcp.a']],
   ['Enabled', ['tools.z', 'tools.a', 'mcp.a', 'skills.b', 'tools.missing', 'mcp.z'], ['mcp.z', 'tools.a', 'mcp.a', 'skills.b', 'tools.missing', 'tools.z']],
   ['Context', ['mcp.a', 'tools.z', 'tools.missing', 'tools.a', 'mcp.z', 'skills.b'], ['mcp.z', 'skills.b', 'tools.a', 'tools.z', 'tools.missing', 'mcp.a']],
 ])('capability %s header cycles all visible rows through ascending descending and default', async (label, ascendingIds, descendingIds) => {

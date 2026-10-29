@@ -31,6 +31,7 @@ import { appendRunCodeCall, appendRunCodeResult } from './plugin-fixture.js'
 import * as ptcPlus from '../index.js'
 import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
+import { CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage } from '../internal/capability-selection.js'
 
 const signal = () => new AbortController().signal
 const session = (id, parentSession) => Session.create(id, [], {
@@ -566,6 +567,51 @@ test('the session catalogue and /capabilities list state the same ids for a sess
     'one read, one row set: the listing and the panel cannot state different ids')
   assert.equal(entries.every(entry => entry.saved !== undefined && entry.effective === undefined), true,
     'the listing states the saved column and no composition')
+})
+
+test('the session catalogue and /capabilities list state the same dimensions for one recorded choice', async t => {
+  // One read, two surfaces, one statement. The panel states availability and disclosure
+  // side by side, so a listing that compressed a row into one word would answer for the
+  // dimension it dropped: a session that recorded disclosure alone would read as having
+  // recorded nothing at all.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionProjectionRegistry(ctx)
+  ctx.agents.list = () => []
+  const events = [{ type: 'user/message', seq: 1, data: capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'tools.probe': { disclosure: 'full' } } }) }]
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: { cwd: process.cwd() }, cursor: events.length, events,
+    [Symbol.dispose]() {} }) })
+  const operations = new Map()
+  ctx.provide('ptcPlusRpc', { register(contract, handler) {
+    operations.set(contract.service, handler); return () => operations.delete(contract.service)
+  } })
+  let command
+  ctx.provide('commands', { register(definition) { command = definition; return () => {} } })
+  ctx.effect(() => ctx.tools.register(echo('probe')))
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
+    capabilityManagementEnabled: true,
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {},
+      items: { 'tools.probe': { disclosure: 'full' } },
+      allocation: { baseline: true, statistics: false, budget: true } }) }).await()
+  const sessionId = 'two-dimension-listing'
+  const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId }, signal())
+  assert.equal(panel.ok, true)
+  const row = panel.value.rows.find(item => item.id === 'tools.probe')
+  // The saved column states the rule the configuration states, and `automatic` for the
+  // dimension no rule decides; the session column states the disclosure this session
+  // recorded, and `inherit` for the availability it never decided.
+  assert.deepEqual(row.saved, { availability: 'automatic', disclosure: 'full' })
+  assert.deepEqual(row.session, { availability: 'inherit', disclosure: 'full' })
+  const listing = await command.handler({ commandId: 'two-dimension-list', rawInput: 'list tools probe',
+    agent: { session: { id: sessionId } }, signal: signal() })
+  assert.equal(listing.kind, 'success')
+  const [entry] = JSON.parse(listing.text).entries
+  assert.equal(entry.temporary.disclosure, 'full',
+    'the recorded disclosure is stated instead of the availability this session never recorded')
+  assert.deepEqual(entry.temporary, row.session, 'the listing answers the panel\'s recorded column')
+  assert.deepEqual(entry.saved, row.saved, 'the listing answers the panel\'s saved column')
 })
 
 test('settings catalog captures public MCP ownership before the first request without preparing plans or bindings', async t => {

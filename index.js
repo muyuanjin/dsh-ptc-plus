@@ -9,7 +9,6 @@
 import Schema from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
 import { createDirectSurfaceOwner } from './internal/direct-surface-owner.js'
-import { CAPABILITY_DISCLOSURES } from './internal/capability-policy.js'
 import { CapabilityStatisticsStore } from './internal/capability-statistics-store.js'
 import { createCapabilityEnvironment } from './internal/capability-environment.js'
 import { capabilityCommandReceipt } from './internal/capability-command-receipt.js'
@@ -127,20 +126,25 @@ function runCodeDefinitionFor(tools, scope) {
 /**
  * One catalogue row in the shape `/capabilities list` publishes.
  *
- * The command's table states one selection per column while a row states availability
- * and disclosure separately, so each column names the selection those two dimensions
- * already spell, and a rule that decides neither keeps the column's own undecided
- * word. No column reports the composition: the panel states supply, record and
- * evidence, and this listing is the same read rather than a second one that could
- * answer for what a runtime built.
+ * The command states the panel's two columns, so an entry carries the same
+ * statement the panel's column carries: exactly the dimensions that row decides,
+ * each naming the answer its own source gave. A dimension this session recorded
+ * no choice for stays stated as `inherit`, and one the saved configuration states
+ * no rule for stays stated as `automatic`. Compressing a row into one word would
+ * answer for the dimension it dropped — a record that decided disclosure but not
+ * availability would read as if the session had decided nothing. No column
+ * reports the composition: the panel states supply, record and evidence, and this
+ * listing is the same read rather than a second one that could answer for what a
+ * runtime built.
  */
 function capabilityListingEntry(row) {
-  const selection = (rule, undecided) => rule?.availability === 'closed' ? 'closed'
-    : rule?.availability === 'enabled' && CAPABILITY_DISCLOSURES.includes(rule.disclosure) ? rule.disclosure
-      : undecided
+  // A server decides availability only: its members carry disclosure, so the panel
+  // states one value for such a row and this listing states the same one.
+  const statement = column => row.kind === 'server' ? { availability: column.availability }
+    : { availability: column.availability, disclosure: column.disclosure }
   return { id: row.id, name: row.name, category: row.category, source: row.source,
     ...(typeof row.description === 'string' ? { description: row.description } : {}),
-    saved: selection(row.saved, 'automatic'), temporary: selection(row.session, 'inherit') }
+    saved: statement(row.saved), temporary: statement(row.session) }
 }
 
 /** Register the session-bound REPL runtime. */

@@ -139,14 +139,15 @@ function sourcePlan(message, id) {
   const snapshot = source.snapshot
   const generation = ['ptc-capability-environment/v1', 'ptc-capability-environment/v2', 'ptc-capability-environment/v3',
     'ptc-capability-environment/v4', 'ptc-capability-environment/v5'].indexOf(snapshot?.schema)
-  // Historical generations each had one planner generation for a given settings
-  // shape, so their plan schema is part of the record's identity. Generation 5
-  // records the plan words instead, and its plan schema follows from the recorded
-  // settings: the recomputation below proves the whole plan, which makes a separate
-  // schema guess both unnecessary and wrong (a v5 snapshot may carry context
-  // settings and therefore a v3 plan, or a closed plan and therefore a v2 one).
-  const expectedPlanSchema = generation === 2 ? 'ptc-capability-plan/v2'
-    : generation >= 3 && snapshot.settings.policy !== undefined ? 'ptc-capability-plan/v3' : 'ptc-capability-plan/v1'
+  // A historical generation planned with exactly one planner generation for the settings
+  // shape its schema records: a context generation (v4) always plans v3, a policy
+  // generation (v3) plans v2, and v1/v2 planned v1. Generation 5 records the plan words
+  // instead, and its plan schema follows from the recorded settings: the recomputation
+  // below proves the whole plan, which makes a separate schema guess both unnecessary and
+  // wrong (a v5 snapshot may carry context settings and therefore a v3 plan, or a closed
+  // plan and therefore a v2 one).
+  const expectedPlanSchema = generation >= 3 ? 'ptc-capability-plan/v3'
+    : generation === 2 ? 'ptc-capability-plan/v2' : 'ptc-capability-plan/v1'
   if (source.digest !== digest(snapshot) || generation < 0
     || !Array.isArray(snapshot.capabilities)
     || (generation < 4 && snapshot.plan?.schema !== expectedPlanSchema)) {
@@ -537,8 +538,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   /**
    * The Skill catalogue one supply view answers: a scope selects the viewing
    * agent's layers, a directory selects workspace-sensitive Skills. A view with no
-   * scope is the Host's own declaration, which is what a session without a runtime
-   * can still be told about.
+   * scope is the Host's own declaration; a session whose scope the Host no longer
+   * holds reads the face its record froze instead, because the layers that scope
+   * resolved cannot be recovered without it.
    */
   async function observeSkillsAt(target, signal) {
     if (!readSkills(ctx)?.snapshot) return { skills: [], complete: true }
@@ -1029,53 +1031,69 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
 
   /**
-   * The capability plan this session recorded, as its own log proves it.
+   * What the Host declares to one supply view.
    *
-   * The record is the session's own fact, so it is usable without a runtime. A
-   * damaged record proves no plan: the read reports the session's columns as
-   * unrecorded instead of failing a panel over a historical entry.
-   */
-  function recordedSnapshot(history, sessionId) {
-    if (!Array.isArray(history)) return undefined
-    const recorded = recordedPlan(history, sessionId)
-    if (recorded === undefined) return undefined
-    try {
-      return sourcePlan(recorded, sessionId)
-    } catch (failure) {
-      ctx.logger?.warn?.('ptc-plus: recorded capability plan is damaged', failure)
-      return undefined
-    }
-  }
-
-  /**
-   * What the Host declares exists, read without a session runtime.
+   * A view is named by the scope the caller supplies, and the same three sources
+   * answer it: prompt sections name the MCP servers and resource servers, the tool
+   * registry answers that scope's view of the tools, and the Skill catalogue answers
+   * the layers that scope resolves for a workspace directory. With an agent those
+   * sources answer this session's declaration — a preset registers its tools at agent
+   * scope, and only that scope resolves the Skill layers it selects. With no scope
+   * they answer the Host's own declaration, which is what a caller that names no
+   * session asks for.
    *
-   * The supply is the Host's own declaration: prompt sections name the MCP servers
-   * and resource servers, the tool registry answers the global view, and the Skill
-   * catalogue answers a workspace directory. None of that needs a refreshable
-   * agent, which is why a session that has none still has a catalogue to list. Each
-   * source is read on its own, so a source that could not be read names itself and
-   * the others keep their rows. `strict` keeps the write path's refusal: a caller
-   * that may not act on a partial answer gets the failure instead.
+   * `agent` is the scope handle and nothing else. It says which declaration to read;
+   * it is never asked whether the session is usable, and no runtime branch runs here.
+   * The observation flag keeps the public assembly passive even when a scope is named:
+   * it contributes that scope's sections without preparing or delivering anything.
    */
-  async function hostSupply({ cwd }, signal) {
+  async function hostSupply({ agent, cwd }, signal) {
+    const scope = agent === undefined ? {} : { agent, scope: agent }
     // One failure mode: a source that cannot be read fails this read. Partial rows
     // would be a screen that silently misses what exists, which no wording repairs.
     let sections = []
     if (typeof ctx.systemPrompt?.assemble === 'function') {
-      const assembly = await ctx.systemPrompt.assemble({ signal, ptcPlusCapabilityObservation: true })
+      const assembly = await ctx.systemPrompt.assemble({ ...scope, signal, ptcPlusCapabilityObservation: true })
       sections = Array.isArray(assembly?.sections) ? assembly.sections : []
       // Reading the sections is the MCP layer's own step. A section this build cannot
       // interpret fails here rather than being reported as a tool-registry failure.
       resourceServers(sections)
     }
-    const schemas = toolSchemasForAgent(undefined)
-    const skills = readSkills(ctx)?.snapshot === undefined ? undefined : await observeSkillsAt({ cwd, signal }, signal)
+    const schemas = toolSchemasForAgent(agent)
+    const skills = readSkills(ctx)?.snapshot === undefined ? undefined
+      : await observeSkillsAt({ ...scope, cwd, signal }, signal)
     const presentation = new Map()
-    const capabilities = await inventory(undefined, sections,
+    const capabilities = await inventory(agent, sections,
       { ...capabilityConfiguration(currentConfig), enabled: false, manual: { baseline: [], overrides: {} } },
       signal, presentation, undefined, undefined, { schemas, skills })
     return { capabilities, presentation }
+  }
+
+  /**
+   * The supply this session's own record froze.
+   *
+   * A session whose agent the Host no longer holds has no scope to observe, and the
+   * Host's own plane is not that session's face: the preset tools registered at agent
+   * scope and the Skill layers that scope resolved existed in that scope alone.
+   * The plan this session recorded is the statement of what it was supplied, and
+   * `snapshot.capabilities` is that statement. Name and source are taken from what the
+   * recorded capability itself carries: a tool names itself through its schema and its
+   * MCP owner, a Skill through its selector — the frozen contract records no provider
+   * bucket for it — and a resource row through the server it belongs to.
+   */
+  function frozenSupply(snapshot) {
+    const presentation = new Map()
+    for (const capability of snapshot.capabilities) {
+      const name = capability.schema?.name ?? capability.selector?.name
+        ?? capability.selector?.server ?? capability.id
+      const source = capability.mcpServer !== undefined ? { kind: 'mcp', server: capability.mcpServer }
+        : capability.mcpServerCandidates !== undefined ? { kind: 'mcp', servers: capability.mcpServerCandidates }
+          : { kind: capability.category === 'skill' ? 'skill'
+            : capability.category === CAPABILITY_INVENTORY_CATEGORIES.resource ? 'mcp' : 'host' }
+      presentation.set(capability.id, { name, source,
+        ...(capability.invocation === undefined ? {} : { invocation: capability.invocation }) })
+    }
+    return { capabilities: snapshot.capabilities, presentation }
   }
 
   /**
@@ -1143,7 +1161,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    * v2 rows: one per declared capability, one per declared MCP server.
    *
    * `description` is the Host's own one-line contract for the capability it declared.
-   * The panel states six columns and none of them is this text; the `/capabilities
+   * The panel states seven columns and none of them is this text; the `/capabilities
    * list` command still names what it found, and taking that line from the same row
    * keeps one supply read behind both surfaces.
    */
@@ -1203,7 +1221,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    */
   async function sessionLogOf(sessionId, signal) {
     const owned = typeof ctx.get === 'function' ? ctx.get('sessions')?.get?.(sessionId) : ctx.sessions?.get?.(sessionId)
-    const holder = (ctx.agents?.list?.() ?? []).find(agent => String(agent.session?.id ?? agent.id) === sessionId)
+    const holder = liveAgentFor(sessionId)
     const session = owned ?? holder?.session
     const query = sessionQueryService()
     // A Host without a projection service still has the session's own events.
@@ -1215,13 +1233,30 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
 
   /**
-   * The two permanent sources of one session catalogue: this session's own log and
-   * the Host's declaration for the directory its header names.
+   * The live agent that holds one session's scope, when the Host still holds it.
    *
-   * No session runtime produces either of them, so this read cannot tell a session
-   * with one from a session without one — which is the whole point: a difference
-   * here would have to be drawn on the screen somewhere. A failed source fails the
-   * whole read; a partial answer would be a screen that silently misses what exists.
+   * The agent is a scope handle and nothing else here: it names the declaration the
+   * supply read observes. This lookup never asks whether the session is usable, runs
+   * no maintenance branch and writes nothing — a session the Host no longer holds
+   * simply has no scope left to name.
+   */
+  function liveAgentFor(sessionId) {
+    return (ctx.agents?.list?.() ?? []).find(agent => String(agent.session?.id ?? agent.id) === sessionId)
+  }
+
+  /**
+   * One session catalogue's two sources: this session's own log and the supply it was
+   * declared.
+   *
+   * The supply is read in the session's own scope while the Host still holds that
+   * scope, because the Host's own plane is a different question and answers fewer rows
+   * than the session had. Once the scope is gone, the face this session's recorded
+   * plan froze is the only statement of what it was supplied. A session that recorded
+   * no plan, or one whose plan was composed while no capability feature required an
+   * inventory, has no supply this read can state, so the read fails and names the
+   * record it needed instead of answering with a face the session never had. A failed
+   * source fails the whole read; a partial answer would be a screen that silently
+   * misses what exists.
    */
   async function sessionCatalogSupply(sessionId, signal) {
     signal?.throwIfAborted()
@@ -1238,7 +1273,25 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     }
     const events = Array.isArray(log.events) ? log.events : []
     const cwd = typeof log.header.cwd === 'string' ? log.header.cwd : undefined
-    const supply = await hostSupply({ cwd }, signal)
+    const agent = liveAgentFor(sessionId)
+    signal?.throwIfAborted()
+    let supply
+    if (agent !== undefined) supply = await hostSupply({ agent, cwd }, signal)
+    else {
+      const recorded = recordedPlan(events, sessionId)
+      if (recorded === undefined) {
+        throw new Error('ptc-plus: this session recorded no capability plan; a session with no live scope states the face its record froze')
+      }
+      const snapshot = sourcePlan(recorded, sessionId)
+      // A composition answers an empty `capabilities` two ways, and only one of them is a
+      // face. When an inventory was required the array is the face, empty or not. When none
+      // was — no capability feature was on — nothing was supplied to the model, so the record
+      // states no face at all and an empty table would claim the Host declared nothing.
+      if (!requiresCapabilityInventory(snapshot.settings)) {
+        throw new Error('ptc-plus: this session\'s recorded plan froze no capability inventory; a session with no live scope states the face its record froze, and this record holds none')
+      }
+      supply = frozenSupply(snapshot)
+    }
     signal?.throwIfAborted()
     return { events, supply }
   }
@@ -1618,9 +1671,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     },
     async describeSessionCatalog({ sessionId } = {}, signal) {
       // Three permanent sources, no fourth. The session's own log is the record, the
-      // Host's declaration is the supply, and the saved configuration is the saved
-      // column. `sessionCatalogSupply` reads the first two for the one session this
-      // request names.
+      // supply of this session's own plane is the declared face, and the saved
+      // configuration is the saved column. `sessionCatalogSupply` reads the first two
+      // for the one session this request names.
       const { events, supply } = await sessionCatalogSupply(sessionId, signal)
       const configuration = capabilityConfiguration(currentConfig)
       const rows = capabilityRows(supply.capabilities, supply.presentation, configuration,
@@ -1660,12 +1713,13 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
      * The settings page's list of what this Host declares.
      *
      * The settings page edits global policy, so its list states supply and nothing
-     * else: no agent, no composed plan, no installed value. A caller that names a
-     * session gets that session's workspace directory, read from the header through
-     * the same log and supply the panel reads; a caller that names none gets the
-     * Host's own declaration without a workspace directory. Neither branch asks
-     * whether a runtime exists, so a live and a cold session list the same entries,
-     * and neither can fail merely because no session is running.
+     * else: no composed plan, no installed value. A caller that names a session gets
+     * that session's own supply — its scope's declaration while the Host still holds
+     * the agent, and the face its recorded plan froze when it does not, both read
+     * through the same entry the panel reads. A caller that names none gets the
+     * Host's own declaration without a workspace directory: that list is the saved
+     * configuration's subject, not any session's face, so it is never substituted for
+     * one. Neither branch asks whether a runtime exists.
      *
      * Skill invocation eligibility travels with the entry because it belongs to the
      * declaration the Host just made; this read sees one workspace, so it never has

@@ -1164,7 +1164,12 @@ test('registered capability command lists public inventory and records the choic
   const { readCapabilityCommandReceipt } = await import('../internal/capability-command-receipt.js')
   const { capabilitySelectionOf } = await import('../internal/capability-selection.js')
   let command
-  const state = fixture({ capabilityManagementEnabled: true }, { commands: { register(definition) { command = definition; return () => {} } },
+  // The catalogue read names a session and asks the Host which agent holds it, so this
+  // fixture's registry reports the same agent the command is invoked with. A session no
+  // agent holds states the face its own record froze, and this one records none.
+  const liveAgents = []
+  const state = fixture({ capabilityManagementEnabled: true }, { agents: { list: () => liveAgents },
+    commands: { register(definition) { command = definition; return () => {} } },
     schemas: [{ name: 'probe', description: 'Ordinary probe', parameters: {} },
       { name: 'mcp__docs__search', description: 'Search docs', parameters: {} },
       { name: 'read_mcp_resource', description: 'Read MCP resource', parameters: {} }] })
@@ -1175,6 +1180,7 @@ test('registered capability command lists public inventory and records the choic
     { name: 'mcp:docs', text: 'Docs server owner instructions' }]
   const session = appendOnlySession('command-choices')
   const agent = ptcAgent('command-choices', session)
+  liveAgents.push(agent)
   const signal = new AbortController().signal
   agent.signal = signal; agent.runMaintenance = operation => operation(signal)
   await state.assemble({ sections: hostSections, contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })

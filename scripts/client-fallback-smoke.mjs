@@ -641,16 +641,17 @@ if (values.list) {
         const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
         assert.equal(await items.count(), 84, 'one row per supplied capability and MCP source')
-        // Six columns, one owner each. A header states its column and offers nothing
+        // Seven columns, one owner each. A header states its column and offers nothing
         // else: the v1 table's sort controls are gone, so the supply order is the only
         // order this table states.
         const table = panel.locator('.ptcPlusSessionCapabilityTable')
         assert.equal(await table.count(), 1)
         assert.equal(await table.locator('[data-capability-id]').count(), 84, 'every capability row lives in the one table')
         const columnKeys = ['capabilities.column.name', 'capabilities.typesColumn', 'capabilities.sourceColumn',
-          'capabilities.column.saved', 'capabilities.column.session', 'capabilities.column.evidence']
+          'capabilities.column.saved', 'capabilities.column.availability', 'capabilities.column.disclosure',
+          'capabilities.column.evidence']
         assert.deepEqual(await table.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
-          'the table states its six columns in the documented order')
+          'the table states its seven columns in the documented order')
         assert.equal(await panel.locator('[aria-sort]').count(), 0, 'no header claims a sort state')
         assert.equal(await panel.locator('[role=columnheader] button').count(), 0, 'no header carries a sort control')
         // The Host supplies the binding document whether or not this session used any
@@ -705,6 +706,19 @@ if (values.list) {
         assert.equal(await disclosureOf('tools.probe0').count(), 1)
         assert.equal(await availabilityOf('mcpServers.docs').count(), 1)
         assert.equal(await disclosureOf('mcpServers.docs').count(), 0, 'a server states no disclosure of its own')
+        // Each dimension owns a cell of its own: the header names the decision and the
+        // cell holds only that one control, so no unlabelled pair shares a cell.
+        const decisionsIn = (id, className) => panel.locator(`[data-capability-id="${id}"] .${className}`)
+          .locator('[role=combobox], .ptcPlusBindingToggle')
+        assert.equal(await decisionsIn('tools.probe0', 'ptcPlusSessionCapabilityAvailability').count(), 1,
+          'the availability cell carries only the availability decision')
+        assert.equal(await decisionsIn('tools.probe0', 'ptcPlusSessionCapabilityDisclosure').count(), 1,
+          'the disclosure cell carries only the disclosure decision')
+        assert.equal(await decisionsIn('mcpServers.docs', 'ptcPlusSessionCapabilityAvailability').count(), 1)
+        assert.equal(await decisionsIn('mcpServers.docs', 'ptcPlusSessionCapabilityDisclosure').count(), 0,
+          'a server row has no disclosure decision to state')
+        assert.equal(await cell('mcpServers.docs', 'ptcPlusSessionCapabilityDisclosure').innerText(), '',
+          'a server row leaves the disclosure cell empty instead of claiming a value')
         // A session that recorded nothing states `inherit`, and a recorded choice is
         // that session's own value: neither cell is blank or a denial.
         assert.equal(await availabilityOf('tools.probe0').innerText(), labels['capabilities.word.inherit'])
@@ -855,12 +869,13 @@ if (values.list) {
           const id = `tools.probe${index}`
           const availability = labels['capabilities.policy.availabilityFor'].replace('{name}', id)
           const disclosure = labels['capabilities.disclosureFor'].replace('{name}', id)
-          // Align the row's decision line with the list's own end: on the shortest
-          // captured surface the sticky header overlaps the scrollport's first pixels,
-          // and a control hidden beneath it could not be operated at all.
-          const alignSessionLine = () => panel.locator(`[data-capability-id="${id}"] .ptcPlusSessionCapabilitySession`)
+          // Align the whole row with the list's own end: on the shortest captured
+          // surface the sticky header overlaps the scrollport's first pixels, and a
+          // control hidden beneath it could not be operated at all. Both decision cells
+          // belong to the row, so they move into view together.
+          const alignRow = () => panel.locator(`[data-capability-id="${id}"]`)
             .evaluate(element => element.scrollIntoView({ block: 'end' }))
-          await alignSessionLine()
+          await alignRow()
           await chooseSelect(panel, availability, labels['capabilities.word.closed'])
           await page.waitForFunction(({ name, aria, text }) => {
             const trigger = document.querySelector(`[data-capability-id="${name}"] [aria-label="${aria}"]`)
@@ -868,7 +883,7 @@ if (values.list) {
           }, { name: id, aria: availability, text: labels['capabilities.word.closed'] })
           assert.equal(await page.evaluate(() => window.sessionCapabilityCalls.at(-1).input),
             `set session ${id} availability closed`, 'the availability control writes only its own dimension')
-          await alignSessionLine()
+          await alignRow()
           await chooseSelect(panel, disclosure, labels['capabilities.word.full'])
           await page.waitForFunction(({ name, aria, text }) => {
             const trigger = document.querySelector(`[data-capability-id="${name}"] [aria-label="${aria}"]`)

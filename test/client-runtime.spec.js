@@ -2187,7 +2187,7 @@ test('shared Select preserves empty and arbitrary string values, skips disabled 
   expect(trigger.disabled).toBe(true)
 })
 
-test('the session capability panel states the six contract columns from the v2 catalogue', async () => {
+test('the session capability panel states the seven contract columns from the v2 catalogue', async () => {
   const rows = [
     capabilityRow('tools.probe', { saved: { availability: 'closed', disclosure: 'on-demand' },
       session: { availability: 'enabled', disclosure: 'full' }, evidence: true }),
@@ -2201,23 +2201,27 @@ test('the session capability panel states the six contract columns from the v2 c
   const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
   const table = panel.querySelector('.ptcPlusSessionCapabilityTable')
   expect([...table.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Name', 'Type', 'Source', 'Saved', 'This session', 'Evidence'])
+    .toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
   const row = id => table.querySelector(`[data-capability-id="${id}"]`)
-  expect([...row('tools.probe').children]).toHaveLength(6)
+  expect([...row('tools.probe').children]).toHaveLength(7)
   expect(row('tools.probe').querySelector('.ptcPlusCapabilitySource').textContent).toBe('DSH tools')
   expect(row('tools.probe').querySelector('.ptcPlusCapabilityBadge').textContent).toBe('Tools')
   // The saved column is the configuration's own value, with no control of its own.
   const saved = row('tools.probe').querySelector('.ptcPlusSessionCapabilitySaved')
   expect(saved.querySelector('button, [role="combobox"], input, select')).toBeNull()
-  // The session column carries the row's decisions: availability and, for a
-  // capability, disclosure.
-  const session = row('tools.probe').querySelector('.ptcPlusSessionCapabilitySession')
-  expect([...session.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
-    .toEqual(['Availability for tools.probe', 'Disclosure for tools.probe'])
+  // Each dimension owns the cell the header names, so a cell holds exactly one control
+  // instead of two unlabelled ones sharing one.
+  const availability = row('tools.probe').querySelector('.ptcPlusSessionCapabilityAvailability')
+  const disclosure = row('tools.probe').querySelector('.ptcPlusSessionCapabilityDisclosure')
+  expect([...availability.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
+    .toEqual(['Availability for tools.probe'])
+  expect([...disclosure.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
+    .toEqual(['Disclosure for tools.probe'])
   // A server row decides availability only, and its saved column states that one value.
   const server = row('mcpServers.docs')
   expect([...server.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
     .toEqual(['Availability for mcpServers.docs'])
+  expect(server.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('')
   expect(server.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('Automatic')
   expect(server.querySelector('.ptcPlusSessionCapabilityEvidence').textContent).toBe('')
   // Evidence is a mark where a completed execution proved the capability, and an
@@ -2274,6 +2278,14 @@ test('binding rows record their adoption through the `/binding` command, includi
   const group = view.baseElement.querySelector('.ptcPlusBindingGroup')
   expect(group.querySelectorAll('[data-binding-id]')).toHaveLength(3)
   const toggle = id => group.querySelector(`[data-binding-id="${id}"] .ptcPlusBindingToggle`)
+  // A binding row makes one decision, so it keeps one control: adoption owns the
+  // availability cell, and the disclosure cell stays empty because a binding states no
+  // disclosure of its own.
+  const alphaRow = group.querySelector('[data-binding-id="alpha"]')
+  expect(alphaRow.querySelectorAll('[role="combobox"], .ptcPlusBindingToggle')).toHaveLength(1)
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilityAvailability .ptcPlusBindingToggle')).not.toBeNull()
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('')
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('')
   expect(toggle('alpha').textContent).toBe('Use')
   expect(toggle('beta').textContent).toBe('Do not use')
   // A binding row decides one thing: two states, and a third word for a record the
@@ -2289,14 +2301,14 @@ test('binding rows record their adoption through the `/binding` command, includi
   expect(view.baseElement.textContent).toContain('adoption recorded: use gamma')
 })
 
-test('the binding group is always rendered, with the same six columns and possibly no rows', async () => {
+test('the binding group is always rendered, with the same seven columns and possibly no rows', async () => {
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog([capabilityRow('tools.probe')]) })
   const group = view.baseElement.querySelector('.ptcPlusBindingGroup')
   expect(group).not.toBeNull()
   expect(within(group).getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
   expect(group.querySelectorAll('[data-binding-id]')).toHaveLength(0)
   expect([...group.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Name', 'Type', 'Source', 'Saved', 'This session', 'Evidence'])
+    .toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
   // An empty group is an empty table, not a sentence explaining its absence.
   expect(group.querySelector('.ptcPlusSessionCapabilityMessage')).toBeNull()
 })
@@ -8208,7 +8220,7 @@ test('session capability rows keep the supplied order, expose no sort control an
   expect(order()).toEqual(['tools.zulu', 'tools.bravo', 'skills.alpha', 'mcpServers.docs'])
   // Every header states its column and offers no sorting control.
   const headers = [...table.querySelector('.ptcPlusSessionCapabilityColumns').children]
-  expect(headers.map(header => header.textContent)).toEqual(['Name', 'Type', 'Source', 'Saved', 'This session', 'Evidence'])
+  expect(headers.map(header => header.textContent)).toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
   for (const header of headers) {
     expect(header.querySelector('button')).toBeNull()
     expect(header.getAttribute('aria-sort')).toBeNull()

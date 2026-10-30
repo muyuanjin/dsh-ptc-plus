@@ -31,6 +31,7 @@ import { appendRunCodeCall, appendRunCodeResult } from './plugin-fixture.js'
 import * as ptcPlus from '../index.js'
 import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
+import { CAPABILITY_PLAN_FORM, createCapabilityEnvironment } from '../internal/capability-environment.js'
 import { CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage } from '../internal/capability-selection.js'
 
 const signal = () => new AbortController().signal
@@ -61,6 +62,36 @@ function host(t, mode = 'native', run = async () => ({ logs: [], value: null }))
   t.after(() => scope.dispose())
   return { ctx, agent }
 }
+
+/**
+ * One capability plan message, composed the way a session records one.
+ *
+ * A session the Host no longer holds is stated by the plan its log holds, so a test
+ * that reads such a session records one first: the environment composes it from the
+ * declarations this fixture Host makes, and the log carries the message a step would
+ * have accepted.
+ */
+async function recordedPlanMessage(t, { sessionId, schemas, sections = [] }) {
+  const session = Session.create(sessionId)
+  const agent = { id: session.id, session, signal: signal() }
+  const env = createCapabilityEnvironment({
+    ctx: { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections }) } },
+    sessionHistoryForAgent: async () => ({ events: session.snapshotEvents() }),
+    config: { capabilityManagementEnabled: true, capabilityBaseline: '[]', capabilityOverrides: '{}',
+      capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}',
+      capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096, capabilityRecoveryBytes: 4096, modelPreviewTokens: 128 },
+    toolSchemasForAgent: () => schemas.map(name => ({ name, description: `Complete owner description for ${name}.`,
+      parameters: {}, output: { type: 'string' } })),
+  })
+  t.after(() => env.dispose())
+  await env.prepare(agent, sections)
+  const decision = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const plan = decision.messages.find(message => message.source?.form === CAPABILITY_PLAN_FORM)
+  assert.ok(plan, 'the fixture session must record a capability plan')
+  return plan
+}
+
+const planEvent = message => ({ type: 'user/message', seq: 0, data: message })
 
 for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, false], [true, true]]) {
   test(`PTC delegates through injected Host spawn and fork tools with statistics ${statisticsEnabled ? 'enabled' : 'disabled'}${incompleteSkills ? ' and incomplete Skill discovery after child completion' : ''}`, async t => {
@@ -514,8 +545,11 @@ test('session catalog reports a globally enabled binding entry as a v2 row throu
   new AgentRegistry(ctx)
   new SessionProjectionRegistry(ctx)
   ctx.agents.list = () => []
-  ctx.provide('sessionQuery', { observeSession: async () => ({ header: {}, cursor: 0, events: [],
-    [Symbol.dispose]() {} }) })
+  // The session is cold, so its supply is the plan its log holds; this test states the
+  // binding rows, so the recorded plan declares no capability.
+  const plan = await recordedPlanMessage(t, { sessionId: 'entry-binding-session', schemas: [] })
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: { cwd: process.cwd() }, cursor: 1,
+    events: [planEvent(plan)], [Symbol.dispose]() {} }) })
   const operations = new Map()
   ctx.provide('ptcPlusRpc', { register(contract, handler) {
     operations.set(contract.service, handler); return () => operations.delete(contract.service)
@@ -535,15 +569,22 @@ test('session catalog reports a globally enabled binding entry as a v2 row throu
 })
 
 test('the session catalogue and /capabilities list state the same ids for a session with no live runtime', async t => {
-  // Both surfaces answer one read: the session's log, the Host's declaration and the
-  // saved configuration. Neither may need a live agent, so the falsification is
-  // structural — this Host has no agent at all, and the two surfaces still agree.
+  // Both surfaces answer one read: the session's log, the supply it was declared and the
+  // saved configuration. This Host holds no agent at all, so the supply is the face the
+  // session's recorded plan froze — and the two surfaces still agree id for id, in the
+  // same order, because both project one row set.
+  const sessionId = 'cold-capability-list'
+  const session = Session.create(sessionId)
+  // The recorded plan names a tool this Host's own tool registry does not declare, so a
+  // cold read that answered with the Host plane instead of the record would state a
+  // smaller face and fail the id comparison below.
+  const plan = await recordedPlanMessage(t, { sessionId, schemas: ['probe', 'preset_only'] })
   const { ctx } = host(t, 'ptc')
   new AgentRegistry(ctx)
   new SessionProjectionRegistry(ctx)
   ctx.agents.list = () => []
-  ctx.provide('sessionQuery', { observeSession: async () => ({ header: { cwd: process.cwd() }, cursor: 0, events: [],
-    [Symbol.dispose]() {} }) })
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: session.header, cursor: 0,
+    events: [planEvent(plan)], [Symbol.dispose]() {} }) })
   const operations = new Map()
   ctx.provide('ptcPlusRpc', { register(contract, handler) {
     operations.set(contract.service, handler); return () => operations.delete(contract.service)
@@ -553,18 +594,17 @@ test('the session catalogue and /capabilities list state the same ids for a sess
   ctx.effect(() => ctx.tools.register(echo('probe')))
   await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
     capabilityManagementEnabled: true }).await()
-  const sessionId = 'cold-capability-list'
   const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId }, signal())
   assert.equal(panel.ok, true)
-  assert.deepEqual(panel.value.rows.map(row => row.id), ['tools.probe'])
+  assert.deepEqual(panel.value.rows.map(row => row.id), ['tools.probe', 'tools.preset_only'])
   // The command receives an agent handle because the Host calls commands that way; it
   // names a session and asks the catalogue for nothing else.
   const listing = await command.handler({ commandId: 'cold-capability-list', rawInput: 'list all',
     agent: { session: { id: sessionId } }, signal: signal() })
   assert.equal(listing.kind, 'success')
   const entries = JSON.parse(listing.text).entries
-  assert.deepEqual(entries.map(entry => entry.id).sort(), panel.value.rows.map(row => row.id).sort(),
-    'one read, one row set: the listing and the panel cannot state different ids')
+  assert.deepEqual(entries.map(entry => entry.id), panel.value.rows.filter(row => row.kind !== 'binding').map(row => row.id),
+    'one read, one row set: the listing and the panel state the same ids in the same order')
   assert.equal(entries.every(entry => entry.saved !== undefined && entry.effective === undefined), true,
     'the listing states the saved column and no composition')
 })
@@ -574,13 +614,18 @@ test('the session catalogue and /capabilities list state the same dimensions for
   // side by side, so a listing that compressed a row into one word would answer for the
   // dimension it dropped: a session that recorded disclosure alone would read as having
   // recorded nothing at all.
+  const sessionId = 'two-dimension-listing'
+  const session = Session.create(sessionId)
+  // The record carries a tool the Host's registry does not declare: the row set below
+  // can only come from the frozen plan.
+  const plan = await recordedPlanMessage(t, { sessionId, schemas: ['probe', 'preset_only'] })
+  const events = [planEvent(plan), { type: 'user/message', seq: 1, data: capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'tools.probe': { disclosure: 'full' } } }) }]
   const { ctx } = host(t, 'ptc')
   new AgentRegistry(ctx)
   new SessionProjectionRegistry(ctx)
   ctx.agents.list = () => []
-  const events = [{ type: 'user/message', seq: 1, data: capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
-    choices: { 'tools.probe': { disclosure: 'full' } } }) }]
-  ctx.provide('sessionQuery', { observeSession: async () => ({ header: { cwd: process.cwd() }, cursor: events.length, events,
+  ctx.provide('sessionQuery', { observeSession: async () => ({ header: session.header, cursor: events.length, events,
     [Symbol.dispose]() {} }) })
   const operations = new Map()
   ctx.provide('ptcPlusRpc', { register(contract, handler) {
@@ -595,7 +640,6 @@ test('the session catalogue and /capabilities list state the same dimensions for
       defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {},
       items: { 'tools.probe': { disclosure: 'full' } },
       allocation: { baseline: true, statistics: false, budget: true } }) }).await()
-  const sessionId = 'two-dimension-listing'
   const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId }, signal())
   assert.equal(panel.ok, true)
   const row = panel.value.rows.find(item => item.id === 'tools.probe')
@@ -612,6 +656,32 @@ test('the session catalogue and /capabilities list state the same dimensions for
     'the recorded disclosure is stated instead of the availability this session never recorded')
   assert.deepEqual(entry.temporary, row.session, 'the listing answers the panel\'s recorded column')
   assert.deepEqual(entry.saved, row.saved, 'the listing answers the panel\'s saved column')
+})
+
+test('a capability observation assembles the session scope without preparing the transport', async t => {
+  // A live session's declaration is read through the public assembly, so that read must
+  // stay passive: it contributes the scope's sections and leaves the model-facing
+  // transport exactly as the Host published it. Opening a read may not install or
+  // re-apply the runtime bridge.
+  const { ctx, agent } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  ctx.agents.list = () => []
+  const operations = new Map()
+  ctx.provide('ptcPlusRpc', { register(contract, handler) {
+    operations.set(contract.service, handler); return () => operations.delete(contract.service)
+  } })
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false,
+    capabilityManagementEnabled: true }).await()
+  // The session becomes live only after the plugin installed, so the read below is the
+  // first assembly that could prepare this transport.
+  ctx.agents.list = () => [agent]
+  const definition = ctx.tools.get('run_code', agent)
+  assert.ok(definition, 'the ptc-mode Host publishes the reserved transport')
+  const projection = definition.output.presentationMeta
+  const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId: agent.session.id }, signal())
+  assert.equal(panel.ok, true)
+  assert.equal(definition.output.presentationMeta, projection,
+    'the observation must not re-apply the model-facing transport projection')
 })
 
 test('settings catalog captures public MCP ownership before the first request without preparing plans or bindings', async t => {

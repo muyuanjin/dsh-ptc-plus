@@ -1600,12 +1600,15 @@ export function createCapabilityRefreshView(React, commands) {
  */
 export function createSessionCapabilityControlsView(React, { commands, bindingCommands, Modal, Select, inspectSessionCatalog }) {
   const h = React.createElement
-  // The six columns, in the order §3 fixes them. The binding group repeats them so
-  // both groups answer the same questions in the same places.
+  // The seven columns, in the order §3 fixes them. The binding group repeats them so
+  // both groups answer the same questions in the same places. Each column names one
+  // decision, so a dimension's control owns a labelled cell instead of sharing an
+  // unlabelled one with another dimension's control.
   const COLUMNS = Object.freeze(['capabilities.column.name', 'capabilities.typesColumn', 'capabilities.sourceColumn',
-    'capabilities.column.saved', 'capabilities.column.session', 'capabilities.column.evidence'])
-  // §4 vocabulary. `inherit` is the session column's own word for a session that
-  // recorded nothing, so no cell has to be blank or carry a denial.
+    'capabilities.column.saved', 'capabilities.column.availability', 'capabilities.column.disclosure',
+    'capabilities.column.evidence'])
+  // §4 vocabulary. `inherit` is the availability and disclosure columns' own word for
+  // a session that recorded nothing, so no cell has to be blank or carry a denial.
   const AVAILABILITY_CHOICES = Object.freeze(['enabled', 'closed', 'automatic', 'inherit'])
   const DISCLOSURE_CHOICES = Object.freeze(['host', 'full', 'on-demand', 'adaptive', 'automatic', 'inherit'])
   const DIMENSIONS = Object.freeze(['availability', 'disclosure'])
@@ -1779,21 +1782,27 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
     // replaces it, which is the only way the row can leave that state.
     const writeAdoption = row => void record(bindingCommands,
       `${adoptionOf(row) === 'use' ? 'skip' : 'use'} ${row.id}`, row.id)
-    const sessionCell = row => {
-      if (row.kind === 'binding') {
-        const state = adoptionOf(row)
-        return h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': state,
-          'aria-pressed': state === 'use' ? 'true' : 'false', 'aria-busy': writing.includes(row.id) ? 'true' : undefined,
-          onClick: () => writeAdoption(row) }, t(ADOPTION_WORDS[state]))
-      }
-      return DIMENSIONS.map(dimension => dimension === 'disclosure' && row.kind !== 'capability' ? null
-        : h(Select, { key: dimension,
-          label: dimension === 'availability' ? t('capabilities.policy.availabilityFor', { name: row.id })
-            : t('capabilities.disclosureFor', { name: row.id }),
-          value: dimension === 'availability' ? recordedAvailability(row) : recordedDisclosure(row),
-          options: choiceOptions(dimension),
-          onChange: value => writeChoice(row, dimension, value) }))
-    }
+    // One decision, one cell — and the header names it. The availability column carries
+    // the control that decides whether this session can use the row: a capability's and
+    // a service's availability, and a binding's adoption, which is the same question
+    // asked of the binding document. The disclosure column carries the control a
+    // capability row decides; a service and a binding have no disclosure of their own,
+    // so that cell states nothing rather than a denial or another row's answer.
+    const availabilityCell = row => h('div', { role: 'cell', className: 'ptcPlusSessionCapabilityAvailability' },
+      row.kind === 'binding'
+        ? h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': adoptionOf(row),
+          'aria-pressed': adoptionOf(row) === 'use' ? 'true' : 'false',
+          'aria-busy': writing.includes(row.id) ? 'true' : undefined,
+          onClick: () => writeAdoption(row) }, t(ADOPTION_WORDS[adoptionOf(row)]))
+        : h(Select, { label: t('capabilities.policy.availabilityFor', { name: row.id }),
+          value: recordedAvailability(row), options: choiceOptions('availability'),
+          onChange: value => writeChoice(row, 'availability', value) }))
+    const disclosureCell = row => row.kind === 'capability'
+      ? h('div', { role: 'cell', className: 'ptcPlusSessionCapabilityDisclosure' },
+        h(Select, { label: t('capabilities.disclosureFor', { name: row.id }),
+          value: recordedDisclosure(row), options: choiceOptions('disclosure'),
+          onChange: value => writeChoice(row, 'disclosure', value) }))
+      : h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityDisclosure' })
     const renderRow = row => h('div', { key: row.id, role: 'row', className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem',
       'data-capability-id': row.id, 'data-kind': row.kind,
       ...(row.kind === 'binding' ? { 'data-binding-id': row.id, 'data-binding-state': adoptionOf(row) } : {}) },
@@ -1813,7 +1822,8 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
         t(`capabilities.type.${badgeOf(row)}`)),
       h('span', { role: 'cell', className: 'ptcPlusCapabilitySource' }, sourceText(row)),
       h('span', { role: 'cell', className: 'ptcPlusSessionCapabilitySaved' }, savedText(row)),
-      h('div', { role: 'cell', className: 'ptcPlusSessionCapabilitySession' }, sessionCell(row)),
+      availabilityCell(row),
+      disclosureCell(row),
       h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityEvidence', 'data-proven': row.evidence === true ? 'true' : 'false' },
         row.evidence === true ? t('capabilities.word.proven') : null))
     const columnsRow = () => h('div', { className: 'ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns', role: 'row' },

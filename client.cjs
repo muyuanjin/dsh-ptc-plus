@@ -11524,7 +11524,8 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
     "capabilities.typesColumn",
     "capabilities.sourceColumn",
     "capabilities.column.saved",
-    "capabilities.column.session",
+    "capabilities.column.availability",
+    "capabilities.column.disclosure",
     "capabilities.column.evidence"
   ]);
   const AVAILABILITY_CHOICES = Object.freeze(["enabled", "closed", "automatic", "inherit"]);
@@ -11663,26 +11664,33 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       `${adoptionOf(row) === "use" ? "skip" : "use"} ${row.id}`,
       row.id
     );
-    const sessionCell = (row) => {
-      if (row.kind === "binding") {
-        const state = adoptionOf(row);
-        return h("button", {
-          type: "button",
-          className: "ptcPlusBindingToggle",
-          "data-kind": state,
-          "aria-pressed": state === "use" ? "true" : "false",
-          "aria-busy": writing.includes(row.id) ? "true" : void 0,
-          onClick: () => writeAdoption(row)
-        }, t2(ADOPTION_WORDS[state]));
-      }
-      return DIMENSIONS2.map((dimension) => dimension === "disclosure" && row.kind !== "capability" ? null : h(Select2, {
-        key: dimension,
-        label: dimension === "availability" ? t2("capabilities.policy.availabilityFor", { name: row.id }) : t2("capabilities.disclosureFor", { name: row.id }),
-        value: dimension === "availability" ? recordedAvailability(row) : recordedDisclosure(row),
-        options: choiceOptions(dimension),
-        onChange: (value) => writeChoice(row, dimension, value)
-      }));
-    };
+    const availabilityCell = (row) => h(
+      "div",
+      { role: "cell", className: "ptcPlusSessionCapabilityAvailability" },
+      row.kind === "binding" ? h("button", {
+        type: "button",
+        className: "ptcPlusBindingToggle",
+        "data-kind": adoptionOf(row),
+        "aria-pressed": adoptionOf(row) === "use" ? "true" : "false",
+        "aria-busy": writing.includes(row.id) ? "true" : void 0,
+        onClick: () => writeAdoption(row)
+      }, t2(ADOPTION_WORDS[adoptionOf(row)])) : h(Select2, {
+        label: t2("capabilities.policy.availabilityFor", { name: row.id }),
+        value: recordedAvailability(row),
+        options: choiceOptions("availability"),
+        onChange: (value) => writeChoice(row, "availability", value)
+      })
+    );
+    const disclosureCell = (row) => row.kind === "capability" ? h(
+      "div",
+      { role: "cell", className: "ptcPlusSessionCapabilityDisclosure" },
+      h(Select2, {
+        label: t2("capabilities.disclosureFor", { name: row.id }),
+        value: recordedDisclosure(row),
+        options: choiceOptions("disclosure"),
+        onChange: (value) => writeChoice(row, "disclosure", value)
+      })
+    ) : h("span", { role: "cell", className: "ptcPlusSessionCapabilityDisclosure" });
     const renderRow = (row) => h(
       "div",
       {
@@ -11722,7 +11730,8 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       ),
       h("span", { role: "cell", className: "ptcPlusCapabilitySource" }, sourceText(row)),
       h("span", { role: "cell", className: "ptcPlusSessionCapabilitySaved" }, savedText(row)),
-      h("div", { role: "cell", className: "ptcPlusSessionCapabilitySession" }, sessionCell(row)),
+      availabilityCell(row),
+      disclosureCell(row),
       h(
         "span",
         { role: "cell", className: "ptcPlusSessionCapabilityEvidence", "data-proven": row.evidence === true ? "true" : "false" },
@@ -40526,7 +40535,7 @@ var CLIENT_CSS = `
 
 .ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{box-sizing:border-box;width:min(1180px,calc(100vw - 48px));height:min(800px,calc(100dvh - 48px));max-height:100%;max-width:100%;display:flex;flex-direction:column;gap:0;padding:0;border-radius:16px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff));color:var(--dsw-alias-label-primary,#18191c);font:13px/20px var(--dsw-font-family,system-ui,sans-serif)}
 .ptcPlusSessionCapabilityModal>div{min-height:0}
-.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns,.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(140px,1.3fr) 62px minmax(75px,.75fr) minmax(86px,.8fr) minmax(190px,1.5fr) minmax(90px,.6fr);gap:10px;padding:10px 12px}
+.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns,.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(140px,1.3fr) 62px minmax(75px,.7fr) minmax(84px,.7fr) minmax(96px,.9fr) minmax(96px,.9fr) minmax(90px,.55fr);gap:10px;padding:10px 12px}
 .ptcPlusSessionCapabilityColumns{position:sticky;top:0;z-index:1;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusSessionCapabilityMessage{box-sizing:border-box;margin:0;padding:16px 24px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .ptcPlusSessionCapabilityHead{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}
@@ -40534,16 +40543,16 @@ var CLIENT_CSS = `
 .ptcPlusSessionCapabilityToolbar{display:grid;grid-template-columns:minmax(180px,1.6fr) repeat(3,minmax(120px,1fr));gap:10px;align-items:end;padding:12px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{min-width:0}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{min-width:0}.ptcPlusSessionCapabilityGroup h3{margin:0;padding:10px 12px 6px;color:var(--dsw-alias-label-secondary);font-size:11px;font-weight:600}.ptcPlusSessionCapabilityRow{box-sizing:border-box;min-height:54px;width:100%;border-left:3px solid transparent;font-size:12px}.ptcPlusSessionCapabilityName{min-width:0;color:var(--dsw-alias-label-primary);font-size:13px;overflow-wrap:anywhere}.ptcPlusSessionCapabilityRow button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.ptcPlusSessionCapabilityTable{min-width:0}.ptcPlusBindingGroup{margin-top:6px;padding-top:4px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusBindingGroup .ptcPlusBindingToggle{appearance:none;flex:none;padding:4px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:11px;cursor:pointer}.ptcPlusBindingGroup .ptcPlusBindingToggle[data-kind=use]{border-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary)}.ptcPlusBindingGroup .ptcPlusBindingToggle[data-kind=disabled]{color:var(--dsw-alias-label-secondary);cursor:default}.ptcPlusBindingGroup .ptcPlusBindingToggle:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}.ptcPlusBindingGroup .ptcPlusBindingToggle:disabled{cursor:default;opacity:.55}.ptcPlusBindingGroup .ptcPlusBindingToggle[aria-busy=true]{cursor:progress;opacity:.75}.ptcPlusSessionCapabilityFooter{display:flex;flex:none;align-items:center;justify-content:flex-end;gap:10px;padding:12px 24px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusSessionCapabilityFooter [role=status]{flex:0 1 auto;min-width:0;margin-right:auto;max-height:40px;overflow-y:auto;overscroll-behavior:contain;font-size:12px;overflow-wrap:anywhere}.ptcPlusSessionCapabilityFooter button{flex:none}
 .ptcPlusSessionCapabilityList{flex:1 1 0;min-width:0;min-height:0;padding:0;overflow:auto;overscroll-behavior:contain}
 .ptcPlusSessionCapabilitySaved{font-size:12px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
-.ptcPlusSessionCapabilitySession{display:flex;flex-wrap:nowrap;align-items:center;gap:6px;min-width:0}
-.ptcPlusSessionCapabilitySession .ptcPlusSelectTrigger{flex:1 1 0;min-width:0;width:auto}
+.ptcPlusSessionCapabilityAvailability,.ptcPlusSessionCapabilityDisclosure{display:flex;flex-wrap:nowrap;align-items:center;gap:6px;min-width:0}
+.ptcPlusSessionCapabilityAvailability .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityDisclosure .ptcPlusSelectTrigger{flex:1 1 0;min-width:0;width:auto}
 .ptcPlusSessionCapabilityEvidence{font-size:11px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .ptcPlusSessionCapabilityEvidence[data-proven=true]{color:var(--dsw-alias-state-success-primary,#1a7f37)}
 .ptcPlusBindingTable{min-width:0}
-@media(max-width:900px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySession{grid-column:1/-1;grid-row:4;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}}
+@media(max-width:900px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1/-1;grid-row:4;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:1/-1;grid-row:5;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}}
 @media(max-width:900px){.ptcPlusSessionCapabilityToolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{grid-column:1/-1}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{display:flex;gap:4px 12px;overflow-x:auto;overscroll-behavior:contain;padding-block:4px}.ptcPlusSessionCapabilityColumns>span{flex:none}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:4px 12px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:2}}
 @media(max-width:650px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);max-height:100%}.ptcPlusSessionCapabilityHead,.ptcPlusSessionCapabilityToolbar,.ptcPlusSessionCapabilityFooter{padding-left:14px;padding-right:14px}.ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}.ptcPlusSessionCapabilityToolbar{gap:5px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityFooter{flex-wrap:wrap;gap:6px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityFooter [role=status]{flex-basis:100%}.ptcPlusSessionCapabilityFooter button{flex:1;min-width:0;width:auto}}
-@media(max-height:480px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{height:calc(100dvh - 8px);max-height:100%}.ptcPlusSessionCapabilityHead{padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityHead h2{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityHead .ptcPlusDialogClose{width:22px;height:22px}.ptcPlusSessionCapabilityHead p{display:none}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter>span{display:none}.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior:contain;padding-block:1px}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{flex:0 0 145px;height:27px}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{flex:0 0 130px}.ptcPlusSessionCapabilityToolbar .ptcPlusSelectTrigger{height:27px}.ptcPlusSessionCapabilityToolbar>.ptcPlusButton{flex:none;min-height:28px;padding:2px 10px;font-size:11px;line-height:14px;white-space:nowrap}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{padding-block:0}.ptcPlusSessionCapabilityGroup h3{padding-top:0;padding-bottom:0;line-height:10px}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1.25fr) auto minmax(120px,1fr);min-height:32px;padding-block:3px;gap:0 10px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityName{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity code{display:none}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:1;padding-block:0}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySession{grid-column:3;grid-row:1;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySession .ptcPlusSelectTrigger{height:24px;padding:0 6px;font-size:11px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityFooter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px 6px}.ptcPlusSessionCapabilityFooter [role=status]{grid-column:1/-1;font-size:10px;line-height:11px;max-height:22px;overflow-y:auto}.ptcPlusSessionCapabilityFooter button{min-width:0;width:100%;min-height:28px;padding:3px 10px;font-size:10px;line-height:14px;white-space:normal}}
-@media(max-height:480px) and (max-width:650px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto auto;gap:0 8px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySession{grid-column:1/-1;grid-row:3}}
+@media(max-height:480px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{height:calc(100dvh - 8px);max-height:100%}.ptcPlusSessionCapabilityHead{padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityHead h2{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityHead .ptcPlusDialogClose{width:22px;height:22px}.ptcPlusSessionCapabilityHead p{display:none}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter>span{display:none}.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior:contain;padding-block:1px}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{flex:0 0 145px;height:27px}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{flex:0 0 130px}.ptcPlusSessionCapabilityToolbar .ptcPlusSelectTrigger{height:27px}.ptcPlusSessionCapabilityToolbar>.ptcPlusButton{flex:none;min-height:28px;padding:2px 10px;font-size:11px;line-height:14px;white-space:nowrap}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{padding-block:0}.ptcPlusSessionCapabilityGroup h3{padding-top:0;padding-bottom:0;line-height:10px}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1.25fr) auto minmax(120px,1fr);min-height:32px;padding-block:3px;gap:0 10px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityName{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity code{display:none}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:1;padding-block:0}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:3;grid-row:1;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:3;grid-row:2;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure .ptcPlusSelectTrigger{height:24px;padding:0 6px;font-size:11px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:1/-1;grid-row:3}.ptcPlusSessionCapabilityFooter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px 6px}.ptcPlusSessionCapabilityFooter [role=status]{grid-column:1/-1;font-size:10px;line-height:11px;max-height:22px;overflow-y:auto}.ptcPlusSessionCapabilityFooter button{min-width:0;width:100%;min-height:28px;padding:3px 10px;font-size:10px;line-height:14px;white-space:normal}}
+@media(max-height:480px) and (max-width:650px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:0 8px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:2;grid-row:3}}
 
 .ptcPlusCapabilityDialog.ptcPlusCapabilityDialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);display:flex;flex-direction:column;padding:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c)}
 .ptcPlusCapabilityDialog.ptcPlusCapabilityEditorDialog{width:min(640px,calc(100vw - 32px))}
@@ -41166,7 +41175,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.writeError": "\u5199\u5165\u88AB\u62D2\u7EDD\uFF1A{error}",
     "capabilities.column.name": "\u540D\u79F0",
     "capabilities.column.saved": "\u4FDD\u5B58",
-    "capabilities.column.session": "\u672C\u4F1A\u8BDD",
+    "capabilities.column.availability": "\u53EF\u7528\u6027",
+    "capabilities.column.disclosure": "\u62AB\u9732",
     "capabilities.column.evidence": "\u8BC1\u636E",
     "capabilities.word.enabled": "\u5F00\u542F",
     "capabilities.word.closed": "\u5173\u95ED",
@@ -41846,7 +41856,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.writeError": "Write refused: {error}",
     "capabilities.column.name": "Name",
     "capabilities.column.saved": "Saved",
-    "capabilities.column.session": "This session",
+    "capabilities.column.availability": "Availability",
+    "capabilities.column.disclosure": "Disclosure",
     "capabilities.column.evidence": "Evidence",
     "capabilities.word.enabled": "On",
     "capabilities.word.closed": "Off",

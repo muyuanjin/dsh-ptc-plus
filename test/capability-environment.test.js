@@ -164,9 +164,8 @@ test('session catalog fails as a whole when the binding supply cannot be read', 
 })
 
 test('session catalog lists the same rows for a session with no live runtime', async t => {
-  // The read that replaced the old capability-list failure must answer from the
-  // store and the session's own log, neither of which needs a runtime: the same
-  // session read with and without an agent must produce the same rows.
+  // A session the Host no longer holds states the face its recorded plan froze: the
+  // same rows the live read states, taken from the record instead of from the scope.
   const session = Session.create('unobserved-session')
   session.append('user/message', bindingAdoptionMessage({ schema: BINDING_ADOPTION_SCHEMA, declined: ['beta'] }),
     { surfaceOp: 'append' })
@@ -175,71 +174,89 @@ test('session catalog lists the same rows for a session with no live runtime', a
     sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
       events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
   const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
-    toolSchemasForAgent: () => [schema('run_code'), schema('probe')],
+    // The registry answers a wider view inside the session's scope, so a cold read that
+    // fell back to the Host plane would state fewer tools than the session had.
+    toolSchemasForAgent: agent => agent === undefined
+      ? [schema('run_code'), schema('probe')] : [schema('run_code'), schema('probe'), schema('preset_only')],
     readUserBindings: bindingSupply([
       { id: 'alpha', name: 'alphaHelpers', enabled: true },
       { id: 'beta', name: 'betaHelpers', enabled: true },
     ]) })
   t.after(() => env.dispose())
+  await acceptPreparation(env, live[0], [])
   const observed = await env.describeSessionCatalog({ sessionId: 'unobserved-session' }, live[0].signal)
   live.length = 0
   const cold = await env.describeSessionCatalog({ sessionId: 'unobserved-session' }, new AbortController().signal)
   assert.ok(cold.rows.length > 0)
-  // The core falsification: removing the runtime changes nothing on the screen.
+  // The core falsification: the scope is gone and the rows are the ones the record
+  // holds, not a narrower Host declaration that would silently drop the session layer.
   assert.deepEqual(cold.rows, observed.rows)
   assert.deepEqual(cold.rows.map(row => ({ id: row.id, kind: row.kind })),
-    [{ id: 'tools.probe', kind: 'capability' }, { id: 'alpha', kind: 'binding' }, { id: 'beta', kind: 'binding' }])
+    [{ id: 'tools.probe', kind: 'capability' }, { id: 'tools.preset_only', kind: 'capability' },
+      { id: 'alpha', kind: 'binding' }, { id: 'beta', kind: 'binding' }])
   assert.deepEqual(cold.rows.filter(row => row.kind === 'binding').map(row => ({ id: row.id, use: row.session.use })),
     [{ id: 'alpha', use: 'use' }, { id: 'beta', use: 'skip' }])
 })
 
 test('session capability controls still list the capability catalogue when the session has no live runtime', async t => {
-  // The catalogue answers what the Host declares, and the Host declares it without
-  // any session runtime: its global prompt sections, its tool registry and its Skill
-  // catalogue. A session the panel cannot refresh therefore still gets that
-  // catalogue, and its own record supplies the per-session column.
+  // A session the Host no longer holds has no scope to observe; the plan it recorded
+  // is the only statement of what it was supplied. Reading that record answers the
+  // same catalogue, and reading it touches no declaration source at all.
   const skill = { name: 'review', provider: 'workspace', source: 'fixture', description: 'Review Skill',
     rank: 100, locator: '/tmp/workspace', invocation: { modelInvocable: true, userInvocable: false } }
-  const ctx = { agents: { list: () => [] },
-    skills: { snapshot: async () => ({ skills: [skill], complete: true }) },
-    systemPrompt: { assemble: async context => {
-      // No scope: the same Host-level declaration the 能力配置 settings page lists.
-      assert.equal(context.agent, undefined)
-      return { sections: [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
-        { name: 'mcp:docs', text: 'Docs server' }] }
-    } },
-    sessionQuery: { observeSession: async () => ({ header: { cwd: '/tmp/workspace' }, cursor: 0,
-      events: [], [Symbol.dispose]() {} }) } }
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: agent => {
-    // The global tool view, not a session's projection of it.
-    assert.equal(agent, undefined)
-    return [schema('run_code'), schema('probe')]
-  } })
+  const sections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server' }]
+  let reads = 0
+  const agents = []
+  const session = Session.create('cold-plan-session')
+  agents.push(agentFor(session))
+  const ctx = { agents: { list: () => agents },
+    skills: { snapshot: async () => { reads++; return { skills: [skill], complete: true } } },
+    systemPrompt: { assemble: async () => { reads++; return { sections } } },
+    sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+      events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
   t.after(() => env.dispose())
-  const catalog = await env.describeSessionCatalog({ sessionId: 'cold-session' })
+  await acceptPreparation(env, agents[0], sections)
+  agents.length = 0
+  const observedSources = reads
+  const catalog = await env.describeSessionCatalog({ sessionId: session.id })
+  // The Host plane answers fewer rows than this session had, so it is not a fallback
+  // here: a cold session reads no declaration source, only the record it froze.
+  assert.equal(reads, observedSources, 'a cold session must not read a declaration source in place of its record')
   // Real ids, not merely "not empty": the tool, the Skill, the resource server and
-  // the MCP server row the Host declares. A catalogue that lists nothing is the
+  // the MCP server row the record holds. A catalogue that lists nothing is the
   // state this test forbids, and the server row is not a capability.
   assert.ok(catalog.rows.length > 0)
   assert.ok(catalog.rows.some(row => row.kind === 'capability'))
   assert.deepEqual(catalog.rows.map(row => row.id).sort(),
     ['mcp.docs', 'mcpServers.docs', 'skills.review', 'tools.probe'])
   assert.deepEqual(catalog.rows.map(row => row.kind).sort(), ['capability', 'capability', 'capability', 'server'])
+  // Name and source are the ones the recorded capability states: the tool names its
+  // schema, the Skill its selector, and the resource row the server it belongs to.
+  assert.deepEqual(catalog.rows.filter(row => row.kind === 'capability').map(row => ({ id: row.id, name: row.name, source: row.source })),
+    [{ id: 'tools.probe', name: 'probe', source: { kind: 'host' } },
+      { id: 'skills.review', name: 'review', source: { kind: 'skill' } },
+      { id: 'mcp.docs', name: 'docs', source: { kind: 'mcp', server: 'docs' } }])
   // A session that recorded no decision inherits the saved column in every row
   // rather than reporting the catalogue as never observed.
   assert.ok(catalog.rows.every(row => row.session.availability === 'inherit' && row.session.disclosure === 'inherit'))
   // The same read for a session that recorded a decision before its runtime went
   // away: the per-session column states what that record says.
-  const session = Session.create('recorded-cold-session')
-  session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+  const recordedSession = Session.create('recorded-cold-session')
+  recordedSession.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
     choices: { 'tools.probe': { availability: 'closed' } } }), { surfaceOp: 'append' })
+  const recordedAgents = [agentFor(recordedSession)]
   const recorded = createCapabilityEnvironment({ config: config({ 'tools.probe': 'full' }),
-    ctx: { agents: { list: () => [] }, skills: ctx.skills, systemPrompt: ctx.systemPrompt,
-      sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
-        events: session.snapshotEvents(), [Symbol.dispose]() {} }) } },
+    ctx: { agents: { list: () => recordedAgents }, systemPrompt: { assemble: async () => ({ sections: [] }) },
+      sessionQuery: { observeSession: async () => ({ header: recordedSession.header, cursor: recordedSession.seq - 1,
+        events: recordedSession.snapshotEvents(), [Symbol.dispose]() {} }) } },
     toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
   t.after(() => recorded.dispose())
-  const observed = await recorded.describeSessionCatalog({ sessionId: session.id })
+  await acceptPreparation(recorded, recordedAgents[0], [])
+  recordedAgents.length = 0
+  const observed = await recorded.describeSessionCatalog({ sessionId: recordedSession.id })
   // Two sources, one row: the saved column is the configuration's answer and the
   // session column is the record's, and neither is read from the other.
   assert.deepEqual(observed.rows.find(row => row.id === 'tools.probe').saved,
@@ -426,24 +443,41 @@ test('a paused session catalog states each configured and recorded value without
   }
 })
 
-test('live and cold session catalog reads return the same rows and the same recorded values', async t => {
-  // The core falsification of the panel contract: take the runtime away and nothing
-  // on the screen may change. Both reads answer from the store, the Host declaration
-  // and the session's own log, so both must return one and the same row set.
+test('live and cold session catalog reads state one face and the same recorded values', async t => {
+  // Two reads of one session: the live one observes the session's own scope, the cold
+  // one replays the face the session recorded, and neither may state a capability the
+  // other does not have. The one admitted difference is a registration made after the
+  // plan froze, and that difference is exactly the set of later registrations.
   const session = Session.create('live-and-cold-catalog')
   session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
     choices: { 'tools.probe': { availability: 'closed' }, 'tools.other': { disclosure: 'full' } } }), { surfaceOp: 'append' })
   const live = [agentFor(session)]
+  let schemas = [schema('run_code'), schema('probe'), schema('other')]
   const ctx = { agents: { list: () => live }, systemPrompt: { assemble: async () => ({ sections: [] }) },
     sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
       events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
   const env = createCapabilityEnvironment({ ctx, config: config({ 'tools.probe': 'full', 'tools.other': 'closed' }),
-    toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+    toolSchemasForAgent: () => schemas })
   t.after(() => env.dispose())
+  await acceptPreparation(env, live[0], [])
   const observed = await env.describeSessionCatalog({ sessionId: session.id }, live[0].signal)
+  // Registered after the plan froze: the live scope states it, and the record that was
+  // written before it exists cannot. Nothing else may differ.
+  schemas = [...schemas, schema('registered_later')]
+  const afterRegistration = await env.describeSessionCatalog({ sessionId: session.id }, live[0].signal)
   live.length = 0
   const cold = await env.describeSessionCatalog({ sessionId: session.id })
-  assert.deepEqual(cold.rows.map(row => row.id), observed.rows.map(row => row.id))
+  const observedIds = observed.rows.map(row => row.id)
+  const coldIds = cold.rows.map(row => row.id)
+  const liveIds = afterRegistration.rows.map(row => row.id)
+  assert.deepEqual(coldIds, observedIds, 'the cold read states the face the plan froze, registration order included')
+  assert.deepEqual(liveIds.filter(id => !coldIds.includes(id)), ['tools.registered_later'],
+    'only a later registration may be missing from the frozen face')
+  assert.deepEqual(coldIds.filter(id => !liveIds.includes(id)), [], 'the frozen face states no capability the live scope lacks')
+  // The record the plan froze is exactly the row set: not a subset the read chose.
+  const frozen = session.snapshotEvents().filter(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+    .at(-1).data.source.snapshot.capabilities
+  assert.deepEqual(cold.rows.filter(row => row.kind === 'capability').map(row => row.id), frozen.map(capability => capability.id))
   const recorded = rows => rows.filter(row => row.kind === 'capability').map(row => ({ id: row.id, session: row.session }))
   assert.deepEqual(recorded(cold.rows), recorded(observed.rows))
   assert.ok(recorded(cold.rows).length > 0)
@@ -456,44 +490,274 @@ test('live and cold session catalog reads return the same rows and the same reco
   assert.deepEqual(cold.rows, observed.rows)
 })
 
-test('session catalog reading neither observes a session nor writes to it', async t => {
-  // Every dependency that would observe a live session, or write one, throws if this
-  // read reaches it: a read that touches none of them succeeds, which is the only
-  // form in which "the read path is not the write path" can be falsified. The raw
-  // entry point is used because this file's wrapper would otherwise supply the
-  // history read this test forbids.
-  const session = Session.create('read-without-observing')
+test('a session that recorded no capability plan fails the read instead of answering with the Host plane', async t => {
+  // The read this replaced answered every session with the Host's own plane, which is a
+  // different and smaller question. A session with no live scope and no record states no
+  // face at all, so the read fails and names the record it needed: substituting the plane
+  // is the defect, and an empty table would claim the Host declared nothing.
+  const session = Session.create('cold-without-plan')
+  let declarations = 0
+  const ctx = { agents: { list: () => [] },
+    systemPrompt: { assemble: async () => { declarations += 1; return { sections: [] } } },
+    skills: { snapshot: async () => { declarations += 1; return { skills: [], complete: true } } },
+    sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+      events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => { declarations += 1; return [schema('probe')] } })
+  t.after(() => env.dispose())
+  await assert.rejects(env.describeSessionCatalog({ sessionId: session.id }), /recorded no capability plan/)
+  assert.equal(declarations, 0, 'a session with no record reads no declaration source to answer for it')
+  // The settings list names a session through the same read, so it inherits the refusal.
+  await assert.rejects(env.describeCatalog({ sessionId: session.id }), /recorded no capability plan/)
+  assert.equal(declarations, 0, 'neither surface reads a declaration source to answer for a session with no record')
+  // A caller that names no session asks the Host's own declaration, which still answers.
+  assert.deepEqual((await env.describeCatalog()).map(entry => entry.id), ['tools.probe'])
+})
+
+test('the cold read refuses only a record that froze no inventory', async t => {
+  // The guard asks whether the record's composition required an inventory, not whether the
+  // array is empty and not whether management was on: a managed composition whose Host
+  // declared nothing states an empty face, and a composition with management off still froze
+  // one when the saved policy enabled statistics. A guard keyed on `capabilities.length`
+  // refuses the first, and one keyed on the plan's own `enabled` word refuses the duty-driven
+  // record below, whose plan states `enabled: false` while still holding the face.
+  const readCold = async (session, config, schemas) => {
+    const agents = [agentFor(session)]
+    const env = createCapabilityEnvironment({ ctx: { agents: { list: () => agents },
+      systemPrompt: { assemble: async () => ({ sections: [] }) },
+      sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+        events: session.snapshotEvents(), [Symbol.dispose]() {} }) } },
+      config, toolSchemasForAgent: () => schemas })
+    t.after(() => env.dispose())
+    await acceptPreparation(env, agents[0], [])
+    const live = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+    const frozen = session.snapshotEvents().filter(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+      .at(-1).data.source.snapshot
+    agents.length = 0
+    try {
+      return { live, frozen, cold: await env.describeSessionCatalog({ sessionId: session.id }) }
+    } catch (error) {
+      return { live, frozen, refusal: error.message }
+    }
+  }
+  // An inventoried composition that found nothing states an empty face: the record holds a
+  // face, it is just empty, so there is nothing to refuse.
+  const managed = await readCold(Session.create('managed-empty-face'), config(), [])
+  assert.deepEqual(managed.frozen.capabilities, [])
+  assert.deepEqual(managed.cold.rows, [], 'an inventoried composition that found nothing states an empty face')
+  // The context generation is the one the plan-schema expectation used to call damaged: a
+  // v4 record with an inventory replays its face.
+  const context = await readCold(Session.create('context-with-inventory'),
+    { ...config(), capabilityContextEnabled: true }, [schema('probe')])
+  assert.equal(context.frozen.schema, 'ptc-capability-environment/v4')
+  assert.equal(context.frozen.plan.schema, 'ptc-capability-plan/v3')
+  assert.deepEqual(context.cold.rows.map(row => row.id), ['tools.probe'])
+  // Management off is not the same fact: the saved policy enabled statistics, so the
+  // composition still required an inventory and the record still holds the face.
+  const policy = { schema: 'ptc-capability-policy/v1', defaults: { availability: 'enabled', disclosure: 'host' },
+    categories: {}, mcpServers: {}, items: {}, allocation: { baseline: true, statistics: true, budget: true } }
+  const duty = await readCold(Session.create('duty-driven-inventory'),
+    { capabilityManagementEnabled: false, capabilityPolicy: JSON.stringify(policy),
+      capabilityBaseline: '[]', capabilityOverrides: '{}',
+      capabilityStatistics: '{"enabled":true,"windowSize":100,"minimumSamples":10,"fullThreshold":0.5}',
+      capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096, capabilityRecoveryBytes: 4096, modelPreviewTokens: 128 },
+    [schema('probe')])
+  assert.ok(duty.frozen.capabilities.length > 0, 'the composition must have frozen an inventory')
+  assert.deepEqual(duty.cold.rows.map(row => row.id), duty.live.rows.map(row => row.id))
+  // The paused group is the same fact in the other direction, and the one a reader of the
+  // saved switches is most likely to meet: `effectiveCapabilitySettings` presses the saved
+  // management, statistics and recovery down to false while the group is off, so the paused
+  // composition records no inventory even with management on. A call site that copied the
+  // rule without that precedence would answer the paused session with an empty table.
+  const paused = await readCold(Session.create('paused-group'),
+    { ...config(), capabilityContextEnabled: false }, [schema('probe')])
+  assert.deepEqual(paused.frozen.capabilities, [], 'a paused composition records no inventory')
+  assert.deepEqual(paused.live.rows.map(row => row.id), ['tools.probe'], 'the live scope still declares what exists')
+  assert.match(paused.refusal, /froze no capability inventory/)
+})
+
+test('a recorded plan that froze no inventory states no face and fails the read', async t => {
+  // A composition records an empty `capabilities` array when no capability feature
+  // required an inventory, and that array is not a face: nothing was supplied to the
+  // model. Answering with it would draw an empty table that says the Host declared
+  // nothing, so the read fails instead. The live read is what proves the difference is
+  // the whole face and not an empty declaration.
+  const session = Session.create('cold-without-inventory')
   const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) },
+    sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+      events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, toolSchemasForAgent: () => [schema('probe')],
+    // The shipped defaults: capability context on, management off, so a plan is delivered
+    // and no inventory is composed for it.
+    config: { capabilityManagementEnabled: false, capabilityContextEnabled: true,
+      capabilityBaseline: '[]', capabilityOverrides: '{}',
+      capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}',
+      capabilityBudgetBytes: 4096, capabilityDirectoryBytes: 4096, capabilityRecoveryBytes: 4096, modelPreviewTokens: 128 } })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agents[0], [])
+  const frozen = session.snapshotEvents().filter(event => event.data?.source?.form === CAPABILITY_PLAN_FORM)
+    .at(-1).data.source.snapshot
+  assert.deepEqual(frozen.capabilities, [], 'the fixture must reach the composition that froze no inventory')
+  const live = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+  assert.deepEqual(live.rows.map(row => row.id), ['tools.probe'], 'the live scope still declares what was supplied')
+  agents.length = 0
+  await assert.rejects(env.describeSessionCatalog({ sessionId: session.id }), /froze no capability inventory/)
+})
+
+test('a damaged recorded plan fails the read rather than stating a face it does not hold', async t => {
+  // Damage invalidates the record as evidence, and the composition already refuses such a
+  // plan. The catalogue read must refuse it too: a record this build cannot prove is not a
+  // smaller face and is not an empty one.
+  const session = Session.create('damaged-record')
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) },
+    sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+      events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agents[0], [])
+  const recorded = session.snapshotEvents().find(event => event.data?.source?.form === CAPABILITY_PLAN_FORM).data
+  // The same message with a digest that no longer proves its snapshot.
+  session.append('user/message', { ...recorded, id: 'damaged-plan-copy',
+    source: { ...recorded.source, digest: 'no-longer-the-recorded-digest' } }, { surfaceOp: 'append' })
+  agents.length = 0
+  await assert.rejects(env.describeSessionCatalog({ sessionId: session.id }), /damaged session capability plan/)
+  await assert.rejects(env.describeCatalog({ sessionId: session.id }), /damaged session capability plan/)
+})
+
+test('the replayed Skill row states every column the live row states except the provider bucket', async t => {
+  // The frozen capability contract carries a Skill's selector, description and invocation
+  // eligibility but no provider/source bucket, so the replayed row names the kind alone.
+  // That is the one column where the two faces differ by design (docs/panel-concept.md
+  // section 9); stating it here keeps the boundary from growing unnoticed.
+  const skill = { name: 'review', provider: 'workspace', source: 'fixture', description: 'Review Skill',
+    rank: 100, locator: '/tmp/workspace', invocation: { modelInvocable: true, userInvocable: false } }
+  const session = Session.create('skill-source-boundary')
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, skills: { snapshot: async () => ({ skills: [skill], complete: true }) },
+    systemPrompt: { assemble: async () => ({ sections: [] }) },
+    sessionQuery: { observeSession: async () => ({ header: session.header, cursor: session.seq - 1,
+      events: session.snapshotEvents(), [Symbol.dispose]() {} }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('probe')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agents[0], [])
+  const live = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+  agents.length = 0
+  const cold = await env.describeSessionCatalog({ sessionId: session.id })
+  const liveSkill = live.rows.find(row => row.id === 'skills.review')
+  const coldSkill = cold.rows.find(row => row.id === 'skills.review')
+  assert.deepEqual(liveSkill.source, { kind: 'skill', bucket: 'fixture', provider: 'workspace' })
+  assert.deepEqual(coldSkill.source, { kind: 'skill' }, 'the record holds no bucket, so the row names none')
+  assert.deepEqual({ ...coldSkill, source: null }, { ...liveSkill, source: null },
+    'every other column of the replayed Skill row is the live row\'s own statement')
+  assert.deepEqual(cold.rows.filter(row => row.id !== 'skills.review'),
+    live.rows.filter(row => row.id !== 'skills.review'))
+})
+
+test('session catalog reads the session scope and touches no PTC runtime or write branch', async t => {
+  // The read is required to observe the session's own scope — that is where a preset
+  // registers its tools and where the Skill layers are resolved — and forbidden to
+  // touch anything that belongs to the PTC runtime or to writing the session. Every
+  // forbidden surface throws if this read reaches it, and the read still answers the
+  // whole declaration.
+  const session = Session.create('read-without-runtime')
+  const agent = agentFor(session)
+  const agents = [agent]
   const reached = []
-  session.append = () => { reached.push('session.append'); throw new Error('the read appended to the session') }
+  const forbid = (name, message) => () => { reached.push(name); throw new Error(message) }
+  // A session's usability is a runtime fact, not a supply fact: the two properties a
+  // read could ask are poisoned, and so is the maintenance boundary a refresh runs on.
+  Object.defineProperty(agent, 'canRefresh', { get: forbid('canRefresh', 'the read judged whether the session can refresh') })
+  Object.defineProperty(agent, 'worker', { get: forbid('worker', 'the read touched the PTC worker') })
+  agent.runMaintenance = forbid('runMaintenance', 'the read ran a refresh or preparation branch')
+  session.append = forbid('session.append', 'the read wrote to the session')
+  // `run_code` is the transport the PTC runtime installs, not a capability: reading its
+  // contract would be declaring it as a row. Its name stays readable because the
+  // transport filter has to recognise it.
+  const transport = { name: 'run_code' }
+  for (const field of ['description', 'parameters', 'output']) {
+    Object.defineProperty(transport, field, { get: forbid(`run_code.${field}`, 'the read declared the PTC transport as a capability') })
+  }
   const env = createEnvironment({
+    // `prepare` reads this session's history through the runtime's own entry; the panel
+    // read takes the log itself, so reaching this entry fails too.
     sessionHistoryForAgent: async () => { reached.push('sessionHistoryForAgent')
-      throw new Error('the read observed the session history') },
+      throw new Error('the read prepared the session') },
     ctx: { agents: { list: () => agents },
-      // `observeSkills(agent)` and the session branch of `inventory` are the two
-      // observations the contract forbids: a session-scoped view is one with a scope
-      // or an agent, and this read has neither.
-      skills: { snapshot: async options => { if (options.scope !== undefined) reached.push('skills.snapshot/scope')
-        return { skills: [], complete: true } } },
+      skills: { snapshot: async options => {
+        if (options.scope !== agent) { reached.push('skills.snapshot/global'); throw new Error('the read left the session scope') }
+        return { skills: [], complete: true }
+      } },
       systemPrompt: { assemble: async context => {
-        if (context.agent !== undefined) reached.push('assemble/agent')
+        if (context.ptcPlusCapabilityObservation !== true || context.agent !== agent || context.scope !== agent) {
+          reached.push('assemble/without-scope')
+          throw new Error('the read assembled without the passive session scope')
+        }
         return { sections: [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
           { name: 'mcp:docs', text: 'Docs server' }] }
       } } },
     config: config(),
-    toolSchemasForAgent: agent => {
-      if (agent !== undefined) reached.push('toolSchemasForAgent/agent')
-      return [schema('run_code'), schema('probe')]
+    toolSchemasForAgent: target => {
+      if (target !== agent) { reached.push('toolSchemasForAgent/global')
+        throw new Error('the read asked for the Host plane instead of the session scope') }
+      return [transport, schema('probe')]
     },
   })
   t.after(() => env.dispose())
-  const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
-  // The read still answers the whole declaration: whatever it skipped is not a row
-  // it needed, and a silent gap would be the failure this test is looking for.
+  const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agent.signal)
+  // The read still answers the whole declaration of the session scope: the tool, the
+  // resource server and the server row. A silent gap would be the failure this test
+  // is looking for.
   assert.deepEqual(catalog.rows.map(row => ({ id: row.id, kind: row.kind })),
     [{ id: 'tools.probe', kind: 'capability' }, { id: 'mcp.docs', kind: 'capability' }, { id: 'mcpServers.docs', kind: 'server' }])
-  assert.deepEqual(reached, [], 'the read must not observe a session, append to it or read a session-scoped view')
+  assert.deepEqual(reached, [],
+    'the read must not prepare, refresh, judge usability, touch the worker, read the transport or append')
   assert.deepEqual(session.snapshotEvents(), [])
+})
+
+test('the Host plane states fewer capabilities than the session scope declares', async t => {
+  // One real session declared 81 entries where a Host-plane read could state 30: 59
+  // tools and 21 Skills were declared to it, while the Host's own plane answers 27
+  // tools and one Skill. The 32 tools and 20 Skills between them are registered in the
+  // session's scope — a preset registers its tools at agent scope — and are resolved
+  // only through that scope. Dropping the scope loses exactly that layer, which is the
+  // defect this ratio pins.
+  const hostTools = Array.from({ length: 27 }, (_, index) => schema(`host_tool_${index}`))
+  const presetTools = Array.from({ length: 32 }, (_, index) => schema(`preset_tool_${index}`))
+  const skill = name => ({ name, provider: 'workspace', source: 'fixture', description: `Skill ${name}`,
+    rank: 100, locator: `/tmp/${name}`, invocation: { modelInvocable: true, userInvocable: false } })
+  const hostSkills = [skill('host-skill')]
+  const presetSkills = Array.from({ length: 20 }, (_, index) => skill(`preset-skill-${index}`))
+  const session = Session.create('scope-ratio')
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents },
+    // A scope selects the layers the catalogue resolves; the global view has the Host's
+    // own layer alone.
+    skills: { snapshot: async ({ scope }) => ({ complete: true,
+      skills: scope === undefined ? hostSkills : [...hostSkills, ...presetSkills] }) },
+    systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    // The same shape at the registry: the session's projection when a scope is named,
+    // the Host's global view when it is not.
+    toolSchemasForAgent: agent => agent === undefined ? hostTools : [...hostTools, ...presetTools] })
+  t.after(() => env.dispose())
+  const declared = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+  const ids = rows => category => rows.filter(row => row.category === category).map(row => row.id)
+  const declaredIds = ids(declared.rows)
+  assert.equal(declaredIds('tool').length, 59)
+  assert.equal(declaredIds('skill').length, 21)
+  // The Host's own declaration, which is what a caller that names no session asks for.
+  // It answers a different and smaller face, so substituting it for the session's
+  // supply is what silently dropped the preset layer.
+  const host = await env.describeCatalog()
+  const hostIds = ids(host)
+  assert.equal(hostIds('tool').length, 27)
+  assert.equal(hostIds('skill').length, 1)
+  assert.equal(declaredIds('tool').filter(id => !hostIds('tool').includes(id)).length, 32)
+  assert.equal(declaredIds('skill').filter(id => !hostIds('skill').includes(id)).length, 20)
+  assert.ok(hostIds('tool').length < declaredIds('tool').length)
+  assert.ok(hostIds('skill').length < declaredIds('skill').length)
 })
 
 test('the global binding and management switches move no capability row', async t => {
@@ -1078,7 +1342,7 @@ test('SDK output contracts use only public scoped schemas and definitions with d
   assert.throws(() => toolSdkSchemas({ schemas: () => [schema('missing')], get: () => undefined }), /output schema must be lossless JSON/)
 })
 
-test('settings catalog states the named session\'s Skill eligibility and reads it without a runtime', async t => {
+test('settings catalog states the named session\'s Skill eligibility from its scope and from its record', async t => {
   // The settings list is one supply read, so it states one workspace's answer. A
   // caller names the session whose directory it wants; which sessions happen to be
   // live changes no entry, and no cross-workspace vote has to be derived.
@@ -1109,10 +1373,15 @@ test('settings catalog states the named session\'s Skill eligibility and reads i
     { modelInvocable: true, userInvocable: false })
   assert.deepEqual((await entriesOf(agents[0].session.id)).find(entry => entry.id === 'skills.shared').invocation,
     { modelInvocable: false, userInvocable: true })
-  // Removing the runtime changes nothing: the read names the session, not an agent.
+  // Its record states the same Skill once the scope is gone: the plan the session froze
+  // carries the declaration and its eligibility, not the provider bucket the live Skill
+  // catalogue also names, so the comparison is over what the record owns.
   const live = await entriesOf(agents[1].session.id)
+  await acceptPreparation(env, agents[1], [])
   agents.length = 0
-  assert.deepEqual(await entriesOf('invocation-model'), live)
+  const cold = await entriesOf('invocation-model')
+  assert.deepEqual(cold.map(entry => ({ id: entry.id, name: entry.name, category: entry.category, invocation: entry.invocation })),
+    live.map(entry => ({ id: entry.id, name: entry.name, category: entry.category, invocation: entry.invocation })))
 })
 
 test('allocation observation reads workspace coverage and budget choices without publishing or freezing a session', async t => {

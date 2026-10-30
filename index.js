@@ -457,6 +457,10 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
     let unreadableTransportReported = false
     disposers.push(ctx.on('system-prompt/assemble', async (assembly, context, next) => {
       const projected = await directSurface.assemble(assembly, context, next)
+      // A capability observation states what the Host declares. It prepares no session,
+      // so it neither re-applies the model-facing slots nor reports a transport the
+      // operator can do nothing about from a read.
+      if (context?.ptcPlusCapabilityObservation === true) return projected
       if (runCodeDefinitionFor(ctx.tools, context?.agent) !== undefined) runtimeBridge.prepareAgent(context?.agent)
       else if (!unreadableTransportReported && hostTransportUnreadable(ctx.tools, context?.agent)) {
         // The host declares the reserved transport and this plugin cannot read it.
@@ -530,10 +534,11 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
             const listing = /^list(?: (all|skills|tools|mcp|mcp_tools))?(?: (.*))?$/.exec(input)
             if (listing) {
               // The listing is the panel's own read: one session catalogue, projected
-              // into the columns this command states. Nothing about a runtime enters
-              // it, so a session with no live agent lists exactly like one with an
-              // agent — the log, the Host's declaration and the saved configuration
-              // are the whole answer in both cases.
+              // into the columns this command states. The session's scope supplies the
+              // declared face while the Host holds its agent, and the plan its log froze
+              // supplies it afterwards; the saved configuration states the saved column.
+              // Nothing about the PTC runtime enters it, so the two surfaces cannot
+              // disagree about which ids exist.
               const catalog = await capabilityEnvironment.describeSessionCatalog({
                 sessionId: String(agent.session.id ?? agent.id),
               }, signal)

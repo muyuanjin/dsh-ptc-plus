@@ -133,7 +133,7 @@ if (values.list) {
           await assertControlVisual(item, { hover: true, label: `${width}/${theme}/${state}/section navigation` })
         }
         const metrics = await page.evaluate(() => {
-          const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent,.ptcPlusCapabilityList')]
+          const containers = [...document.querySelectorAll('.ptcPlusConsole,.ptcPlusBindingsSurface,.ptcPlusBindingsDialog,.ptcPlusBindingEditor,.ptcPlusSettingsDialog,.ptcPlusSettingsDialogContent,.ptcPlusSessionCapabilityList')]
             .map(element => ({ name: element.className, client: element.clientWidth, scroll: element.scrollWidth }))
           const collisions = []
           for (const row of document.querySelectorAll('.ptcPlusBindingItem')) {
@@ -194,17 +194,30 @@ if (values.list) {
             `${width}/${state}: narrow settings did not stack`)
         }
         if (state.startsWith('settings')) {
-          const list = page.locator('.ptcPlusCapabilityList')
+          // The one capability surface renders this table inline. Each capability row carries two
+          // saved controls (a Select trigger per dimension) and no free-text entry; the 48 long
+          // names are the layout stress. The list grows with its rows, so the setting form
+          // (`.ptcPlusFields`) is the container that actually scrolls: reachability means the
+          // control's centre lies inside that form's viewport after bringing it into view, and the
+          // hit test at that point still lands on the control.
+          const list = page.locator('.ptcPlusSessionCapabilityList')
           assert.equal(await list.locator('.ptcPlusCapabilityItem').count(), 48)
-          assert.equal(await page.locator('.ptcPlusCapabilityChoices textarea,.ptcPlusCapabilityStatistics textarea').count(), 0)
-          const first = list.locator('input[type=checkbox]').first()
-          const last = list.locator('.ptcPlusCapabilityContext').last()
+          assert.equal(await list.locator('.ptcPlusSelectTrigger').count(), 96)
+          assert.equal(await list.locator('textarea').count(), 0)
+          assert.equal(await page.locator('.ptcPlusCapabilityStatistics textarea').count(), 0)
+          const rows = list.locator('.ptcPlusSessionCapabilityRow')
+          const first = rows.first().locator('.ptcPlusSelectTrigger').first()
+          const last = rows.last().locator('.ptcPlusSelectTrigger').last()
           for (const control of [last, first]) {
+            await control.scrollIntoViewIfNeeded()
             await control.focus()
             const reachable = await control.evaluate(element => {
-              const rect = element.getBoundingClientRect(), clip = element.closest('.ptcPlusCapabilityList').getBoundingClientRect()
+              const rect = element.getBoundingClientRect()
+              const clip = element.closest('.ptcPlusFields')?.getBoundingClientRect()
+              if (!clip) return false
               const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2
-              return y >= clip.top && y <= clip.bottom && element.contains(document.elementFromPoint(x, y))
+              return y >= clip.top && y <= clip.bottom && x >= clip.left && x <= clip.right
+                && element.contains(document.elementFromPoint(x, y))
             })
             assert.ok(reachable, `${width}/${state}: capability choice is not reachable after scrolling`)
           }

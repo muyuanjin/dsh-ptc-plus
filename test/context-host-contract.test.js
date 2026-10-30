@@ -643,9 +643,10 @@ test('the session catalogue and /capabilities list state the same dimensions for
   const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId }, signal())
   assert.equal(panel.ok, true)
   const row = panel.value.rows.find(item => item.id === 'tools.probe')
-  // The saved column states the rule the configuration states, and `automatic` for the
-  // dimension no rule decides; the session column states the disclosure this session
-  // recorded, and `inherit` for the availability it never decided.
+  // The saved column states the words the document wrote for this object: its one rule is the
+  // disclosure, so availability reads `automatic` even though the document's bottom layer would
+  // answer it at runtime. The session column states the disclosure this session recorded and
+  // `inherit` for the availability it never decided.
   assert.deepEqual(row.saved, { availability: 'automatic', disclosure: 'full' })
   assert.deepEqual(row.session, { availability: 'inherit', disclosure: 'full' })
   const listing = await command.handler({ commandId: 'two-dimension-list', rawInput: 'list tools probe',

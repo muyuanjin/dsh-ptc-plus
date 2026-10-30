@@ -1170,31 +1170,12 @@ function capabilityPolicyForConfig(config2) {
   }
   return validateCapabilityPolicy(policy);
 }
-function capabilityRule(policy, capability) {
-  let availability = policy.defaults.availability, disclosure = policy.defaults.disclosure;
-  let availabilitySource = "default", disclosureSource = "default";
-  const server = capability.mcpServer === void 0 ? void 0 : own(policy.mcpServers, capability.mcpServer);
-  const apply = (rule, source) => {
-    if (rule?.availability !== void 0) {
-      availability = rule.availability;
-      availabilitySource = source;
-    }
-    if (rule?.disclosure !== void 0) {
-      disclosure = rule.disclosure;
-      disclosureSource = source;
-    }
-  };
-  apply(own(policy.categories, capability.category), `category:${capability.category}`);
-  apply(server, `mcp:${capability.mcpServer}`);
-  apply(own(policy.items, capability.id), `item:${capability.id}`);
-  if (server?.availability === "closed") {
-    availability = "closed";
-    availabilitySource = `mcp:${capability.mcpServer}`;
-  }
-  if (capability.mcpServerCandidates?.some((id2) => own(policy.mcpServers, id2)?.availability === "closed")) {
-    throw new TypeError(`ptc-plus: cannot determine the MCP server owner of ${capability.id}; conflicting namespaces: ${capability.mcpServerCandidates.join(", ")}`);
-  }
-  return { availability, disclosure, availabilitySource, disclosureSource };
+function capabilityPolicyFromRecord(config2) {
+  return capabilityPolicyForConfig({
+    ...config2,
+    capabilityPolicy: void 0,
+    capabilityManagementEnabled: false
+  });
 }
 function changeCapabilityRule(policy, id2, dimension, choice) {
   const next = structuredClone(policy);
@@ -3547,6 +3528,7 @@ function resolveConfig(config2 = {}) {
     }
   }
   resolved.capabilityPolicy = JSON.stringify(capabilityPolicyForConfig(provided.has("capabilityPolicy") ? resolved : { ...resolved, capabilityPolicy: void 0 }));
+  resolved.capabilityPolicySaved = provided.has("capabilityPolicy") && (typeof config2.capabilityPolicySaved === "boolean" ? config2.capabilityPolicySaved : true);
   if (!provided.has("capabilityPolicy") && resolved.capabilityManagementEnabled) {
     if (!provided.has("capabilityRecoveryEnabled")) resolved.capabilityRecoveryEnabled = true;
     if (!provided.has("modelPreviewEnabled")) resolved.modelPreviewEnabled = true;
@@ -9191,31 +9173,6 @@ function createActionButton(React32, Button) {
   };
 }
 
-// src/client-capability-sort.js
-var CAPABILITY_SORT_COLUMNS = [
-  { key: "name", label: "member" },
-  { key: "type", label: "typesColumn" },
-  { key: "source", label: "sourceColumn" },
-  { key: "availability", label: "enabledColumn" },
-  { key: "context", label: "contextColumn" }
-];
-function cycleCapabilitySort(current, column) {
-  if (current?.column !== column) return { column, direction: "ascending" };
-  return current.direction === "ascending" ? { column, direction: "descending" } : null;
-}
-function capabilitySortDirection(current, column) {
-  return current?.column === column ? current.direction : "none";
-}
-function sortCapabilityEntries(entries, current, valueFor) {
-  if (!current) return [...entries];
-  const direction = current.direction === "descending" ? -1 : 1;
-  const value = (entry) => {
-    const result = valueFor(entry, current.column);
-    return typeof result === "number" ? result : String(result ?? "").toLowerCase();
-  };
-  return entries.map((entry, index2) => ({ entry, index: index2, value: value(entry) })).sort((a, b) => direction * (a.value < b.value ? -1 : a.value > b.value ? 1 : 0) || a.index - b.index).map((item) => item.entry);
-}
-
 // src/client-capabilities-view.js
 var RECEIPT_STATE = Object.freeze({
   recorded: "recorded",
@@ -9229,7 +9186,7 @@ var RECEIPT_STATE = Object.freeze({
 var receiptCopyKey = (surface, state) => `capabilities.${surface}.${RECEIPT_STATE[state] ?? "usage"}`;
 function capabilityRecordText(t2, record) {
   if (record === null || typeof record !== "object" || typeof record.id !== "string") return void 0;
-  return `${record.id} \xB7 ${record.dimension === void 0 ? "" : `${t2(`capabilities.policy.${record.dimension}`)} `}` + t2(`capabilities.word.${record.selection}`);
+  return `${record.id} \xB7 ${record.dimension === void 0 ? "" : `${t2(`capabilities.dimension.${record.dimension}`)} `}` + t2(`capabilities.word.${record.selection}`);
 }
 function capabilityReceiptNotice(t2, receipt, surface = "receipt") {
   const record = capabilityRecordText(t2, receipt?.record);
@@ -9253,11 +9210,11 @@ var HOST_CONTEXT_SECTIONS = Object.freeze([
 var PROMPT_TABLE_COLUMN_KEYS = Object.freeze(["channel", "anchor", "presence", "bytes", "reason", "kind"]);
 var PROMPT_TABLE_COLUMNS = PROMPT_TABLE_COLUMN_KEYS.length;
 function capabilityChoiceLabel(t2, value) {
-  return t2(value === "inherit" ? "capabilities.quick.noOverride" : ["enabled", "pending", "unknown"].includes(value) ? `capabilities.quick.${value}` : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.${value}` : "capabilities.quick.unknown");
+  return t2(value === "inherit" ? "capabilities.quick.noOverride" : ["enabled", "pending", "unknown"].includes(value) ? `capabilities.quick.${value}` : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.word.${value}` : "capabilities.quick.unknown");
 }
-function capabilityRuleLabel(t2, rule, empty2 = "capabilities.policy.inheritRule") {
+function capabilityRuleLabel(t2, rule, empty2 = "capabilities.policy.layerAbove") {
   const dimensions = ["availability", "disclosure"].filter((dimension) => rule?.[dimension] !== void 0);
-  return dimensions.length ? dimensions.map((dimension) => `${t2(`capabilities.policy.${dimension}`)}: ${rule[dimension] === "automatic" ? t2("capabilities.policy.inheritRule") : capabilityChoiceLabel(t2, rule[dimension])}`).join(" \xB7 ") : t2(empty2);
+  return dimensions.length ? dimensions.map((dimension) => `${t2(`capabilities.policy.${dimension}`)}: ${rule[dimension] === "automatic" ? t2("capabilities.policy.layerAbove") : capabilityChoiceLabel(t2, rule[dimension])}`).join(" \xB7 ") : t2(empty2);
 }
 function validCatalogRule(rule, temporary = false) {
   return rule !== null && typeof rule === "object" && !Array.isArray(rule) && Object.entries(rule).every(([dimension, choice]) => ["availability", "disclosure"].includes(dimension) && (temporary && choice === "automatic" || (dimension === "availability" ? ["enabled", "closed"].includes(choice) : CAPABILITY_DISCLOSURES.includes(choice))));
@@ -9362,7 +9319,7 @@ function createCapabilityCommandCard(React32) {
     const label = (entry, key) => {
       if (typeof entry[key] === "object") return catalogStatementLabel(t2, entry[key]);
       const rule = entry[key === "saved" ? "savedRule" : "temporaryRule"];
-      return rule === void 0 ? capabilityChoiceLabel(t2, entry[key]) : capabilityRuleLabel(t2, rule, key === "temporary" ? "capabilities.quick.noOverride" : "capabilities.policy.inheritRule");
+      return rule === void 0 ? capabilityChoiceLabel(t2, entry[key]) : capabilityRuleLabel(t2, rule, key === "temporary" ? "capabilities.quick.noOverride" : "capabilities.policy.layerAbove");
     };
     return h(
       "section",
@@ -9412,28 +9369,8 @@ function createCapabilityCommandCard(React32) {
   };
 }
 var selections = ["automatic", "full", "on-demand", "closed"];
-var kinds = ["all", "tool", "skill", "resource", "other"];
 var compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 var configurationId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-function capabilitySettingsEntries(value, catalog, plans, uncertain = false) {
-  const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline);
-  const observed = catalog !== null && uncertain !== true;
-  const entries = new Map((catalog ?? []).map((entry) => [entry.id, { ...entry, inCatalog: observed }]));
-  for (const plan of plans ?? []) for (const entry of plan.effective.entries) {
-    if (!entries.has(entry.id)) entries.set(entry.id, { id: entry.id, category: entry.category, inCatalog: false });
-  }
-  const policy = capabilityPolicyForConfig(value);
-  for (const id2 of [...baseline, ...Object.keys(policy.items)].filter((id3) => !id3.startsWith("mcpServers."))) if (!entries.has(id2)) entries.set(id2, { id: id2, inCatalog: false });
-  return [...entries.values()].map((entry) => ({
-    ...entry,
-    name: entry.name ?? entry.id,
-    kind: ["tool", "skill"].includes(entry.category) ? entry.category : ["resource", "resource-template"].includes(entry.category) ? "resource" : "other",
-    inCatalog: entry.inCatalog === true,
-    common: baseline.includes(entry.id),
-    rule: policy.items[entry.id] ?? {},
-    resolvedRule: capabilityRule(policy, entry)
-  }));
-}
 function capabilityPlanReason(t2, entry) {
   const known = [
     "manual-override",
@@ -9456,7 +9393,7 @@ function capabilityPlanReason(t2, entry) {
   ];
   return [entry.reason, entry.statisticsReason].filter(Boolean).map((reason) => known.includes(reason) ? t2(`capabilities.reason.${reason}`) : reason).join(" \xB7 ");
 }
-function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, Modal = createFallbackModal(React32) }) {
+function createCapabilitySettingsViews(React32, { Select: Select2, Modal = createFallbackModal(React32) }) {
   const h = React32.createElement;
   const field = (key) => CONFIG_FIELDS.find((item) => item.key === key);
   const responsibilities = ["rules", "description", "recovery", "preview", "statistics", "promptText"];
@@ -9584,8 +9521,8 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       )
     );
   }
-  function PolicyRules({ value, catalog, disabled, onChange, t: t2 }) {
-    const policy = capabilityPolicyForConfig(value);
+  function PolicyRules({ value, disabled, onChange, t: t2 }) {
+    const policy = value.capabilityPolicySaved === true ? capabilityPolicyForConfig(value) : capabilityPolicyFromRecord(value);
     const write2 = (next) => onChange(field("capabilityPolicy"), JSON.stringify(next));
     const ruleControls = (rule, update, label, defaults3 = false) => h(
       "div",
@@ -9605,7 +9542,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
             else next[dimension] = choice;
             update(next);
           },
-          options: [...defaults3 ? [] : ["automatic"], ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.inheritRule" : `capabilities.${choice === "enabled" ? "quick.enabled" : choice}`) }))
+          options: [...defaults3 ? [] : ["automatic"], ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.layerAbove" : `capabilities.word.${choice}`) }))
         })
       ))
     );
@@ -9626,7 +9563,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         "details",
         null,
         h("summary", { tabIndex: 0 }, t2("capabilities.sourceRules")),
-        ...[.../* @__PURE__ */ new Set([...Object.keys(policy.mcpServers), ...(catalog ?? []).map((item) => item.mcpServer).filter(Boolean)])].sort(compare).map((server) => ruleControls(policy.mcpServers[server] ?? {}, (rule) => write2(changeCapabilityRule(
+        ...[...new Set(Object.keys(policy.mcpServers))].sort(compare).map((server) => ruleControls(policy.mcpServers[server] ?? {}, (rule) => write2(changeCapabilityRule(
           changeCapabilityRule(policy, `mcpServers.${server}`, "availability", rule.availability ?? "automatic"),
           `mcpServers.${server}`,
           "disclosure",
@@ -9659,607 +9596,6 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
       ),
       h("div", { className: "ptcPlusCapabilityDialogBody" }, children),
       footer ? h("div", { className: "ptcPlusCapabilityDialogFooter" }, footer) : null
-    );
-  }
-  function CapabilityBatchDialog({ operation, value, entries, disabled, onChange, onClose, t: t2 }) {
-    const [choices, setChoices] = React32.useState({ availability: "keep", disclosure: "keep" });
-    const [pending, setPending] = React32.useState(false);
-    const [failed, setFailed] = React32.useState(false);
-    const saving = React32.useRef(false);
-    const mounted = React32.useRef(true);
-    React32.useEffect(() => {
-      mounted.current = true;
-      return () => {
-        mounted.current = false;
-      };
-    }, []);
-    const targetIds = new Set(entries.filter((entry) => entry.inCatalog === true).map((entry) => entry.id));
-    const missing = operation.targets.filter((entry) => !targetIds.has(entry.id)).length;
-    const blocked = disabled("capabilityPolicy") || pending;
-    const changed = Object.values(choices).some((choice) => choice !== "keep");
-    const close = () => {
-      if (!saving.current) onClose();
-    };
-    const confirm = async () => {
-      if (saving.current || blocked || missing || !changed || !operation.targets.length) return;
-      let next = capabilityPolicyForConfig(value);
-      for (const target of operation.targets) for (const dimension of ["availability", "disclosure"]) {
-        if (choices[dimension] !== "keep") next = changeCapabilityRule(next, target.id, dimension, choices[dimension]);
-      }
-      saving.current = true;
-      setPending(true);
-      setFailed(false);
-      try {
-        const saved = await onChange(field("capabilityPolicy"), JSON.stringify(next));
-        if (!mounted.current) return;
-        if (saved === true) onClose();
-        else setFailed(true);
-      } catch {
-        if (mounted.current) setFailed(true);
-      } finally {
-        saving.current = false;
-        if (mounted.current) setPending(false);
-      }
-    };
-    return h(
-      Modal,
-      {
-        open: true,
-        onClose: close,
-        title: t2("capabilities.batchSettings"),
-        closeLabel: t2("capabilities.batch.cancel"),
-        headless: true,
-        className: "ptcPlusCapabilityBatchModal"
-      },
-      h(
-        "div",
-        { className: "ptcPlusCapabilityBatchHead" },
-        h("h2", null, t2("capabilities.batchSettings")),
-        h("button", {
-          type: "button",
-          className: "ptcPlusDialogClose",
-          disabled: pending,
-          "aria-label": t2("capabilities.batch.cancel"),
-          onClick: close
-        }, "\xD7")
-      ),
-      h(
-        "div",
-        { className: "ptcPlusCapabilityBatchBody" },
-        h("p", { className: "ptcPlusDetail", role: "status" }, t2("capabilities.batch.targets", { count: operation.targets.length })),
-        operation.targets.length ? h(
-          "ul",
-          { className: "ptcPlusCapabilityBatchTargets", "aria-label": t2("capabilities.batch.targetList") },
-          ...operation.targets.map((target) => h("li", { key: target.id }, h("span", null, target.name), h("code", null, target.id)))
-        ) : h("p", { className: "ptcPlusDetail" }, t2("capabilities.batch.empty")),
-        h("div", { className: "ptcPlusCapabilityBatchFields" }, ...["availability", "disclosure"].map((dimension) => h(
-          "div",
-          { key: dimension, className: "ptcPlusCapabilityFilter" },
-          h("span", null, t2(`capabilities.policy.${dimension}`)),
-          h(Select2, {
-            value: choices[dimension],
-            disabled: blocked || !operation.targets.length,
-            label: t2(`capabilities.batch.${dimension}`),
-            onChange: (choice) => setChoices((current) => ({ ...current, [dimension]: choice })),
-            options: ["keep", "automatic", ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "keep" ? "capabilities.batch.keep" : choice === "automatic" ? "capabilities.policy.inheritRule" : choice === "enabled" ? "capabilities.action.enable" : choice === "closed" ? "capabilities.action.close" : `capabilities.${choice}`) }))
-          })
-        ))),
-        h("p", { className: "ptcPlusDetail" }, t2("capabilities.batch.effect")),
-        h("p", { className: "ptcPlusDetail" }, t2("capabilities.batch.sourceClosure")),
-        missing ? h("p", { className: "ptcPlusMessage", role: "alert" }, t2("capabilities.batch.changedTargets", { count: missing })) : null,
-        failed ? h("p", { className: "ptcPlusMessage", role: "alert" }, t2("capabilities.batch.failed")) : null
-      ),
-      h(
-        "div",
-        { className: "ptcPlusCapabilityBatchFooter" },
-        h("button", { type: "button", className: "ptcPlusButton", disabled: pending, onClick: close }, t2("capabilities.batch.cancel")),
-        h(
-          "button",
-          {
-            type: "button",
-            className: "ptcPlusButton",
-            "data-kind": "primary",
-            disabled: blocked || Boolean(missing) || !changed || !operation.targets.length,
-            onClick: confirm
-          },
-          t2(pending ? "state.syncing" : "capabilities.batch.confirm", { count: operation.targets.length })
-        )
-      )
-    );
-  }
-  function CapabilityChoices({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t: t2, selectedSessionId, onSessionSelect }) {
-    const root = React32.useRef(null);
-    const [query, setQuery] = React32.useState("");
-    const [kind, setKind] = React32.useState("all");
-    const [source, setSource] = React32.useState("all");
-    const [strategy, setStrategy] = React32.useState("all");
-    const [availabilityRule, setAvailabilityRule] = React32.useState("all");
-    const [onlyCommon, setOnlyCommon] = React32.useState(false);
-    const [sort2, setSort] = React32.useState(null);
-    const [selected, setSelected] = React32.useState(null);
-    const [picked, setPicked] = React32.useState([]);
-    const [filtersOpen, setFiltersOpen] = React32.useState(false);
-    const [batchOperation, setBatchOperation] = React32.useState(null);
-    const [inheritedRulesOpen, setInheritedRulesOpen] = React32.useState(false);
-    const [localSessionId, setLocalSessionId] = React32.useState("");
-    const sessionId = onSessionSelect ? selectedSessionId : localSessionId;
-    const setSessionId = (next) => {
-      setLocalSessionId(next);
-      onSessionSelect?.(next);
-    };
-    const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline);
-    const policy = capabilityPolicyForConfig(value);
-    const entries = capabilitySettingsEntries(value, catalog, plans, Boolean(catalogError));
-    const sourceKey = (entry2) => JSON.stringify(entry2.source ?? namespaceSource(entry2));
-    const sourceLabel = (entry2) => {
-      if (entry2.source?.kind === "skill") {
-        const bucket = entry2.source.bucket;
-        const label = SKILL_SOURCE_BUCKETS.includes(bucket) ? t2(`capabilities.source.${bucket}`) : bucket ? `${t2("capabilities.source.other-skill")} \xB7 ${bucket}` : t2("capabilities.source.skill");
-        return `${label}${entry2.source.provider ? ` \xB7 ${entry2.source.provider}` : ""}`;
-      }
-      if (entry2.source?.kind === "mcp") {
-        const servers = mcpServersOf(entry2.source);
-        return servers.length > 0 ? `MCP \xB7 ${servers.join(t2("capabilities.source.separator"))}` : t2("capabilities.source.mcp");
-      }
-      return capabilitySourceText(t2, entry2);
-    };
-    const matchesKind = (entry2, type2) => type2 === "all" || (type2 === "resource" ? entry2.source?.kind === "mcp" : type2 === "tool" ? entry2.kind === "tool" && entry2.source?.kind !== "mcp" : type2 === entry2.kind);
-    const sources = new Map(entries.filter((entry2) => matchesKind(entry2, kind)).map((entry2) => [sourceKey(entry2), sourceLabel(entry2)]));
-    const setType = (next) => {
-      setKind(next);
-      if (!entries.some((entry2) => matchesKind(entry2, next) && sourceKey(entry2) === source)) setSource("all");
-    };
-    const setCompatibleSource = (next) => {
-      setSource(next);
-      if (next !== "all" && !entries.some((entry2) => matchesKind(entry2, kind) && sourceKey(entry2) === next)) setKind("all");
-    };
-    const normalizedQuery = query.trim().toLowerCase();
-    const filtered = entries.filter((entry2) => matchesKind(entry2, kind) && (source === "all" || sourceKey(entry2) === source) && (strategy === "all" || (entry2.rule.disclosure ?? "automatic") === strategy) && (availabilityRule === "all" || (entry2.rule?.availability ?? "automatic") === availabilityRule) && (!onlyCommon || entry2.common) && `${entry2.name} ${entry2.id} ${entry2.description ?? ""} ${sourceLabel(entry2)}`.toLowerCase().includes(normalizedQuery));
-    const defaultOrder = (a, b) => compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.id, b.id);
-    const state = (item) => value.capabilityContextEnabled === false || value.capabilityManagementEnabled !== true ? "unapplied" : item.resolvedRule.availabilitySource.startsWith("mcp:") && item.resolvedRule.availability === "closed" ? "source-closed" : item.resolvedRule.availability;
-    const type = (item) => item.source?.kind === "mcp" ? "resource" : item.kind;
-    const displayedSource = (item) => item.source?.kind === "mcp" ? mcpServersOf(item.source).join(t2("capabilities.source.separator")) || sourceLabel(item) : sourceLabel(item);
-    const groups = /* @__PURE__ */ new Map();
-    for (const entry2 of filtered) {
-      const group = entry2.source?.kind === "mcp" && entry2.source.server ? `mcp:${entry2.source.server}` : entry2.kind;
-      if (!groups.has(group)) groups.set(group, []);
-      groups.get(group).push(entry2);
-    }
-    const groupOrder = ["tool", ...[...groups.keys()].filter((key) => key.startsWith("mcp:")).sort(compare), "skill", "resource", "other"];
-    const defaultEntries = groupOrder.flatMap((group) => (groups.get(group) ?? []).sort(defaultOrder));
-    const visible = sortCapabilityEntries(defaultEntries, sort2, (item, column) => column === "name" ? item.name : column === "type" ? t2(`capabilities.type.${type(item)}`) : column === "source" ? displayedSource(item) : column === "availability" ? t2(`capabilities.rowState.${state(item)}`) : t2(`capabilities.${item.resolvedRule.disclosure}`));
-    const pickedIds = picked.filter((id2) => entries.some((item) => item.id === id2));
-    const pickedEntries = pickedIds.map((id2) => entries.find((item) => item.id === id2)).filter(Boolean);
-    const allVisiblePicked = visible.length > 0 && visible.every((item) => pickedIds.includes(item.id));
-    const someVisiblePicked = visible.some((item) => pickedIds.includes(item.id));
-    const togglePick = (id2) => setPicked((current) => current.includes(id2) ? current.filter((item) => item !== id2) : [...current, id2]);
-    const toggleAllVisible = () => setPicked((current) => allVisiblePicked ? current.filter((id2) => !visible.some((item) => item.id === id2)) : [.../* @__PURE__ */ new Set([...current, ...visible.map((item) => item.id)])]);
-    const entry = visible.find((item) => item.id === selected);
-    const plan = sessionId ? plans?.find((item) => item.sessionId === sessionId) : void 0;
-    const effective = plan?.effective.entries.find((item) => item.id === entry?.id);
-    const change = (key, next) => onChange(field(key), JSON.stringify(next));
-    const setManual = (id2, selection) => change("capabilityPolicy", changeCapabilityRule(policy, id2, "disclosure", selection));
-    const clear = () => {
-      setQuery("");
-      setKind("all");
-      setSource("all");
-      setStrategy("all");
-      setAvailabilityRule("all");
-      setOnlyCommon(false);
-    };
-    const activeFilters = Number(kind !== "all") + Number(source !== "all") + Number(strategy !== "all") + Number(availabilityRule !== "all") + Number(onlyCommon);
-    const select = (label, current, update, options2, blocked = false) => h(
-      "div",
-      { className: "ptcPlusCapabilityFilter" },
-      h("span", null, label),
-      h(Select2, {
-        label,
-        value: current,
-        disabled: blocked,
-        onChange: update,
-        options: options2.map(([key, text]) => ({ value: key, label: text }))
-      })
-    );
-    const editorField = (label, control) => h("div", { className: "ptcPlusCapabilityField" }, h("span", null, label), control);
-    const manualSelect = (item) => h(
-      "div",
-      { className: "ptcPlusCapabilityEditorFields" },
-      editorField(t2("capabilities.enabledColumn"), h(Select2, {
-        value: item.rule.availability ?? "automatic",
-        disabled: disabled("capabilityPolicy"),
-        label: t2("capabilities.policy.availabilityFor", { name: item.id }),
-        onChange: (next) => change("capabilityPolicy", changeCapabilityRule(policy, item.id, "availability", next)),
-        options: ["automatic", "enabled", "closed"].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.inheritRule" : choice === "enabled" ? "capabilities.quick.enabled" : `capabilities.${choice}`) }))
-      })),
-      editorField(t2("capabilities.contextColumn"), h(Select2, {
-        value: item.rule.disclosure ?? "automatic",
-        disabled: disabled("capabilityPolicy"),
-        label: t2("capabilities.disclosureFor", { name: item.id }),
-        onChange: (next) => setManual(item.id, next),
-        options: ["automatic", ...CAPABILITY_DISCLOSURES].map((choice) => ({ value: choice, label: t2(choice === "automatic" ? "capabilities.policy.inheritRule" : `capabilities.${choice}`) }))
-      }))
-    );
-    const commonSwitch = (item) => h(
-      "div",
-      { className: "ptcPlusCapabilitySwitchRow" },
-      h(
-        "div",
-        { className: "ptcPlusCapabilitySwitchText" },
-        h("span", { className: "ptcPlusCapabilitySwitchLabel" }, t2("capabilities.commonBaseline")),
-        h("span", { className: "ptcPlusCapabilitySwitchHint" }, t2(item.common ? "capabilities.inBaseline" : "capabilities.notInBaseline"))
-      ),
-      h("input", {
-        type: "checkbox",
-        role: "switch",
-        className: "ptcPlusCheck",
-        checked: item.common,
-        disabled: disabled("capabilityBaseline"),
-        "aria-label": t2("capabilities.baselineFor", { name: item.id }),
-        onChange: (event) => change("capabilityBaseline", event.target.checked ? [...baseline.filter((id2) => id2 !== item.id), item.id] : baseline.filter((id2) => id2 !== item.id))
-      })
-    );
-    const filterLabels = [
-      kind !== "all" ? t2(`capabilities.type.${kind}`) : null,
-      source !== "all" ? sources.get(source) ?? t2("capabilities.previousSource") : null,
-      strategy !== "all" ? t2(strategy === "automatic" ? "capabilities.policy.inheritRule" : `capabilities.${strategy}`) : null,
-      availabilityRule !== "all" ? t2(availabilityRule === "automatic" ? "capabilities.policy.inheritRule" : availabilityRule === "enabled" ? "capabilities.quick.enabled" : "capabilities.closed") : null,
-      onlyCommon ? t2("capabilities.onlyCommon") : null
-    ].filter(Boolean);
-    const closeEditor = () => {
-      const button = [...root.current?.querySelectorAll("[data-capability-edit-id]") ?? []].find((item) => item.dataset.capabilityEditId === selected);
-      setSelected(null);
-      button?.focus({ preventScroll: true });
-    };
-    return h(
-      "div",
-      { className: "ptcPlusCapabilityChoices", ref: root },
-      h(
-        "div",
-        { className: "ptcPlusCapabilityToolbar" },
-        h(
-          "label",
-          { className: "ptcPlusSearch" },
-          h(SearchIcon),
-          h("input", {
-            type: "search",
-            value: query,
-            "aria-label": t2("capabilities.search"),
-            placeholder: t2("capabilities.search"),
-            onChange: (event) => setQuery(event.target.value)
-          })
-        ),
-        h(
-          "div",
-          { className: "ptcPlusCapabilityTypes", role: "group", "aria-label": t2("capabilities.types") },
-          ...kinds.filter((key) => key !== "other" || entries.some((item) => item.kind === "other")).map((key) => h("button", {
-            key,
-            type: "button",
-            "aria-pressed": kind === key,
-            onClick: () => setType(key)
-          }, t2(`capabilities.type.${key}`)))
-        ),
-        h("button", {
-          type: "button",
-          className: "ptcPlusButton",
-          "aria-haspopup": "dialog",
-          onClick: () => setFiltersOpen(true)
-        }, t2("capabilities.filterAction")),
-        h(
-          "button",
-          {
-            type: "button",
-            className: "ptcPlusButton",
-            "aria-haspopup": "dialog",
-            "aria-label": t2("capabilities.batchSettings"),
-            disabled: disabled("capabilityPolicy") || pickedEntries.length === 0,
-            onClick: () => setBatchOperation({
-              targets: pickedEntries.map((item) => ({ id: item.id, name: item.name }))
-            })
-          },
-          t2("capabilities.batchSettings"),
-          pickedIds.length ? h(
-            "span",
-            {
-              className: "ptcPlusCapabilityBatchCount",
-              "aria-hidden": true,
-              title: t2("capabilities.selectionCount", { count: pickedIds.length })
-            },
-            String(pickedIds.length)
-          ) : null
-        ),
-        h("button", {
-          type: "button",
-          className: "ptcPlusButton",
-          "aria-haspopup": "dialog",
-          onClick: () => setInheritedRulesOpen(true)
-        }, t2("capabilities.inheritedRules"))
-      ),
-      filtersOpen ? h(
-        CapabilityDialog,
-        {
-          title: t2("capabilities.filterAction"),
-          onClose: () => setFiltersOpen(false),
-          t: t2,
-          className: "ptcPlusCapabilityFilterDialog",
-          footer: h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            "data-kind": "primary",
-            onClick: () => setFiltersOpen(false)
-          }, t2("capabilities.dialogDone"))
-        },
-        h(
-          "div",
-          { className: "ptcPlusCapabilityFilterFields" },
-          select(t2("capabilities.sourceFilter"), source, setCompatibleSource, [
-            ["all", t2("capabilities.allSources")],
-            ...sources,
-            ...source !== "all" && !sources.has(source) ? [[source, t2("capabilities.previousSource")]] : []
-          ]),
-          select(t2("capabilities.policy.disclosureFilter"), strategy, setStrategy, [
-            ["all", t2("capabilities.allStrategies")],
-            ...["automatic", ...CAPABILITY_DISCLOSURES].map((key) => [key, t2(key === "automatic" ? "capabilities.policy.inheritRule" : `capabilities.${key}`)])
-          ]),
-          select(t2("capabilities.policy.availabilityFilter"), availabilityRule, setAvailabilityRule, [
-            ["all", t2("capabilities.allStrategies")],
-            ...["automatic", "enabled", "closed"].map((key) => [key, t2(key === "automatic" ? "capabilities.policy.inheritRule" : key === "enabled" ? "capabilities.quick.enabled" : "capabilities.closed")])
-          ]),
-          h("label", { className: "ptcPlusCapabilityOnlyCommon" }, h("input", {
-            type: "checkbox",
-            checked: onlyCommon,
-            onChange: (event) => setOnlyCommon(event.target.checked)
-          }), t2("capabilities.onlyCommon"))
-        )
-      ) : null,
-      inheritedRulesOpen ? h(
-        CapabilityDialog,
-        {
-          title: t2("capabilities.inheritedRules"),
-          onClose: () => setInheritedRulesOpen(false),
-          t: t2,
-          footer: h("button", {
-            type: "button",
-            className: "ptcPlusButton",
-            "data-kind": "primary",
-            onClick: () => setInheritedRulesOpen(false)
-          }, t2("capabilities.dialogDone"))
-        },
-        h(PolicyRules, { value, catalog, disabled, onChange, t: t2 })
-      ) : null,
-      batchOperation ? h(CapabilityBatchDialog, {
-        operation: batchOperation,
-        value,
-        entries,
-        disabled,
-        onChange,
-        onClose: () => setBatchOperation(null),
-        t: t2
-      }) : null,
-      activeFilters ? h(
-        "div",
-        { className: "ptcPlusActiveFilters" },
-        h("span", null, filterLabels.join(" \xB7 ")),
-        h("button", { type: "button", className: "ptcPlusCapabilityLink", onClick: clear }, t2("capabilities.clear"))
-      ) : null,
-      h(
-        "div",
-        { className: "ptcPlusCapabilityResultLine" },
-        h("span", { role: "status" }, t2("capabilities.results", { count: visible.length, total: entries.length })),
-        h("button", { type: "button", className: "ptcPlusCapabilityLink", onClick: onReload }, t2("capabilities.reloadCatalog"))
-      ),
-      catalogError ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.catalogReadFailed", { error: catalogError })) : null,
-      entries.length === 0 ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.catalogEmpty")) : visible.length === 0 ? h(
-        "div",
-        { className: "ptcPlusCapabilityEmpty" },
-        h("p", null, t2("capabilities.noMatches")),
-        h("button", { type: "button", className: "ptcPlusCapabilityLink", onClick: clear }, t2("capabilities.clear"))
-      ) : h(
-        "div",
-        { className: "ptcPlusCapabilityTable", role: "table", "aria-label": t2("capabilities.management") },
-        h(
-          "div",
-          { className: "ptcPlusCapabilityColumns", role: "row" },
-          ...CAPABILITY_SORT_COLUMNS.map((column) => h(
-            "span",
-            {
-              key: column.key,
-              role: "columnheader",
-              "aria-sort": capabilitySortDirection(sort2, column.key),
-              ...column.key === "name" ? { "aria-label": t2("capabilities.member"), className: "ptcPlusCapabilityPickHead" } : {}
-            },
-            ...column.key === "name" ? [h("input", {
-              type: "checkbox",
-              className: "ptcPlusPick",
-              checked: allVisiblePicked,
-              ref: (node) => {
-                if (node) node.indeterminate = someVisiblePicked && !allVisiblePicked;
-              },
-              disabled: visible.length === 0,
-              "aria-label": t2("capabilities.selectAllVisible"),
-              onChange: toggleAllVisible
-            })] : [],
-            h(
-              "button",
-              {
-                type: "button",
-                className: "ptcPlusCapabilitySort",
-                title: t2("capabilities.sortCycle"),
-                onClick: () => setSort((current) => cycleCapabilitySort(current, column.key))
-              },
-              t2(`capabilities.${column.label}`),
-              h(
-                "span",
-                { "aria-hidden": true },
-                capabilitySortDirection(sort2, column.key) === "ascending" ? "\u2191" : capabilitySortDirection(sort2, column.key) === "descending" ? "\u2193" : "\u2195"
-              )
-            )
-          ))
-        ),
-        h("div", { className: "ptcPlusCapabilityList", role: "rowgroup" }, ...visible.map((item) => h(
-          "div",
-          {
-            key: item.id,
-            className: "ptcPlusCapabilityItem",
-            role: "row",
-            "data-selected": entry?.id === item.id,
-            onClick: () => setSelected(item.id)
-          },
-          h(
-            "div",
-            { className: "ptcPlusCapabilityIdentity", role: "cell" },
-            h("input", {
-              type: "checkbox",
-              className: "ptcPlusPick",
-              checked: pickedIds.includes(item.id),
-              "aria-label": t2("capabilities.selectForBatch", { name: item.name ?? item.id }),
-              onClick: (event) => event.stopPropagation(),
-              onChange: () => togglePick(item.id)
-            }),
-            h(
-              "div",
-              { className: "ptcPlusCapabilityIdentityText" },
-              h("span", { className: "ptcPlusCapabilityName" }, item.name),
-              h("code", null, item.id)
-            )
-          ),
-          h("span", { className: "ptcPlusCapabilityBadge", role: "cell", "data-kind": type(item) }, t2(`capabilities.type.${type(item)}`)),
-          h("span", { className: "ptcPlusCapabilitySource", role: "cell" }, displayedSource(item)),
-          // The cell stays a plain cell so its empty area selects the row; only the switch and
-          // its own label swallow the click, keeping a toggle from also opening the row editor.
-          h(
-            "div",
-            { className: "ptcPlusCapabilityAvailability", role: "cell", "data-state": state(item) },
-            h("input", {
-              type: "checkbox",
-              role: "switch",
-              className: "ptcPlusCheck",
-              id: `ptcPlusCapabilityAvailability-${item.id}`,
-              checked: item.resolvedRule.availability === "enabled",
-              disabled: disabled("capabilityPolicy") || state(item) === "source-closed",
-              "aria-label": t2("capabilities.policy.availabilityFor", { name: item.id }),
-              onClick: (event) => event.stopPropagation(),
-              onChange: (event) => change("capabilityPolicy", changeCapabilityRule(policy, item.id, "availability", event.target.checked ? "enabled" : "closed"))
-            }),
-            h("label", {
-              htmlFor: `ptcPlusCapabilityAvailability-${item.id}`,
-              onClick: (event) => event.stopPropagation()
-            }, t2(`capabilities.rowState.${state(item)}`))
-          ),
-          h("div", { role: "cell", className: "ptcPlusCapabilityContextCell" }, h(
-            "button",
-            {
-              type: "button",
-              className: "ptcPlusCapabilityContext",
-              "data-capability-edit-id": item.id,
-              "aria-label": t2("capabilities.editContextFor", { name: item.id }),
-              "aria-haspopup": "dialog",
-              onClick: (event) => {
-                event.stopPropagation();
-                setSelected(item.id);
-              }
-            },
-            h("span", null, t2(`capabilities.${item.resolvedRule.disclosure}`)),
-            h(
-              "svg",
-              { width: 16, height: 16, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.5, "aria-hidden": true },
-              h("path", { d: "m15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z" })
-            )
-          ))
-        )))
-      ),
-      entry ? h(
-        CapabilityDialog,
-        {
-          title: entry.name,
-          onClose: closeEditor,
-          t: t2,
-          className: "ptcPlusCapabilityEditorDialog",
-          footer: h("button", { type: "button", className: "ptcPlusButton", onClick: closeEditor }, t2("capabilities.closeDetails"))
-        },
-        h("code", null, entry.id),
-        h("p", { className: "ptcPlusDetail" }, t2("capabilities.contextHelp")),
-        manualSelect(entry),
-        commonSwitch(entry),
-        h("p", { className: "ptcPlusDetail" }, t2(value.capabilityContextEnabled === false ? "capabilities.effect.paused" : value.capabilityManagementEnabled !== true ? "capabilities.effect.rulesOff" : entry.resolvedRule.availabilitySource.startsWith("mcp:") && entry.resolvedRule.availability === "closed" ? "capabilities.effect.sourceClosed" : entry.resolvedRule.availability === "closed" ? "capabilities.effect.closed" : `capabilities.effect.disclosure.${entry.resolvedRule.disclosure}`)),
-        h("p", { className: "ptcPlusDetail" }, t2("capabilities.policy.resolved", {
-          availability: t2(entry.resolvedRule.availability === "enabled" ? "capabilities.quick.enabled" : "capabilities.closed"),
-          disclosure: t2(`capabilities.${entry.resolvedRule.disclosure}`),
-          source: `${entry.resolvedRule.availabilitySource} \xB7 ${entry.resolvedRule.disclosureSource}`
-        })),
-        entry.rule.disclosure !== void 0 ? h("button", {
-          type: "button",
-          className: "ptcPlusCapabilityLink",
-          disabled: disabled("capabilityPolicy"),
-          onClick: () => setManual(entry.id, "automatic")
-        }, t2("capabilities.restoreAutomatic")) : null,
-        entry.source?.kind === "mcp" && entry.mcpServer ? h(
-          "section",
-          { className: "ptcPlusCapabilityEditorSection" },
-          h("h5", null, t2("capabilities.sourceRules")),
-          h("p", { className: "ptcPlusDetail" }, t2("capabilities.serverHint")),
-          h(
-            "div",
-            { className: "ptcPlusCapabilityEditorFields" },
-            ...["availability", "disclosure"].map((dimension) => editorField(
-              t2(`capabilities.policy.${dimension}`),
-              h(Select2, {
-                value: policy.mcpServers[entry.mcpServer]?.[dimension] ?? "automatic",
-                disabled: disabled("capabilityPolicy"),
-                label: `${entry.mcpServer} \xB7 ${t2(`capabilities.policy.${dimension}`)}`,
-                onChange: (next) => change("capabilityPolicy", changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
-                options: ["automatic", ...dimension === "availability" ? ["enabled", "closed"] : CAPABILITY_DISCLOSURES].map((key) => ({
-                  value: key,
-                  label: t2(key === "automatic" ? "capabilities.policy.inheritRule" : key === "enabled" ? "capabilities.quick.enabled" : `capabilities.${key}`)
-                }))
-              })
-            ))
-          )
-        ) : null,
-        entry.kind === "skill" ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.skillDisclosure")) : null,
-        entry.kind === "skill" && entry.invocation ? h(
-          "p",
-          { className: "ptcPlusDetail" },
-          t2(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? "capabilities.invocation.both" : "capabilities.invocation.model" : "capabilities.invocation.user", { name: entry.name })
-        ) : null,
-        entry.description ? h(
-          "section",
-          { className: "ptcPlusCapabilityEditorSection" },
-          h("h5", null, t2("capabilities.catalogDescription")),
-          h("p", { className: "ptcPlusCapabilityProse" }, entry.description)
-        ) : null,
-        // Removal is offered whenever this identity has anything saved, because that
-        // is exactly what the action removes; catalog membership is not its condition.
-        policy.items[entry.id] !== void 0 || baseline.includes(entry.id) ? h("button", {
-          type: "button",
-          className: "ptcPlusCapabilityLink",
-          disabled: disabled("capabilityBaseline") || disabled("capabilityPolicy"),
-          onClick: () => {
-            const next = { ...policy, items: { ...policy.items } };
-            delete next.items[entry.id];
-            change("capabilityPolicy", next);
-            if (baseline.includes(entry.id)) change("capabilityBaseline", baseline.filter((id2) => id2 !== entry.id));
-          }
-        }, t2("capabilities.removeSaved")) : null,
-        value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h(
-          "section",
-          { className: "ptcPlusCapabilityEditorSection" },
-          h("h5", null, t2("capabilities.currentSession")),
-          editorField(t2("capabilities.sessionSelector"), h(Select2, {
-            value: sessionId ?? "",
-            label: t2("capabilities.sessionSelector"),
-            onChange: setSessionId,
-            options: [{ value: "", label: t2("capabilities.chooseSession") }, ...(plans ?? []).map((item) => ({ value: item.sessionId, label: item.sessionId }))]
-          })),
-          plansError ? h("p", { role: "status", className: "ptcPlusDetail" }, t2("capabilities.unavailable", { error: plansError })) : !plan ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.selectObservation")) : h(
-            React32.Fragment,
-            null,
-            h("p", null, effective ? t2(`capabilities.${effective.selection}`) : t2("capabilities.notInSession")),
-            effective ? h("p", { className: "ptcPlusDetail" }, capabilityPlanReason(t2, effective)) : null,
-            effective?.evidence ? h("p", { className: "ptcPlusDetail" }, `${effective.evidence.used}/${effective.evidence.eligible} (${effective.evidence.scope})`) : null,
-            plan.pendingRefresh ? h("p", { className: "ptcPlusDetail" }, t2("capabilities.pending")) : null
-          )
-        ) : null
-      ) : null
     );
   }
   function AllocationEvidence({ allocation, allocationError, allocationPending, selectedSessionId, statistics = false, onReload, t: t2 }) {
@@ -10298,7 +9634,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
         h(
           "div",
           { className: "ptcPlusAllocationMetrics" },
-          ...["full", "on-demand", "closed"].map((selection) => h("div", { key: selection }, h("strong", null, count3(selection)), h("span", null, t2(`capabilities.${selection}`)))),
+          ...["full", "on-demand", "closed"].map((selection) => h("div", { key: selection }, h("strong", null, count3(selection)), h("span", null, t2(`capabilities.word.${selection}`)))),
           h("div", null, h("strong", null, `${plan.budgets.contractBytes} / ${configuration.capabilityBudgetBytes}`), h("span", null, "UTF-8 bytes"))
         ),
         h("progress", {
@@ -10320,7 +9656,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
             h("td", { key: "used" }, usable(evidenceFor(item)) ? evidenceFor(item).used : "\u2014"),
             h("td", { key: "eligible" }, usable(evidenceFor(item)) ? evidenceFor(item).eligible : "\u2014"),
             h("td", { key: "coverage" }, coverageText(evidenceFor(item)), usable(evidenceFor(item)) && Number.isFinite(evidenceFor(item).coverage) ? h("progress", { max: 1, value: evidenceFor(item).coverage, "aria-label": t2("capabilities.coverageFor", { name: item.id }) }) : null)
-          ] : [h("td", { key: "selection" }, t2(`capabilities.${entry?.selection ?? "host"}`)), h("td", { key: "reason" }, entry ? capabilityPlanReason(t2, entry) : "\u2014"), h("td", { key: "size" }, `${item.contractBytes} B`)]);
+          ] : [h("td", { key: "selection" }, t2(`capabilities.word.${entry?.selection ?? "host"}`)), h("td", { key: "reason" }, entry ? capabilityPlanReason(t2, entry) : "\u2014"), h("td", { key: "size" }, `${item.contractBytes} B`)]);
         }))
       ))
     );
@@ -10660,7 +9996,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           setting("group.capabilities", enabled("capabilityContextEnabled")),
           setting("capabilities.management", enabled("capabilityManagementEnabled")),
           setting("capabilities.statisticsEnabled", t2(JSON.parse(configuration.capabilityStatistics).enabled ? "capabilities.serverOn" : "capabilities.serverOff")),
-          setting("capabilities.defaultDisclosure", t2(`capabilities.${policy.defaults.disclosure}`)),
+          setting("capabilities.defaultDisclosure", t2(`capabilities.word.${policy.defaults.disclosure}`)),
           setting("capabilities.allocationTitle", ["baseline", "statistics", "budget"].filter((key) => policy.allocation[key]).map((key) => t2(`capabilities.allocation.${key}`)).join(" \xB7 ") || "\u2014"),
           setting("capabilities.recoveryEnabled", enabled("capabilityRecoveryEnabled")),
           setting("capabilities.previewEnabled", `${enabled("modelPreviewEnabled")}${configuration.modelPreviewEnabled ? ` \xB7 ${t2("capabilities.estimatedTokens", { count: configuration.modelPreviewTokens })}` : ""}`),
@@ -10719,13 +10055,13 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     const saved = choicesFor(configurationReady ? value : void 0);
     const retained = flagsFor(saved);
     const applied = flagsFor(effectiveCapabilitySettings(saved));
-    const policy = capabilityPolicyForConfig(value);
+    const policy = value.capabilityPolicySaved === true ? capabilityPolicyForConfig(value) : capabilityPolicyFromRecord(value);
     const write2 = (next) => onChange(field("capabilityPolicy"), JSON.stringify(next));
     const adaptive = [policy.defaults, ...Object.values(policy.categories), ...Object.values(policy.mcpServers), ...Object.values(policy.items)].some((rule) => rule.disclosure === "adaptive");
     const summary = (key) => {
       if (choiceState(retained, applied, key) === "unknown") return t2("capabilities.combination.unknownSettings");
       if (key === "description") {
-        const description = t2("capabilities.context.summary.description", { disclosure: t2(`capabilities.${policy.defaults.disclosure}`) });
+        const description = t2("capabilities.context.summary.description", { disclosure: t2(`capabilities.word.${policy.defaults.disclosure}`) });
         if (policy.defaults.disclosure !== "adaptive") return description;
         const criteria2 = ["baseline", "statistics", "budget"].filter((key2) => policy.allocation[key2]).map((key2) => t2(`capabilities.allocation.${key2}`)).join(t2("capabilities.combination.separator"));
         return `${description} \xB7 ${criteria2 || t2("capabilities.context.summary.noCriteria")}`;
@@ -10826,7 +10162,7 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
               value: policy.defaults.disclosure,
               disabled: disabled("capabilityPolicy"),
               label: t2("capabilities.defaultDisclosure"),
-              options: CAPABILITY_DISCLOSURES.map((choice) => ({ value: choice, label: t2(`capabilities.${choice}`) })),
+              options: CAPABILITY_DISCLOSURES.map((choice) => ({ value: choice, label: t2(`capabilities.word.${choice}`) })),
               onChange: (disclosure) => write2({ ...policy, defaults: { ...policy.defaults, disclosure } })
             })
           ),
@@ -11320,8 +10656,6 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
   function CapabilityWorkbench({
     value,
     configurationReady,
-    catalog,
-    catalogError,
     plans,
     plansError,
     plansPending,
@@ -11342,10 +10676,12 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
     onApplyConfiguration,
     configurationWritable,
     saving,
-    saveStatus
+    saveStatus,
+    surface
   }) {
     const [tab, setTab] = React32.useState("manual");
     const [contextSection, setContextSection] = React32.useState("description");
+    const [rulesOpen, setRulesOpen] = React32.useState(false);
     const tabs = ["manual", "budgets", "statistics", "prompt", "plans"];
     const feedback = saving ? t2("state.syncing") : saveStatus && saveStatus.key !== "status.applied" ? t2(saveStatus.key, saveStatus.params) : t2(configurationWritable ? "capabilities.savedForNew" : "footer.readOnly");
     return h(
@@ -11418,7 +10754,36 @@ function createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, M
           React32.Fragment,
           null,
           h("p", { className: "ptcPlusDetail" }, t2(value.capabilityContextEnabled === false ? "capabilities.effect.paused" : value.capabilityManagementEnabled === true ? "capabilities.managementHelp" : "capabilities.effect.rulesOff")),
-          h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t: t2, selectedSessionId, onSessionSelect })
+          // The capability page is one renderer mounted here with the address this
+          // entrance fixes. This entrance brings no columns, words, controls or
+          // receipts of its own; the rule chain that answers for objects the saved
+          // address has not decided one by one stays a rule editor beside it.
+          h(
+            "div",
+            { className: "ptcPlusCapabilityRulesEntry" },
+            h("button", {
+              type: "button",
+              className: "ptcPlusButton",
+              "aria-haspopup": "dialog",
+              onClick: () => setRulesOpen(true)
+            }, t2("capabilities.inheritedRules"))
+          ),
+          rulesOpen ? h(
+            CapabilityDialog,
+            {
+              title: t2("capabilities.inheritedRules"),
+              onClose: () => setRulesOpen(false),
+              t: t2,
+              footer: h("button", {
+                type: "button",
+                className: "ptcPlusButton",
+                "data-kind": "primary",
+                onClick: () => setRulesOpen(false)
+              }, t2("capabilities.dialogDone"))
+            },
+            h(PolicyRules, { value, disabled, onChange, t: t2 })
+          ) : null,
+          surface ?? null
         ) : key === "statistics" ? h(
           React32.Fragment,
           null,
@@ -11517,19 +10882,35 @@ function createCapabilityRefreshView(React32, commands) {
     );
   };
 }
-function createSessionCapabilityControlsView(React32, { commands, bindingCommands, Modal, Select: Select2, inspectSessionCatalog }) {
+function createCapabilitySurfaceView(React32, { commands, bindingCommands, Modal, Select: Select2, inspectSessionCatalog }) {
   const h = React32.createElement;
-  const COLUMNS = Object.freeze([
-    "capabilities.column.name",
-    "capabilities.typesColumn",
-    "capabilities.sourceColumn",
-    "capabilities.column.saved",
-    "capabilities.column.availability",
-    "capabilities.column.disclosure",
-    "capabilities.column.evidence"
-  ]);
-  const AVAILABILITY_CHOICES = Object.freeze(["enabled", "closed", "automatic", "inherit"]);
-  const DISCLOSURE_CHOICES = Object.freeze(["host", "full", "on-demand", "adaptive", "automatic", "inherit"]);
+  const COLUMNS = Object.freeze({
+    session: Object.freeze([
+      "object",
+      "type",
+      "source",
+      "savedEnabled",
+      "savedDisclosure",
+      "sessionEnabled",
+      "sessionDisclosure",
+      "receipt"
+    ]),
+    settings: Object.freeze(["object", "type", "source", "savedEnabled", "savedDisclosure"])
+  });
+  const COLUMN_COPY = Object.freeze({
+    object: "capabilities.column.object",
+    type: "capabilities.typesColumn",
+    source: "capabilities.sourceColumn",
+    savedEnabled: "capabilities.column.savedEnabled",
+    savedDisclosure: "capabilities.column.savedDisclosure",
+    sessionEnabled: "capabilities.column.sessionEnabled",
+    sessionDisclosure: "capabilities.column.sessionDisclosure",
+    receipt: "capabilities.column.receipt"
+  });
+  const SAVED_AVAILABILITY = Object.freeze(["enabled", "closed", "automatic"]);
+  const SAVED_DISCLOSURE = Object.freeze([...CAPABILITY_DISCLOSURES, "automatic"]);
+  const SESSION_AVAILABILITY = Object.freeze(["enabled", "closed", "automatic", "inherit"]);
+  const SESSION_DISCLOSURE = Object.freeze([...CAPABILITY_DISCLOSURES, "automatic", "inherit"]);
   const DIMENSIONS2 = Object.freeze(["availability", "disclosure"]);
   const ADOPTION_WORDS = Object.freeze({
     use: "capabilities.word.use",
@@ -11543,7 +10924,9 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
     if (text !== null && typeof text === "object" && typeof text.key === "string") return t2(text.key, text.params);
     return text === void 0 || text === null ? "" : String(text);
   };
-  return function SessionCapabilityControls({ sessionId, open, t: t2, onClose }) {
+  return function CapabilitySurface({ entrance = "session", sessionId, open, inline: inline3, writable = true, revision, savedCommands, onReload, t: t2, onClose }) {
+    const settingsEntrance = entrance === "settings";
+    const active = inline3 === true ? true : open;
     const [rows, setRows] = React32.useState([]);
     const [loaded, setLoaded] = React32.useState(false);
     const [defect, setDefect] = React32.useState(null);
@@ -11604,7 +10987,7 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       }
     }, [sessionId]);
     React32.useEffect(() => {
-      if (!open) {
+      if (!active) {
         request.current?.abort();
         request.current = null;
         return;
@@ -11616,32 +10999,38 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
         controller.abort();
         if (request.current === controller) request.current = null;
       };
-    }, [open, load]);
+    }, [active, load, revision]);
     const reload = () => {
       const controller = new AbortController();
       request.current?.abort();
       request.current = controller;
       void load(controller.signal);
+      onReload?.();
     };
-    const record = async (channel, line, id2) => {
+    const perform = async (id2, run) => {
       const controller = new AbortController();
       writes.current.add(controller);
       setWriting((current) => current.includes(id2) ? current : [...current, id2]);
       setReceipt(null);
       try {
-        const result = await channel.run(sessionId, line, controller.signal);
+        const answer = await run(controller.signal);
         if (!mounted.current || controller.signal.aborted) return;
-        setReceipt({ text: receiptText(t2, result) });
+        setReceipt({ text: receiptText(t2, answer) });
         await load(controller.signal);
+        return { ok: true };
       } catch (cause) {
-        if (mounted.current && !controller.signal.aborted) setReceipt({ error: String(cause?.message ?? cause) });
+        const error = String(cause?.message ?? cause);
+        if (mounted.current && !controller.signal.aborted) setReceipt({ error });
+        return { error };
       } finally {
         writes.current.delete(controller);
         if (mounted.current) setWriting((current) => current.filter((item) => item !== id2));
       }
     };
+    const record = (channel, line, id2) => perform(id2, (signal) => channel.run(sessionId, line, signal));
     const word = (value) => t2(`capabilities.word.${value}`);
-    const choiceOptions = (dimension) => (dimension === "availability" ? AVAILABILITY_CHOICES : DISCLOSURE_CHOICES).map((value) => ({ value, label: word(value) }));
+    const dimensionWord = (dimension) => t2(`capabilities.dimension.${dimension}`);
+    const choiceOptions = (values) => values.map((value) => ({ value, label: word(value) }));
     const familyOf = (row) => row.kind === "binding" ? "bindings" : row.kind === "server" ? "mcp" : row.category === "skill" ? "skills" : row.category === "resource" ? "mcp" : row.source?.kind === "mcp" ? "mcp_tools" : "tools";
     const badgeOf = (row) => row.kind === "binding" ? "binding" : row.kind === "server" ? "server" : row.category === "skill" ? "skill" : row.category === "resource" || row.source?.kind === "mcp" ? "resource" : "tool";
     const sourceKeyOf = (row) => row.kind === "binding" ? "bindings" : JSON.stringify(row.source ?? namespaceSource(row));
@@ -11651,98 +11040,168 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       if (row.source?.kind === "mcp" && servers.length > 0) return `MCP \xB7 ${servers.join(t2("capabilities.source.separator"))}`;
       return row.source?.kind === "skill" ? `Skill \xB7 ${sourceText(row)}${row.source.provider ? ` \xB7 ${row.source.provider}` : ""}` : sourceText(row);
     };
-    const savedText = (row) => row.kind === "binding" ? "" : row.kind === "server" ? word(row.saved?.availability ?? "automatic") : `${word(row.saved?.availability ?? "automatic")} \xB7 ${word(row.saved?.disclosure ?? "automatic")}`;
-    const recordedAvailability = (row) => row.session?.availability ?? "inherit";
-    const recordedDisclosure = (row) => row.session?.disclosure ?? "inherit";
+    const savedOf = (row, dimension) => row.saved?.[dimension] ?? "automatic";
+    const savedEnabled = (row) => word(savedOf(row, "availability"));
+    const savedDisclosure = (row) => row.kind === "server" ? t2("capabilities.word.perMember") : word(savedOf(row, "disclosure"));
+    const recordedOf = (row, dimension) => row.session?.[dimension] ?? "inherit";
+    const recordWord = (row, dimension) => row.record?.[dimension];
+    const recordLayer = (row, dimension) => row.record?.layers?.[dimension] ?? null;
     const adoptionOf = (row) => ["use", "skip", "damaged"].includes(row.session?.use) ? row.session.use : "use";
-    const writeChoice = (row, dimension, value) => {
-      if ((dimension === "availability" ? recordedAvailability(row) : recordedDisclosure(row)) === value) return;
-      return void record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${value}`, row.id);
+    const receiptOf = (row) => {
+      if (row.kind === "binding") {
+        const record3 = t2("capabilities.word.bindingRecord");
+        if (adoptionOf(row) === "damaged") return `${record3} \xB7 ${word("damaged")}`;
+        return row.session?.recorded === true ? `${record3} \xB7 ${t2(ADOPTION_WORDS[adoptionOf(row)])}` : `${record3} \xB7 ${t2("capabilities.word.unwritten")}`;
+      }
+      const record2 = t2("capabilities.word.sessionRecord");
+      const statedDimensions = DIMENSIONS2;
+      const layerWord = (layer2, dimension) => rows.find((candidate) => candidate.id === layer2)?.record?.[dimension];
+      const own2 = statedDimensions.filter((dimension) => recordWord(row, dimension) !== void 0 && recordLayer(row, dimension) === null);
+      const byLayer = /* @__PURE__ */ new Map();
+      for (const dimension of statedDimensions) {
+        const layer2 = recordLayer(row, dimension);
+        if (layer2 === null) continue;
+        const stated = layerWord(layer2, dimension);
+        byLayer.set(layer2, [...byLayer.get(layer2) ?? [], ...stated === void 0 ? [] : [`${dimension} ${stated}`]]);
+      }
+      const parts = [
+        ...own2.length === 0 ? [] : [own2.map((dimension) => `${dimension} ${recordWord(row, dimension)}`).join(" \xB7 ")],
+        ...[...byLayer].map(([layer2, stated]) => stated.length === 0 ? t2("capabilities.receipt.layer", { layer: layer2 }) : `${t2("capabilities.receipt.layer", { layer: layer2 })} \xB7 ${stated.join(" \xB7 ")}`)
+      ];
+      return parts.length === 0 ? `${record2} \xB7 ${t2("capabilities.word.unwritten")}` : `${record2} \xB7 ${parts.join(" \xB7 ")}`;
+    };
+    const controlLabel = (column, row) => t2(`capabilities.control.${column}`, { name: row.id });
+    const writeSession = (row, dimension, value) => {
+      if ((recordWord(row, dimension) ?? "inherit") === value) return;
+      return record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${value}`, row.id);
+    };
+    const writeSaved = (row, dimension, value) => {
+      if (savedOf(row, dimension) === value) return;
+      if (typeof savedCommands?.run !== "function") return;
+      return perform(row.id, async (signal) => {
+        const written = await savedCommands.run({ id: row.id, dimension, selection: value }, signal);
+        return { text: capabilityReceiptNotice(t2, { state: "recorded", record: { ...written, scope: "global" } }, "receipt") };
+      });
     };
     const writeAdoption = (row) => void record(
       bindingCommands,
       `${adoptionOf(row) === "use" ? "skip" : "use"} ${row.id}`,
       row.id
     );
-    const availabilityCell = (row) => h(
+    const sessionAvailabilityCell = (row) => row.kind === "binding" ? h(
       "div",
-      { role: "cell", className: "ptcPlusSessionCapabilityAvailability" },
-      row.kind === "binding" ? h("button", {
+      { className: "ptcPlusSessionCapabilityAvailability" },
+      h("button", {
         type: "button",
         className: "ptcPlusBindingToggle",
         "data-kind": adoptionOf(row),
         "aria-pressed": adoptionOf(row) === "use" ? "true" : "false",
+        "aria-label": controlLabel("sessionEnabled", row),
         "aria-busy": writing.includes(row.id) ? "true" : void 0,
         onClick: () => writeAdoption(row)
-      }, t2(ADOPTION_WORDS[adoptionOf(row)])) : h(Select2, {
-        label: t2("capabilities.policy.availabilityFor", { name: row.id }),
-        value: recordedAvailability(row),
-        options: choiceOptions("availability"),
-        onChange: (value) => writeChoice(row, "availability", value)
+      }, t2(ADOPTION_WORDS[adoptionOf(row)]))
+    ) : h(
+      "div",
+      { className: "ptcPlusSessionCapabilityAvailability" },
+      h(Select2, {
+        label: controlLabel("sessionEnabled", row),
+        value: recordedOf(row, "availability"),
+        options: choiceOptions(SESSION_AVAILABILITY),
+        onChange: (value) => writeSession(row, "availability", value)
       })
     );
-    const disclosureCell = (row) => row.kind === "capability" ? h(
+    const sessionDisclosureCell = (row) => row.kind === "binding" ? h("span", { className: "ptcPlusSessionCapabilityDisclosure" }, t2("capabilities.word.inherit")) : row.kind === "server" ? h("span", { className: "ptcPlusSessionCapabilityDisclosure" }, t2("capabilities.word.perMember")) : h(
       "div",
-      { role: "cell", className: "ptcPlusSessionCapabilityDisclosure" },
+      { className: "ptcPlusSessionCapabilityDisclosure" },
       h(Select2, {
-        label: t2("capabilities.disclosureFor", { name: row.id }),
-        value: recordedDisclosure(row),
-        options: choiceOptions("disclosure"),
-        onChange: (value) => writeChoice(row, "disclosure", value)
+        label: controlLabel("sessionDisclosure", row),
+        value: recordedOf(row, "disclosure"),
+        options: choiceOptions(SESSION_DISCLOSURE),
+        onChange: (value) => writeSession(row, "disclosure", value)
       })
-    ) : h("span", { role: "cell", className: "ptcPlusSessionCapabilityDisclosure" });
-    const renderRow = (row) => h(
+    );
+    const savedControl = (row) => settingsEntrance;
+    const savedDisabled = () => writable === false;
+    const savedEnabledCell = (row) => savedControl(row) ? h(
       "div",
-      {
-        key: row.id,
-        role: "row",
-        className: "ptcPlusSessionCapabilityRow ptcPlusCapabilityItem",
-        "data-capability-id": row.id,
-        "data-kind": row.kind,
-        ...row.kind === "binding" ? { "data-binding-id": row.id, "data-binding-state": adoptionOf(row) } : {}
-      },
-      row.kind === "binding" ? h(
-        "span",
-        { role: "cell", className: "ptcPlusCapabilityIdentity" },
+      { className: "ptcPlusSessionCapabilitySaved" },
+      h(Select2, {
+        label: controlLabel("savedEnabled", row),
+        value: savedOf(row, "availability"),
+        disabled: savedDisabled(),
+        options: choiceOptions(SAVED_AVAILABILITY),
+        onChange: (value) => writeSaved(row, "availability", value)
+      })
+    ) : h("span", { className: "ptcPlusSessionCapabilitySaved" }, savedEnabled(row));
+    const savedDisclosureCell = (row) => savedControl(row) && row.kind !== "server" ? h(
+      "div",
+      { className: "ptcPlusSessionCapabilitySavedDisclosure" },
+      h(Select2, {
+        label: controlLabel("savedDisclosure", row),
+        value: savedOf(row, "disclosure"),
+        disabled: savedDisabled(),
+        options: choiceOptions(SAVED_DISCLOSURE),
+        onChange: (value) => writeSaved(row, "disclosure", value)
+      })
+    ) : h("span", { className: "ptcPlusSessionCapabilitySavedDisclosure" }, savedDisclosure(row));
+    const identityCell = (row) => row.kind === "binding" ? h(
+      "span",
+      { className: "ptcPlusCapabilityIdentity" },
+      h("span", { className: "ptcPlusSessionCapabilityName" }, row.name ?? row.id),
+      row.name && row.name !== row.id ? h("code", null, row.id) : null
+    ) : h(
+      "div",
+      { className: "ptcPlusCapabilityIdentity" },
+      // Only a capability row takes part in a batch: a server row's saved cell edits the scope's
+      // `mcpServers.<server>` rule on its own, and a binding row writes the bindings document.
+      row.kind !== "capability" ? null : h("input", {
+        type: "checkbox",
+        className: "ptcPlusPick",
+        checked: picked.includes(row.id),
+        "aria-label": t2("capabilities.selectForBatch", { name: row.name ?? row.id }),
+        disabled: writable === false,
+        onChange: () => setPicked((current) => current.includes(row.id) ? current.filter((id2) => id2 !== row.id) : [...current, row.id])
+      }),
+      h(
+        "div",
+        { className: "ptcPlusCapabilityIdentityText" },
         h("span", { className: "ptcPlusSessionCapabilityName" }, row.name ?? row.id),
         row.name && row.name !== row.id ? h("code", null, row.id) : null
-      ) : h(
-        "div",
-        { role: "cell", className: "ptcPlusCapabilityIdentity" },
-        h("input", {
-          type: "checkbox",
-          className: "ptcPlusPick",
-          checked: picked.includes(row.id),
-          "aria-label": t2("capabilities.selectForBatch", { name: row.name ?? row.id }),
-          onChange: () => setPicked((current) => current.includes(row.id) ? current.filter((id2) => id2 !== row.id) : [...current, row.id])
-        }),
-        h(
-          "div",
-          { className: "ptcPlusCapabilityIdentityText" },
-          h("span", { className: "ptcPlusSessionCapabilityName" }, row.name ?? row.id),
-          row.name && row.name !== row.id ? h("code", null, row.id) : null
-        )
-      ),
-      h(
-        "span",
-        { role: "cell", className: "ptcPlusCapabilityBadge", "data-kind": badgeOf(row) },
-        t2(`capabilities.type.${badgeOf(row)}`)
-      ),
-      h("span", { role: "cell", className: "ptcPlusCapabilitySource" }, sourceText(row)),
-      h("span", { role: "cell", className: "ptcPlusSessionCapabilitySaved" }, savedText(row)),
-      availabilityCell(row),
-      disclosureCell(row),
-      h(
-        "span",
-        { role: "cell", className: "ptcPlusSessionCapabilityEvidence", "data-proven": row.evidence === true ? "true" : "false" },
-        row.evidence === true ? t2("capabilities.word.proven") : null
       )
     );
-    const columnsRow = () => h(
-      "div",
-      { className: "ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns", role: "row" },
-      ...COLUMNS.map((key) => h("span", { key, role: "columnheader" }, t2(key)))
-    );
+    const cellsOf = (row) => {
+      const cells = {
+        object: identityCell(row),
+        type: h("span", { className: "ptcPlusCapabilityBadge", "data-kind": badgeOf(row) }, t2(`capabilities.type.${badgeOf(row)}`)),
+        source: h("span", { className: "ptcPlusCapabilitySource" }, sourceText(row)),
+        savedEnabled: savedEnabledCell(row),
+        savedDisclosure: savedDisclosureCell(row),
+        sessionEnabled: sessionAvailabilityCell(row),
+        sessionDisclosure: sessionDisclosureCell(row),
+        receipt: h("span", { className: "ptcPlusSessionCapabilityReceipt", title: receiptOf(row) }, receiptOf(row))
+      };
+      return cells;
+    };
+    const columns = COLUMNS[settingsEntrance ? "settings" : "session"];
+    const renderRow = (row) => {
+      const cells = cellsOf(row);
+      return h(
+        "div",
+        {
+          key: row.id,
+          role: "row",
+          className: `ptcPlusSessionCapabilityRow ptcPlusCapabilityItem ptcPlusSessionCapabilityRow-${columns.length}`,
+          "data-capability-id": row.id,
+          "data-kind": row.kind,
+          ...row.kind === "binding" ? { "data-binding-id": row.id, "data-binding-state": adoptionOf(row) } : {}
+        },
+        ...columns.map((column) => h(React32.Fragment, { key: column }, React32.cloneElement(cells[column], { role: "cell" })))
+      );
+    };
+    const columnsRow = () => h("div", {
+      className: `ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns ptcPlusSessionCapabilityColumns-${columns.length}`,
+      role: "row"
+    }, ...columns.map((column) => h("span", { key: column, role: "columnheader" }, t2(COLUMN_COPY[column]))));
     const capabilities = rows.filter((row) => row.kind !== "binding");
     const matches = (row) => {
       const text = [row.name, row.id, sourceText(row)].filter(Boolean).join(" ").toLocaleLowerCase();
@@ -11756,8 +11215,9 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       const key = sourceKeyOf(row);
       if (!sources.has(key)) sources.set(key, sourceFilterLabel(row));
     }
-    const pickedRows = capabilities.filter((row) => picked.includes(row.id));
-    const batchLines = () => pickedRows.flatMap((row) => DIMENSIONS2.filter((dimension) => batchChoices[dimension] !== "keep" && (dimension === "availability" || row.kind === "capability")).map((dimension) => ({ row, dimension, choice: batchChoices[dimension] })));
+    const batchWritable = (row) => DIMENSIONS2.filter((dimension) => settingsEntrance ? savedControl(row) && (dimension === "availability" || row.kind === "capability") : dimension === "availability" || row.kind === "capability");
+    const pickedRows = capabilities.filter((row) => picked.includes(row.id) && batchWritable(row).length > 0);
+    const batchLines = () => pickedRows.flatMap((row) => batchWritable(row).filter((dimension) => batchChoices[dimension] !== "keep").map((dimension) => ({ row, dimension, choice: batchChoices[dimension] })));
     const applyBatch = async () => {
       const lines = batchLines();
       setBatchOpen(false);
@@ -11765,9 +11225,18 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
         setReceipt({ text: { key: "capabilities.batch.kept", params: {} } });
         return;
       }
+      let refusal, wrote = 0;
       for (const { row, dimension, choice } of lines) {
-        await record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${choice}`, row.id);
+        try {
+          const outcome = settingsEntrance ? await writeSaved(row, dimension, choice) : await writeSession(row, dimension, choice);
+          if (outcome?.error !== void 0) refusal ??= outcome.error;
+          else if (outcome?.ok === true) wrote += 1;
+        } catch (error) {
+          refusal ??= String(error?.message ?? error);
+        }
       }
+      if (refusal !== void 0) setReceipt({ error: refusal });
+      else if (wrote === 0) setReceipt({ text: { key: "capabilities.batch.kept", params: {} } });
     };
     const filter = (label, value, onChange, options2) => h(
       "div",
@@ -11791,28 +11260,34 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
     const close = () => {
       request.current?.abort();
       request.current = null;
-      onClose();
+      onClose?.();
     };
-    return h(
-      Modal,
+    const addressSet = settingsEntrance ? t2("capabilities.surface.addresses.settings") : t2("capabilities.surface.addresses.session", { session: sessionId });
+    const table = h(
+      "div",
       {
-        open,
-        onClose: close,
-        title: t2("capabilities.quick.modalTitle"),
-        closeLabel: t2("settings.close"),
-        headless: true,
-        className: "ptcPlusSessionCapabilityModal"
+        role: "table",
+        "aria-label": t2(settingsEntrance ? "capabilities.surface.settingsTitle" : "capabilities.quick.members")
       },
+      columnsRow(),
+      loaded && listed.length === 0 ? h(
+        "p",
+        { className: "ptcPlusSessionCapabilityMessage" },
+        t2(capabilities.length === 0 ? "capabilities.quick.supplyEmpty" : "capabilities.noMatches")
+      ) : null,
+      ...listed.map(renderRow)
+    );
+    const body = [
       h(
         "div",
-        { className: "ptcPlusSessionCapabilityHead" },
+        { key: "head", className: "ptcPlusSessionCapabilityHead" },
         h(
           "div",
           null,
-          h("h2", null, t2("capabilities.quick.modalTitle")),
-          h("p", null, t2("capabilities.quick.sessionIdentity", { session: sessionId }))
+          h("h2", null, t2(settingsEntrance ? "capabilities.surface.settingsTitle" : "capabilities.quick.modalTitle")),
+          h("p", { className: "ptcPlusSessionCapabilityAddresses" }, addressSet)
         ),
-        h("button", {
+        inline3 === true ? null : h("button", {
           type: "button",
           className: "ptcPlusDialogClose",
           "aria-label": t2("settings.close"),
@@ -11821,7 +11296,7 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       ),
       h(
         "div",
-        { className: "ptcPlusSessionCapabilityToolbar" },
+        { key: "toolbar", className: "ptcPlusSessionCapabilityToolbar" },
         h(
           "label",
           { className: "ptcPlusSearch" },
@@ -11858,6 +11333,7 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
             className: "ptcPlusButton",
             "aria-haspopup": "dialog",
             "aria-label": t2("capabilities.batchSettings"),
+            disabled: writable === false,
             onClick: () => {
               setBatchChoices({ availability: "keep", disclosure: "keep" });
               setBatchOpen(true);
@@ -11871,32 +11347,23 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
           ) : null
         )
       ),
-      // A read that failed is a defect in the panel's own source, so it names the
-      // error and offers the retry beside the rows it could not replace.
+      // A read that failed is a defect in the panel's own source, so it names the error
+      // and offers the retry beside the rows it could not replace.
       defect === null ? null : h(
         "p",
-        { className: "ptcPlusSessionCapabilityMessage", role: "status" },
+        { key: "defect", className: "ptcPlusSessionCapabilityMessage", role: "status" },
         t2("capabilities.quick.catalogError", { error: defect }),
         " ",
         h("button", { type: "button", className: "ptcPlusCapabilityLink", onClick: reload }, t2("capabilities.reloadCatalog"))
       ),
       h(
         "div",
-        { className: "ptcPlusSessionCapabilityList" },
-        h(
-          "div",
-          { className: "ptcPlusSessionCapabilityTable", role: "table", "aria-label": t2("capabilities.quick.members") },
-          columnsRow(),
-          loaded && listed.length === 0 ? h(
-            "p",
-            { className: "ptcPlusSessionCapabilityMessage" },
-            t2(capabilities.length === 0 ? "capabilities.quick.supplyEmpty" : "capabilities.noMatches")
-          ) : null,
-          ...listed.map(renderRow)
-        ),
-        // The group is always present: the Host supplies the binding document whether or
-        // not this session has used any of it, and a zero-row group is an empty table.
-        h(
+        { key: "list", className: "ptcPlusSessionCapabilityList" },
+        h("div", { className: "ptcPlusSessionCapabilityTable" }, table),
+        // The group is present whenever this entrance states the binding document: the
+        // Host supplies it whether or not this session has used any of it, and a
+        // zero-row group is an empty table.
+        settingsEntrance ? null : h(
           "section",
           { key: "bindings", className: "ptcPlusSessionCapabilityGroup ptcPlusBindingGroup" },
           h("h3", null, t2("bindings.title")),
@@ -11911,6 +11378,7 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
       batchOpen ? h(
         Modal,
         {
+          key: "batch",
           open: true,
           onClose: () => setBatchOpen(false),
           title: t2("capabilities.batchSettings"),
@@ -11938,17 +11406,31 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
             { className: "ptcPlusCapabilityBatchTargets", "aria-label": t2("capabilities.batch.targetList") },
             ...pickedRows.map((row) => h("li", { key: row.id }, h("span", null, row.name ?? row.id), h("code", null, row.id)))
           ),
-          h("div", { className: "ptcPlusCapabilityBatchFields" }, ...DIMENSIONS2.map((dimension) => h(
-            "div",
-            { key: dimension, className: "ptcPlusCapabilityFilter" },
-            h("span", null, t2(`capabilities.policy.${dimension}`)),
-            h(Select2, {
-              value: batchChoices[dimension],
-              label: t2(`capabilities.policy.${dimension}`),
-              onChange: (choice) => setBatchChoices((current) => ({ ...current, [dimension]: choice })),
-              options: [{ value: "keep", label: t2("capabilities.batch.keep") }, ...choiceOptions(dimension)]
-            })
-          )))
+          h("div", { className: "ptcPlusCapabilityBatchFields" }, ...DIMENSIONS2.map((dimension) => {
+            const address = t2(settingsEntrance ? "capabilities.batch.address.saved" : "capabilities.batch.address.session");
+            const label = `${address} \xB7 ${dimensionWord(dimension)}`;
+            return h(
+              "div",
+              { key: dimension, className: "ptcPlusCapabilityFilter" },
+              h("span", null, label),
+              h(Select2, {
+                value: batchChoices[dimension],
+                label,
+                onChange: (choice) => setBatchChoices((current) => ({ ...current, [dimension]: choice })),
+                // Each entrance offers the words its own address can hold: the session batch offers
+                // the record's words plus `inherit`, the saved batch offers `automatic`.
+                options: [
+                  { value: "keep", label: t2("capabilities.batch.keep") },
+                  ...choiceOptions(dimension === "availability" ? settingsEntrance ? SAVED_AVAILABILITY : SESSION_AVAILABILITY : settingsEntrance ? SAVED_DISCLOSURE : SESSION_DISCLOSURE)
+                ]
+              })
+            );
+          })),
+          h(
+            "p",
+            { className: "ptcPlusDetail" },
+            t2(settingsEntrance ? "capabilities.batch.effect" : "capabilities.batch.effectSession")
+          )
         ),
         h(
           "div",
@@ -11960,20 +11442,34 @@ function createSessionCapabilityControlsView(React32, { commands, bindingCommand
           ),
           h(
             "button",
-            { type: "button", className: "ptcPlusButton", "data-kind": "primary", onClick: () => void applyBatch() },
+            {
+              type: "button",
+              className: "ptcPlusButton",
+              "data-kind": "primary",
+              disabled: writable === false,
+              onClick: () => void applyBatch()
+            },
             t2("capabilities.batch.record", { count: batchLines().length })
           )
         )
       ) : null,
       h(
         "div",
-        { className: "ptcPlusSessionCapabilityFooter" },
+        { key: "footer", className: "ptcPlusSessionCapabilityFooter" },
         // The footer states the same receipt the chat card does, in the current
-        // language: which record this write named, its choice and its session. The
-        // raw payload stays in the command's own result, where history keeps it.
+        // language: which record this write named, its choice and its session. The raw
+        // payload stays in the command's own result, where history keeps it.
         receipt === null ? null : h("span", { role: "status" }, receipt.error === void 0 ? capabilityCommandText(t2, receipt.text) : t2("capabilities.quick.writeError", { error: receipt.error }))
       )
-    );
+    ];
+    return inline3 === true ? h("div", { className: "ptcPlusCapabilitySurface ptcPlusCapabilitySurface-inline" }, ...body) : h(Modal, {
+      open,
+      onClose: close,
+      title: t2("capabilities.quick.modalTitle"),
+      closeLabel: t2("settings.close"),
+      headless: true,
+      className: "ptcPlusSessionCapabilityModal"
+    }, ...body);
   };
 }
 
@@ -12002,10 +11498,10 @@ function createPtcSettingsView(React32, deps) {
     useWorkbenchController,
     icons,
     inspectCapabilityPlans,
-    inspectCapabilityCatalog,
     inspectCapabilityTargets,
     inspectCapabilityAllocation,
-    CapabilityRefreshButton
+    CapabilityRefreshButton,
+    CapabilitySurface
   } = deps;
   const h = React32.createElement;
   const enabledField = CONFIG_FIELDS.find((field) => field.key === "enabled");
@@ -12031,23 +11527,6 @@ function createPtcSettingsView(React32, deps) {
       "aria-hidden": true,
       className: "ptcPlusSettingsNavIcon"
     }, ...paths[section].map((d, key) => h("path", { key, d })));
-  }
-  function SearchIcon() {
-    return isHostIconComponent(icons.search) ? h(icons.search, { size: 16, "aria-hidden": true }) : h(
-      "svg",
-      {
-        width: 16,
-        height: 16,
-        viewBox: "0 0 24 24",
-        fill: "none",
-        stroke: "currentColor",
-        strokeWidth: 1.6,
-        strokeLinecap: "round",
-        "aria-hidden": true
-      },
-      h("circle", { cx: 10.5, cy: 10.5, r: 6.5 }),
-      h("path", { d: "m16 16 5 5" })
-    );
   }
   function NavigationArrow() {
     return isHostIconComponent(icons.chevron) ? h(icons.chevron, { size: 12 }) : h("svg", {
@@ -12141,7 +11620,7 @@ function createPtcSettingsView(React32, deps) {
       !valid2 ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.invalidStatistics")) : saved.invalid && draft === saved.settings ? h("p", { role: "status", className: "ptcPlusMessage" }, t2("capabilities.savedStatisticsInvalid")) : null
     );
   }
-  const { CapabilityWorkbench } = createCapabilitySettingsViews(React32, { SearchIcon, Select: Select2, Modal });
+  const { CapabilityWorkbench } = createCapabilitySettingsViews(React32, { Select: Select2, Modal });
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === "boolean") {
       return h("input", {
@@ -12194,8 +11673,6 @@ function createPtcSettingsView(React32, deps) {
     const [plansError, setPlansError] = React32.useState(null);
     const [plansPending, setPlansPending] = React32.useState(false);
     const [plansObservedConfiguration, setPlansObservedConfiguration] = React32.useState(null);
-    const [catalog, setCatalog] = React32.useState(null);
-    const [catalogError, setCatalogError] = React32.useState(null);
     const [planRevision, setPlanRevision] = React32.useState(0);
     const [targets, setTargets] = React32.useState(null);
     const [targetsError, setTargetsError] = React32.useState(null);
@@ -12262,24 +11739,6 @@ function createPtcSettingsView(React32, deps) {
       });
       return () => controller.abort();
     }, [enabled, open, view, planRevision]);
-    React32.useEffect(() => {
-      if (!enabled) {
-        setCatalog(null);
-        setCatalogError(null);
-        return;
-      }
-      if (!(open || view === "page" || view === "dialog") || !inspectCapabilityCatalog) return;
-      const controller = new AbortController();
-      setCatalogError(null);
-      Promise.resolve().then(() => inspectCapabilityCatalog(refreshSessionId || void 0, controller.signal)).then((available) => {
-        if (controller.signal.aborted) return;
-        setCatalog(available);
-      }, (error) => {
-        if (controller.signal.aborted) return;
-        setCatalogError(String(error?.message ?? error));
-      });
-      return () => controller.abort();
-    }, [enabled, open, view, planConfiguration, planRevision, refreshSessionId]);
     React32.useEffect(() => {
       if (!plansEnabled) {
         setPlans(null);
@@ -12410,6 +11869,55 @@ function createPtcSettingsView(React32, deps) {
       return operation;
     };
     const fieldDisabled = (field) => unavailable || pending.has(field.key) || field.key !== "enabled" && !enabled;
+    const policyAtWrite = React32.useRef(null);
+    const renderedPolicy = React32.useRef(value.capabilityPolicy);
+    if (value.capabilityPolicy !== renderedPolicy.current) {
+      renderedPolicy.current = value.capabilityPolicy;
+      policyAtWrite.current = null;
+    }
+    const latestValue = React32.useRef(value);
+    React32.useEffect(() => {
+      latestValue.current = value;
+    });
+    const writeSavedCapability = ({ id: id2, dimension, selection }) => {
+      if (!updateCapabilityConfiguration) return Promise.reject(new Error(t2("capabilities.configurationUnavailable")));
+      const field = CONFIG_FIELDS.find((candidate) => candidate.key === "capabilityPolicy");
+      const operation = writeTail.current.then(async () => {
+        setPending((current) => /* @__PURE__ */ new Set([...current, field.key]));
+        setCapabilityStatus(null);
+        let key = null;
+        try {
+          const document2 = () => policyAtWrite.current ?? (latestValue.current.capabilityPolicySaved === true ? capabilityPolicyForConfig(latestValue.current) : capabilityPolicyFromRecord(latestValue.current));
+          const policy = changeCapabilityRule(document2(), id2, dimension, selection);
+          const written = JSON.stringify(policy);
+          key = await updateSetting(field.key, written);
+          if (key === null) {
+            if (latestValue.current.capabilityPolicy !== written) throw new Error(t2("capabilities.configurationUnavailable"));
+            key = "status.applied";
+          }
+          if (key === "status.applied") policyAtWrite.current = policy;
+        } catch (error) {
+          recordStatus({
+            key: "status.failed",
+            fieldKey: field.key,
+            params: { error: error instanceof Error ? error.message : String(error) }
+          });
+          throw error;
+        } finally {
+          setPending((current) => {
+            const next = new Set(current);
+            next.delete(field.key);
+            return next;
+          });
+        }
+        recordStatus({ key, fieldKey: field.key });
+        if (key !== "status.applied") throw new Error(t2("capabilities.configurationUnavailable"));
+        return { id: id2, dimension, selection };
+      });
+      writeTail.current = operation.catch(() => {
+      });
+      return operation;
+    };
     const renderField = (key) => {
       const field = CONFIG_FIELDS.find((candidate) => candidate.key === key);
       if (field === void 0) return null;
@@ -12483,7 +11991,7 @@ function createPtcSettingsView(React32, deps) {
             "tr",
             { key: entry.id },
             h("td", null, entry.id),
-            h("td", null, t2(`capabilities.${entry.selection}`)),
+            h("td", null, t2(`capabilities.word.${entry.selection}`)),
             h("td", null, capabilityPlanReason(t2, entry)),
             h("td", null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : "\u2014")
           )))
@@ -12566,8 +12074,6 @@ function createPtcSettingsView(React32, deps) {
             id: `${groupIdPrefix}-capability-workbench`,
             value,
             configurationReady: snapshot2.status === "ready",
-            catalog,
-            catalogError,
             plans: plansEnabled ? plans : null,
             plansError,
             plansPending,
@@ -12587,7 +12093,23 @@ function createPtcSettingsView(React32, deps) {
             saving: [...pending].some((key) => CAPABILITY_CONFIGURATION_KEYS.includes(key) || key === "capabilityProfiles"),
             saveStatus: capabilityStatus,
             configurationWritable: !unavailable && enabled,
-            onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : void 0
+            onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : void 0,
+            // The one capability surface, mounted with the address this entrance fixes:
+            // the new-session default. Its row set is the Host's own declaration — the
+            // process-scope object set, not a session's full declared face (capability-surface
+            // §8.9), because this entrance names no session — so an observation target changes
+            // only what the observation reads, never these rows, and a target whose supply
+            // cannot be read leaves the rows and their controls in place.
+            surface: CapabilitySurface ? h(CapabilitySurface, {
+              key: "capability-surface",
+              entrance: "settings",
+              inline: true,
+              t: t2,
+              writable: !unavailable && enabled,
+              revision: planConfiguration,
+              onReload: () => setPlanRevision((current) => current + 1),
+              savedCommands: { run: writeSavedCapability }
+            }) : null
           })
         ] : fields.map(renderField)
       );
@@ -40365,10 +39887,10 @@ var CLIENT_CSS = `
 .ptcPlusCapabilityWorkbench{container:ptcPlusCapabilities/inline-size;min-width:0;font-size:13px}
 .ptcPlusCapabilityTabs{display:flex;gap:8px;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityTabs button{appearance:none;flex:none;padding:10px 14px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;text-align:center;cursor:pointer}.ptcPlusCapabilityTabs [aria-selected=true]{border-bottom-color:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityPane{padding-top:16px;min-width:0}.ptcPlusCapabilityPane[hidden],.ptcPlusContextContent>[hidden]{display:none}
 .ptcPlusTaskHead{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.ptcPlusTaskHead h4{margin:0;flex:1;font-size:16px}.ptcPlusCapabilityManagement{display:flex;align-items:center;gap:8px;font-size:12px}.ptcPlusCapabilitySaveState{color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityPane>.ptcPlusDetail{margin:8px 0 16px}
-.ptcPlusCapabilityToolbar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex:1 1 220px;min-width:0}.ptcPlusCapabilityTypes{display:flex;flex-wrap:wrap;gap:5px}.ptcPlusCapabilityTypes button{appearance:none;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;text-align:center;cursor:pointer}.ptcPlusCapabilityTypes [aria-pressed=true]{border-color:transparent;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:var(--dsw-alias-bg-base,#fff)}
-.ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelectTrigger{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityFilterFields{display:flex;align-items:flex-end;flex-wrap:wrap;gap:12px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusCapabilityFilterFields>.ptcPlusCapabilityFilter{flex:1 1 160px}.ptcPlusCapabilityOnlyCommon{display:flex;align-items:center;gap:6px;font-size:12px}.ptcPlusCapabilityOnlyCommon input{width:16px;height:16px;margin:0}.ptcPlusCapabilityResultLine,.ptcPlusActiveFilters{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}
-.ptcPlusCapabilityTable{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;overflow:hidden}.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr);align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilitySort{appearance:none;display:inline-flex;align-items:center;justify-content:flex-start;gap:4px;width:100%;min-height:28px;padding:3px 0;border:0;border-radius:4px;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}.ptcPlusCapabilitySort>span{display:inline-flex;flex:none;align-items:center;justify-content:center;width:11px;height:11px;font-size:10px;line-height:1}.ptcPlusCapabilityColumns [aria-sort=ascending],.ptcPlusCapabilityColumns [aria-sort=descending]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityContextCell>.ptcPlusCapabilityContext{width:100%}.ptcPlusCapabilityList{max-height:480px;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem:not([data-selected=true]){cursor:pointer}.ptcPlusCapabilityItem:not([data-selected=true]):hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityName{font-size:13px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityAvailability{display:flex;align-items:center;gap:6px;font-size:11px}.ptcPlusCapabilityAvailability[data-state=closed],.ptcPlusCapabilityAvailability[data-state=unapplied],.ptcPlusCapabilityAvailability[data-state=source-closed]{color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityContext{appearance:none;display:flex;align-items:center;justify-content:center;gap:6px;padding:5px 2px;border:0;border-radius:5px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;text-align:center;cursor:pointer}.ptcPlusCapabilityContext{justify-content:space-between;text-align:start}.ptcPlusCapabilityContext svg{flex:none;color:var(--dsw-alias-label-tertiary)}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.ptcPlusCapabilityEditorFields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:14px}
+
+.ptcPlusCapabilityFilter{display:flex;flex-direction:column;min-width:0;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityFilter>.ptcPlusSelectTrigger{width:100%;max-width:100%;font-size:12px}.ptcPlusCapabilityResultLine,.ptcPlusActiveFilters{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusCapabilityLink{appearance:none;padding:4px 0;border:0;background:transparent;color:var(--dsw-alias-state-business-primary,#4d6bfe);font:inherit;font-size:12px;cursor:pointer}.ptcPlusCapabilityLink:disabled{opacity:.5;cursor:default}
+.ptcPlusCapabilityColumns,.ptcPlusCapabilityItem{display:grid;grid-template-columns:minmax(140px,1.6fr) 54px minmax(65px,.75fr) minmax(92px,1fr) minmax(104px,1fr);align-items:center;gap:10px;padding:10px 12px}.ptcPlusCapabilityColumns{color:var(--dsw-alias-label-tertiary);font-size:11px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityItem{border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityItem:last-child{border-bottom:0}.ptcPlusCapabilityItem[data-selected=true]{background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusCapabilityItem:not([data-selected=true]){cursor:pointer}.ptcPlusCapabilityItem:not([data-selected=true]):hover{background:var(--dsw-alias-interactive-bg-hover)}.ptcPlusCapabilityItem>*{min-width:0}.ptcPlusCapabilityIdentity{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityIdentity code{color:var(--dsw-alias-label-tertiary);font-size:10px;line-height:15px;overflow-wrap:anywhere}.ptcPlusCapabilitySource{color:var(--dsw-alias-label-secondary);font-size:11px;overflow-wrap:anywhere}.ptcPlusCapabilityBadge{justify-self:start;padding:2px 6px;border-radius:4px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 8%,transparent);color:var(--dsw-alias-state-business-primary,#4d6bfe);font-size:10px;line-height:17px}.ptcPlusCapabilityBadge[data-kind=skill]{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityWorkbench button:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+
 .ptcPlusPromptText{display:flex;flex-direction:column;gap:12px;min-width:0}
 .ptcPlusPromptHeader{display:flex;align-items:flex-start;gap:8px;min-width:0}
 .ptcPlusPromptHeaderIcon{display:inline-flex;align-items:center;justify-content:center;flex:none;width:20px;height:20px;color:var(--dsw-alias-label-secondary)}
@@ -40437,8 +39959,8 @@ var CLIENT_CSS = `
 .ptcPlusConfigurationProfiles{display:grid;grid-template-columns:minmax(180px,34%) minmax(0,1fr);gap:18px;margin-top:14px;min-width:0}.ptcPlusConfigurationLibrary,.ptcPlusConfigurationDetail{min-width:0;padding:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px}.ptcPlusConfigurationProfiles h4{margin:0 0 12px;font-size:15px}.ptcPlusConfigurationList{max-height:320px;overflow:auto;overscroll-behavior:contain}.ptcPlusConfigurationChoice{appearance:none;display:block;width:100%;padding:12px 10px;border:0;border-left:3px solid transparent;border-radius:5px;background:transparent;color:inherit;font:inherit;text-align:start;overflow-wrap:anywhere;cursor:pointer}.ptcPlusConfigurationChoice[aria-pressed=true]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 6%,transparent)}.ptcPlusConfigurationSave.ptcPlusButton{width:100%;margin-top:14px;border:1px dashed var(--dsw-alias-border-l2);justify-content:center}.ptcPlusConfigurationSave::before{content:'+';font-size:20px;line-height:16px}.ptcPlusConfigurationLibraryActions{display:flex;align-items:start;gap:8px;margin-top:10px}.ptcPlusConfigurationLibraryActions>.ptcPlusButton{flex:1}.ptcPlusConfigurationSummary{margin-top:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden}.ptcPlusConfigurationSummaryRow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px;padding:10px;font-size:12px;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.ptcPlusConfigurationSummaryRow:last-child{border:0}.ptcPlusConfigurationSummaryRow>span:first-child{color:var(--dsw-alias-label-secondary)}.ptcPlusConfigurationAction{display:flex;flex-direction:column;gap:10px;margin-top:14px}.ptcPlusConfigurationAction .ptcPlusInput{width:100%;box-sizing:border-box}.ptcPlusTaskFeedback{grid-column:1/-1;margin:8px 0;font-size:12px;overflow-wrap:anywhere}
 .ptcPlusCapabilityEvidenceTable{max-height:480px;overflow:auto}.ptcPlusCapabilityEvidenceTable table,.ptcPlusCapabilityPlans table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable th,.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityPlans th,.ptcPlusCapabilityPlans td{padding:10px;text-align:start;border-bottom:1px solid var(--dsw-alias-border-l2);overflow-wrap:anywhere}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-tertiary);font-weight:500;background:var(--dsw-alias-bg-layer-2)}.ptcPlusCapabilityEvidenceTable progress{display:block;width:100%;height:5px;margin-top:5px;accent-color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusCapabilityStatistics .ptcPlusInput{width:100%}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{margin-top:10px}
 .ptcPlusStatisticsParameters{margin-top:12px}.ptcPlusStatisticsParameters h5{margin:0;font-size:12px;line-height:20px;font-weight:600}.ptcPlusStatisticsObservationHeading{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;min-width:0;line-height:20px}.ptcPlusStatisticsObservationHeading>span:first-child{flex:none}.ptcPlusStatisticsObservationHint{flex:1 1 260px;min-width:0;color:var(--dsw-alias-label-tertiary);white-space:normal;overflow-wrap:anywhere}
-@container ptcPlusCapabilities (max-width:760px){.ptcPlusCapabilityColumns{display:flex;flex-wrap:wrap;gap:4px 12px}.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}.ptcPlusCapabilityIdentity{grid-column:1}.ptcPlusCapabilityBadge{grid-column:2}.ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusCapabilityContextCell{grid-column:1/3;grid-row:3}.ptcPlusContextLayout{grid-template-columns:minmax(100px,27%) minmax(0,1fr);gap:12px}.ptcPlusContextNavigation button{padding:10px 6px}.ptcPlusConfigurationProfiles{grid-template-columns:1fr}.ptcPlusConfigurationList{max-height:220px}}
-@container ptcPlusCapabilities (max-width:480px){.ptcPlusCapabilityTabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.ptcPlusCapabilityTabs button{min-width:0;padding:8px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity{grid-column:1/3}.ptcPlusCapabilityBadge{grid-row:2}.ptcPlusCapabilityAvailability{grid-column:1/-1}.ptcPlusCapabilityContextCell{grid-column:1/-1;grid-row:4}.ptcPlusCapabilityToolbar>.ptcPlusSearch{flex-basis:100%}.ptcPlusCapabilityTypes button{padding:6px 8px}.ptcPlusCapabilityList{max-height:360px}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusContextLayout{grid-template-columns:1fr;gap:8px}.ptcPlusContextNavigation{flex-direction:column;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);padding:0 0 8px}.ptcPlusContextNavigation button{min-width:0;font-size:12px}.ptcPlusContextNavigation button>span{max-width:100%;white-space:normal;overflow-wrap:anywhere}.ptcPlusContextNavigation button>span:first-child{flex:1;min-width:0}.ptcPlusContextState{flex:none;text-align:end}.ptcPlusCapabilitySaveState{flex-basis:100%}}
+@container ptcPlusCapabilities (max-width:760px){.ptcPlusCapabilityColumns{display:flex;flex-wrap:wrap;gap:4px 12px}.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:8px 12px}.ptcPlusCapabilityIdentity{grid-column:1}.ptcPlusCapabilityBadge{grid-column:2}.ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusContextLayout{grid-template-columns:minmax(100px,27%) minmax(0,1fr);gap:12px}.ptcPlusContextNavigation button{padding:10px 6px}.ptcPlusConfigurationProfiles{grid-template-columns:1fr}.ptcPlusConfigurationList{max-height:220px}}
+@container ptcPlusCapabilities (max-width:480px){.ptcPlusCapabilityTabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:visible}.ptcPlusCapabilityTabs button{min-width:0;padding:8px;overflow-wrap:anywhere}.ptcPlusCapabilityIdentity{grid-column:1/3}.ptcPlusCapabilityBadge{grid-row:2}.ptcPlusCapabilityStatistics .ptcPlusBindingFields{grid-template-columns:minmax(0,1fr)}.ptcPlusContextLayout{grid-template-columns:1fr;gap:8px}.ptcPlusContextNavigation{flex-direction:column;border-right:0;border-bottom:1px solid var(--dsw-alias-border-l2);padding:0 0 8px}.ptcPlusContextNavigation button{min-width:0;font-size:12px}.ptcPlusContextNavigation button>span{max-width:100%;white-space:normal;overflow-wrap:anywhere}.ptcPlusContextNavigation button>span:first-child{flex:1;min-width:0}.ptcPlusContextState{flex:none;text-align:end}.ptcPlusCapabilitySaveState{flex-basis:100%}}
 .ptcPlusFooter{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:8px}.ptcPlusButton{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;min-height:32px;padding:4px 14px;border:0.5px solid var(--dsw-alias-border-l3);border-radius:8px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;font:inherit;font-size:13px;line-height:1.5;transition:color .16s ease,border-color .16s ease,background-color .16s ease}.ptcPlusButton:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}.ptcPlusButton[data-kind=primary]{background:var(--dsw-alias-label-primary);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=primary]:hover:not(:disabled){background:var(--dsw-alias-label-primary-dimmed);border-color:transparent;color:var(--dsw-alias-bg-layer-3)}.ptcPlusButton[data-kind=ghost]{border-color:transparent}.ptcPlusButton[data-kind=ghost]:hover:not(:disabled){border-color:var(--dsw-alias-border-l3)}.ptcPlusButton[data-kind=danger]{color:var(--dsw-alias-state-error-primary)}.ptcPlusButton[data-kind=danger]:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.ptcPlusButton:disabled,.ptcPlusInput:disabled,.ptcPlusCheck:disabled{cursor:not-allowed;opacity:.4}
 .ptcPlusSettingAction{padding:4px 0 12px}
 .ptcPlusSettingsModal.ptcPlusSettingsModal{container:ptcPlusSettingsModal/size;box-sizing:border-box;width:min(1440px,calc(100vw - 48px));height:min(1040px,calc(100dvh - 48px));max-width:100%;max-height:100%;min-height:0;display:flex;flex-direction:column;padding:0;gap:0;overflow:hidden;border-radius:16px}
@@ -40530,12 +40052,12 @@ var CLIENT_CSS = `
 
 .ptcPlusCapabilityCommandNotice{box-sizing:border-box;min-width:0;margin:8px 0;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityCommandNotice[data-state=error]{color:var(--dsw-alias-state-error-primary)}
 
-.ptcPlusCapabilityReceipt{box-sizing:border-box;min-width:0;margin:8px 0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityReceiptHead{display:flex;align-items:center;gap:12px;justify-content:space-between}.ptcPlusCapabilityReceiptHead>code{min-width:0;font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-weight:500}.ptcPlusCapabilityReceiptState{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityReceiptState[data-state=error]{color:var(--dsw-alias-state-error-primary)}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusCapabilityReceiptSummary{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ptcPlusCapabilityReceipt details{margin-top:8px}.ptcPlusCapabilityReceipt summary{width:fit-content;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}.ptcPlusCapabilityReceipt summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilityReceipt pre{box-sizing:border-box;max-height:280px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityReceiptTable{max-height:320px;overflow:auto;overscroll-behavior:contain;margin-top:8px}.ptcPlusCapabilityReceipt table{width:100%;min-width:480px;table-layout:fixed;border-collapse:collapse;font:12px/18px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusCapabilityReceipt th,.ptcPlusCapabilityReceipt td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityReceipt th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityReceipt th:first-child{width:44%}.ptcPlusCapabilityReceipt td strong{display:block;font-weight:500}.ptcPlusCapabilityReceipt td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityFilterFields{align-items:flex-end}
+.ptcPlusCapabilityReceipt{box-sizing:border-box;min-width:0;margin:8px 0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityReceiptHead{display:flex;align-items:center;gap:12px;justify-content:space-between}.ptcPlusCapabilityReceiptHead>code{min-width:0;font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-weight:500}.ptcPlusCapabilityReceiptState{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityReceiptState[data-state=error]{color:var(--dsw-alias-state-error-primary)}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusCapabilityReceiptSummary{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ptcPlusCapabilityReceipt details{margin-top:8px}.ptcPlusCapabilityReceipt summary{width:fit-content;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}.ptcPlusCapabilityReceipt summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilityReceipt pre{box-sizing:border-box;max-height:280px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityReceiptTable{max-height:320px;overflow:auto;overscroll-behavior:contain;margin-top:8px}.ptcPlusCapabilityReceipt table{width:100%;min-width:480px;table-layout:fixed;border-collapse:collapse;font:12px/18px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusCapabilityReceipt th,.ptcPlusCapabilityReceipt td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityReceipt th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityReceipt th:first-child{width:44%}.ptcPlusCapabilityReceipt td strong{display:block;font-weight:500}.ptcPlusCapabilityReceipt td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}
 @container ptcPlusCapabilities (max-width:600px){.ptcPlusAllocationMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 
 .ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{box-sizing:border-box;width:min(1180px,calc(100vw - 48px));height:min(800px,calc(100dvh - 48px));max-height:100%;max-width:100%;display:flex;flex-direction:column;gap:0;padding:0;border-radius:16px;overflow:hidden;background:var(--dsw-alias-bg-layer-1,var(--dsw-alias-bg-base,#fff));color:var(--dsw-alias-label-primary,#18191c);font:13px/20px var(--dsw-font-family,system-ui,sans-serif)}
 .ptcPlusSessionCapabilityModal>div{min-height:0}
-.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns,.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(140px,1.3fr) 62px minmax(75px,.7fr) minmax(84px,.7fr) minmax(96px,.9fr) minmax(96px,.9fr) minmax(90px,.55fr);gap:10px;padding:10px 12px}
+.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns,.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(140px,1.25fr) 58px minmax(70px,.6fr) minmax(88px,.62fr) minmax(112px,.85fr) minmax(96px,.7fr) minmax(118px,.85fr);gap:10px;padding:10px 12px}.ptcPlusSessionCapabilityColumns.ptcPlusSessionCapabilityColumns-8,.ptcPlusSessionCapabilityRow.ptcPlusSessionCapabilityRow-8{grid-template-columns:minmax(140px,1.25fr) 58px minmax(70px,.6fr) minmax(88px,.62fr) minmax(112px,.85fr) minmax(96px,.7fr) minmax(118px,.85fr) minmax(130px,.95fr)}.ptcPlusSessionCapabilityColumns.ptcPlusSessionCapabilityColumns-5,.ptcPlusSessionCapabilityRow.ptcPlusSessionCapabilityRow-5{grid-template-columns:minmax(160px,1.4fr) 70px minmax(90px,.8fr) minmax(120px,.9fr) minmax(150px,1.1fr)}
 .ptcPlusSessionCapabilityColumns{position:sticky;top:0;z-index:1;border-bottom:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusSessionCapabilityMessage{box-sizing:border-box;margin:0;padding:16px 24px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
 .ptcPlusSessionCapabilityHead{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;border-bottom:1px solid var(--dsw-alias-border-l2)}
@@ -40545,19 +40067,24 @@ var CLIENT_CSS = `
 .ptcPlusSessionCapabilitySaved{font-size:12px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .ptcPlusSessionCapabilityAvailability,.ptcPlusSessionCapabilityDisclosure{display:flex;flex-wrap:nowrap;align-items:center;gap:6px;min-width:0}
 .ptcPlusSessionCapabilityAvailability .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityDisclosure .ptcPlusSelectTrigger{flex:1 1 0;min-width:0;width:auto}
-.ptcPlusSessionCapabilityEvidence{font-size:11px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
-.ptcPlusSessionCapabilityEvidence[data-proven=true]{color:var(--dsw-alias-state-success-primary,#1a7f37)}
+.ptcPlusSessionCapabilitySavedDisclosure{font-size:12px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.ptcPlusSessionCapabilitySaved,.ptcPlusSessionCapabilitySavedDisclosure{min-width:0;overflow:hidden}.ptcPlusSessionCapabilitySavedDisclosure .ptcPlusSelectTrigger,.ptcPlusSessionCapabilitySaved .ptcPlusSelectTrigger{width:100%;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ptcPlusSessionCapabilityReceipt{font-size:11px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
+.ptcPlusSessionCapabilityAddresses{margin:2px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;overflow-wrap:anywhere}
+.ptcPlusCapabilitySurface-inline{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:hidden}
+.ptcPlusCapabilitySurface-inline .ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}
+.ptcPlusCapabilityRulesEntry{display:flex;justify-content:flex-end;padding:0 0 8px}
 .ptcPlusBindingTable{min-width:0}
-@media(max-width:900px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1/-1;grid-row:4;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:1/-1;grid-row:5;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}}
+@media(max-width:900px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:6px 12px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySavedDisclosure{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1/-1;grid-row:4;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:1/-1;grid-row:5;flex-direction:row;flex-wrap:wrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityReceipt{grid-column:1/-1;grid-row:6}.ptcPlusSessionCapabilityRow-5 .ptcPlusSessionCapabilitySaved{grid-column:1/-1;grid-row:3}.ptcPlusSessionCapabilityRow-5 .ptcPlusSessionCapabilitySavedDisclosure{grid-column:1/-1;grid-row:4}}
 @media(max-width:900px){.ptcPlusSessionCapabilityToolbar{grid-template-columns:repeat(3,minmax(0,1fr))}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{grid-column:1/-1}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{display:flex;gap:4px 12px;overflow-x:auto;overscroll-behavior:contain;padding-block:4px}.ptcPlusSessionCapabilityColumns>span{flex:none}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) auto;gap:4px 12px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/-1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:2}}
 @media(max-width:650px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{width:calc(100vw - 16px);height:calc(100dvh - 16px);max-height:100%}.ptcPlusSessionCapabilityHead,.ptcPlusSessionCapabilityToolbar,.ptcPlusSessionCapabilityFooter{padding-left:14px;padding-right:14px}.ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}.ptcPlusSessionCapabilityToolbar{gap:5px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityFooter{flex-wrap:wrap;gap:6px;padding-top:7px;padding-bottom:7px}.ptcPlusSessionCapabilityFooter [role=status]{flex-basis:100%}.ptcPlusSessionCapabilityFooter button{flex:1;min-width:0;width:auto}}
-@media(max-height:480px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{height:calc(100dvh - 8px);max-height:100%}.ptcPlusSessionCapabilityHead{padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityHead h2{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityHead .ptcPlusDialogClose{width:22px;height:22px}.ptcPlusSessionCapabilityHead p{display:none}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter>span{display:none}.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior:contain;padding-block:1px}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{flex:0 0 145px;height:27px}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{flex:0 0 130px}.ptcPlusSessionCapabilityToolbar .ptcPlusSelectTrigger{height:27px}.ptcPlusSessionCapabilityToolbar>.ptcPlusButton{flex:none;min-height:28px;padding:2px 10px;font-size:11px;line-height:14px;white-space:nowrap}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{padding-block:0}.ptcPlusSessionCapabilityGroup h3{padding-top:0;padding-bottom:0;line-height:10px}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1.25fr) auto minmax(120px,1fr);min-height:32px;padding-block:3px;gap:0 10px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityName{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity code{display:none}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:1;padding-block:0}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:3;grid-row:1;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:3;grid-row:2;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure .ptcPlusSelectTrigger{height:24px;padding:0 6px;font-size:11px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:1/-1;grid-row:3}.ptcPlusSessionCapabilityFooter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px 6px}.ptcPlusSessionCapabilityFooter [role=status]{grid-column:1/-1;font-size:10px;line-height:11px;max-height:22px;overflow-y:auto}.ptcPlusSessionCapabilityFooter button{min-width:0;width:100%;min-height:28px;padding:3px 10px;font-size:10px;line-height:14px;white-space:normal}}
-@media(max-height:480px) and (max-width:650px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:0 8px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityEvidence{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:2;grid-row:3}}
+@media(max-height:480px){.ptcPlusSessionCapabilityModal.ptcPlusSessionCapabilityModal{height:calc(100dvh - 8px);max-height:100%}.ptcPlusSessionCapabilityHead{padding-top:2px;padding-bottom:2px}.ptcPlusSessionCapabilityHead h2{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityHead .ptcPlusDialogClose{width:22px;height:22px}.ptcPlusSessionCapabilityHead p{display:none}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter>span{display:none}.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior:contain;padding-block:1px}.ptcPlusSessionCapabilityToolbar .ptcPlusSearch{flex:0 0 145px;height:27px}.ptcPlusSessionCapabilityToolbar .ptcPlusCapabilityFilter{flex:0 0 130px}.ptcPlusSessionCapabilityToolbar .ptcPlusSelectTrigger{height:27px}.ptcPlusSessionCapabilityToolbar>.ptcPlusButton{flex:none;min-height:28px;padding:2px 10px;font-size:11px;line-height:14px;white-space:nowrap}.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{padding-block:0}.ptcPlusSessionCapabilityGroup h3{padding-top:0;padding-bottom:0;line-height:10px}.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1.25fr) auto minmax(120px,1fr);min-height:32px;padding-block:3px;gap:0 10px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityName{font-size:12px;line-height:16px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity code{display:none}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:2;grid-row:1;padding-block:0}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:3;grid-row:1;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:3;grid-row:2;flex-direction:row;flex-wrap:nowrap}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure .ptcPlusSelectTrigger{height:24px;padding:0 6px;font-size:11px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySavedDisclosure{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityReceipt{grid-column:2/-1;grid-row:3}.ptcPlusSessionCapabilityFooter{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:4px;padding:4px 6px}.ptcPlusSessionCapabilityFooter [role=status]{grid-column:1/-1;font-size:10px;line-height:11px;max-height:22px;overflow-y:auto}.ptcPlusSessionCapabilityFooter button{min-width:0;width:100%;min-height:28px;padding:3px 10px;font-size:10px;line-height:14px;white-space:normal}}
+@media(max-height:480px) and (max-width:650px){.ptcPlusSessionCapabilityRow.ptcPlusCapabilityItem{grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:0 8px}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityIdentity{grid-column:1/3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilityBadge{grid-column:3;grid-row:1}.ptcPlusSessionCapabilityRow .ptcPlusCapabilitySource{grid-column:1;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySaved{grid-column:2;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilitySavedDisclosure{grid-column:3;grid-row:2}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityAvailability{grid-column:1;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityDisclosure{grid-column:2;grid-row:3}.ptcPlusSessionCapabilityRow .ptcPlusSessionCapabilityReceipt{grid-column:1/-1;grid-row:4;font-size:10px;line-height:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ptcPlusSessionCapabilityRow-5 .ptcPlusSessionCapabilitySaved{grid-column:1/-1;grid-row:3}.ptcPlusSessionCapabilityRow-5 .ptcPlusSessionCapabilitySavedDisclosure{grid-column:1/-1;grid-row:4}}
 
 .ptcPlusCapabilityDialog.ptcPlusCapabilityDialog{box-sizing:border-box;width:min(520px,calc(100vw - 32px));max-height:calc(100dvh - 32px);display:flex;flex-direction:column;padding:0;overflow:hidden;background:var(--dsw-alias-bg-base,#fff);color:var(--dsw-alias-label-primary,#18191c)}
-.ptcPlusCapabilityDialog.ptcPlusCapabilityEditorDialog{width:min(640px,calc(100vw - 32px))}
+
 .ptcPlusCapabilityDialogHead{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 18px;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityDialogHead h2{margin:0;font-size:16px;line-height:24px;overflow-wrap:anywhere}
-.ptcPlusCapabilityDialogBody{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px 18px}.ptcPlusCapabilityDialogBody>p{margin:0 0 10px;overflow-wrap:anywhere}.ptcPlusCapabilityDialogBody .ptcPlusCapabilityFilterFields{padding:0;border:0}
+.ptcPlusCapabilityDialogBody{min-height:0;overflow:auto;overscroll-behavior:contain;padding:14px 18px}.ptcPlusCapabilityDialogBody>p{margin:0 0 10px;overflow-wrap:anywhere}
 .ptcPlusCapabilityDialogFooter{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusCapabilityDialogActions{display:flex;flex-direction:column;gap:8px;margin-top:12px}.ptcPlusCapabilityDialogActions>.ptcPlusButton{justify-content:center;width:100%}
 .ptcPlusConfigurationMore.ptcPlusButton{padding:0 10px;font-size:16px;line-height:1}
@@ -40612,7 +40139,7 @@ var REPL_CONSOLE_CSS = `
 @media(max-width:560px){.ptcPlusConsole{padding:14px 12px}.ptcPlusBindingsModal.ptcPlusBindingsModal{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}.ptcPlusBindingsDialog{padding:16px;max-height:calc(100dvh - 16px)}.ptcPlusObservationFilters>.ptcPlusSelectTrigger{width:105px}.ptcPlusObservationTable th,.ptcPlusObservationTable td{padding:0 6px}.ptcPlusObservationValue{gap:3px}.ptcPlusObservationState{font-size:10px}.ptcPlusEditorHead{align-items:flex-start}.ptcPlusEditorHead>.ptcPlusBindingLifecycle{margin-left:auto}.ptcPlusSourceBody .cm-editor{height:300px}}
 .ptcPlusReplIdentity{grid-column:1}.ptcPlusReplReuse{flex:none;padding:0 5px;border-radius:999px;background:var(--dsw-alias-bg-layer-2,rgba(38,49,72,.06));color:var(--dsw-alias-label-tertiary,#74777d);font:500 10px/15px system-ui,sans-serif;white-space:nowrap}
 .ptcPlusObservationReuseTotal{font-size:13px;color:var(--dsw-alias-label-tertiary)}.ptcPlusObservationReuse{color:var(--dsw-alias-label-tertiary);white-space:nowrap;font-variant-numeric:tabular-nums}
-.ptcPlusCapabilityIdentity{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:3px 8px;min-width:0}.ptcPlusCapabilityIdentityText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusCapabilityPickHead{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px}.ptcPlusCapabilityPickHead .ptcPlusCapabilitySort{min-width:0}.ptcPlusPick{appearance:none;position:relative;flex:none;box-sizing:border-box;width:16px;height:16px;margin:0;border:1px solid var(--dsw-alias-border-l4);border-radius:4px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}.ptcPlusPick:checked,.ptcPlusPick:indeterminate{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary)}.ptcPlusPick:checked::after{position:absolute;left:4px;top:1px;width:5px;height:9px;border:solid var(--dsw-alias-label-primary-foreground);border-width:0 2px 2px 0;content:'';transform:rotate(45deg)}.ptcPlusPick:indeterminate::after{position:absolute;left:3px;top:6px;width:8px;height:2px;border-radius:1px;background:var(--dsw-alias-label-primary-foreground);content:''}.ptcPlusPick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusPick:disabled{cursor:not-allowed;opacity:.4}.ptcPlusCapabilityBatchCount{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font-size:10px;line-height:16px}@media(max-width:650px){.ptcPlusSessionCapabilityMessage{padding-inline:14px}}
+.ptcPlusCapabilityIdentity{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:3px 8px;min-width:0}.ptcPlusCapabilityIdentityText{display:flex;flex-direction:column;gap:3px;min-width:0}.ptcPlusPick{appearance:none;position:relative;flex:none;box-sizing:border-box;width:16px;height:16px;margin:0;border:1px solid var(--dsw-alias-border-l4);border-radius:4px;background:var(--dsw-alias-bg-layer-3);cursor:pointer}.ptcPlusPick:checked,.ptcPlusPick:indeterminate{border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-brand-primary)}.ptcPlusPick:checked::after{position:absolute;left:4px;top:1px;width:5px;height:9px;border:solid var(--dsw-alias-label-primary-foreground);border-width:0 2px 2px 0;content:'';transform:rotate(45deg)}.ptcPlusPick:indeterminate::after{position:absolute;left:3px;top:6px;width:8px;height:2px;border-radius:1px;background:var(--dsw-alias-label-primary-foreground);content:''}.ptcPlusPick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusPick:disabled{cursor:not-allowed;opacity:.4}.ptcPlusCapabilityBatchCount{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 5px;border-radius:999px;background:var(--dsw-alias-state-business-primary,#4d6bfe);color:#fff;font-size:10px;line-height:16px}@media(max-width:650px){.ptcPlusSessionCapabilityMessage{padding-inline:14px}}
 @media(max-width:650px){.ptcPlusSessionCapabilityFooter button{font-size:11px;line-height:14px}}
 @media(max-width:650px) and (max-height:480px){.ptcPlusSessionCapabilityFooter{grid-template-columns:repeat(4,minmax(0,1fr));gap:3px;padding:3px 6px}.ptcPlusSessionCapabilityFooter [role=status]{line-height:11px}.ptcPlusSessionCapabilityFooter button{font-size:10px;line-height:12px;padding:1px 10px}}
 `;
@@ -41072,41 +40599,33 @@ var CHROME_COPY = Object.freeze({
     "capabilities.effect.collectionOff": "\u505C\u6B62\u91C7\u96C6\u65B0\u8BB0\u5F55\uFF0C\u5386\u53F2\u7EDF\u8BA1\u4ECD\u4FDD\u7559\u5E76\u53EF\u9009\u4F5C\u5206\u914D\u4F9D\u636E\u3002",
     "capabilities.effect.statisticsIndependent": "\u91C7\u96C6\u4E0E\u5206\u914D\u72EC\u7ACB\uFF1B\u662F\u5426\u4F7F\u7528\u7EDF\u8BA1\u5728\u201C\u63D0\u793A\u8BBE\u7F6E \u2192 \u521D\u59CB\u63D0\u793A\u201D\u4E2D\u9009\u62E9\u3002",
     "capabilities.sourceRules": "\u6765\u6E90\u89C4\u5219",
-    "capabilities.filterAction": "\u7B5B\u9009",
     "capabilities.batchSettings": "\u6279\u91CF\u8BBE\u7F6E",
     "capabilities.batch.cancel": "\u53D6\u6D88",
     "capabilities.inheritedRules": "\u7EE7\u627F\u89C4\u5219",
     "capabilities.inheritedRulesHelp": "\u8BBE\u7F6E\u9ED8\u8BA4\u3001\u7C7B\u522B\u548C MCP \u6765\u6E90\u7684\u6301\u7EED\u89C4\u5219\uFF0C\u66F4\u6539\u5373\u4FDD\u5B58\u3002\u89C4\u5219\u72EC\u7ACB\u4E8E\u5F53\u524D\u7B5B\u9009\uFF0C\u5355\u9879\u8BBE\u7F6E\u6309\u7EF4\u5EA6\u8986\u76D6\uFF1BMCP \u6765\u6E90\u505C\u7528\u4F18\u5148\u3002",
-    "capabilities.batch.targets": "\u4E00\u6B21\u6027\u4FEE\u6539 {count} \u9879\u771F\u5B9E\u80FD\u529B",
     "capabilities.batch.targetList": "\u672C\u6B21\u6279\u91CF\u76EE\u6807",
-    "capabilities.batch.empty": "\u5F53\u524D\u7B5B\u9009\u4E2D\u6CA1\u6709\u53EF\u6279\u91CF\u4FEE\u6539\u7684\u771F\u5B9E\u80FD\u529B\u3002",
-    "capabilities.batch.availability": "\u6279\u91CF\u8BBE\u7F6E\u662F\u5426\u542F\u7528",
-    "capabilities.batch.disclosure": "\u6279\u91CF\u8BBE\u7F6E\u4E0A\u4E0B\u6587",
     "capabilities.batch.keep": "\u4E0D\u66F4\u6539",
-    "capabilities.batch.effect": "\u786E\u8BA4\u540E\u4E00\u6B21\u4FDD\u5B58\u8FD9\u4E9B\u5355\u9879\u8BBE\u7F6E\uFF0C\u672A\u4FEE\u6539\u7684\u7EF4\u5EA6\u4FDD\u6301\u4E0D\u53D8\uFF1B\u65B0\u4F1A\u8BDD\u91C7\u7528\uFF0C\u5DF2\u6709\u4F1A\u8BDD\u9700\u660E\u786E\u5237\u65B0\u3002",
-    "capabilities.batch.sourceClosure": "MCP \u6765\u6E90\u5DF2\u505C\u7528\u65F6\uFF0C\u5355\u9879\u542F\u7528\u4E0D\u4F1A\u91CD\u65B0\u5F00\u542F\u6765\u6E90\u3002",
-    "capabilities.batch.changedTargets": "{count} \u9879\u76EE\u6807\u5DF2\u4E0D\u5728\u6700\u65B0\u5B8C\u6574\u76EE\u5F55\u4E2D\u6216\u53EF\u7528\u6027\u672A\u786E\u8BA4\uFF1B\u8BF7\u53D6\u6D88\u5E76\u91CD\u65B0\u68C0\u67E5\u76EE\u6807\u3002",
-    "capabilities.batch.failed": "\u4FDD\u5B58\u672A\u6210\u529F\uFF0C\u76EE\u6807\u548C\u9009\u62E9\u5DF2\u4FDD\u7559\uFF0C\u53EF\u518D\u6B21\u786E\u8BA4\u91CD\u8BD5\u3002",
-    "capabilities.batch.confirm": "\u786E\u8BA4\u4FEE\u6539 {count} \u9879",
-    "capabilities.batch.all": "\u5F53\u524D\u5B8C\u6574\u80FD\u529B\u76EE\u5F55",
+    "capabilities.batch.address.saved": "\u4FDD\u5B58",
+    "capabilities.batch.address.session": "\u672C\u4F1A\u8BDD",
+    "capabilities.surface.settingsTitle": "\u80FD\u529B\u9762 \xB7 \u65B0\u4F1A\u8BDD\u9ED8\u8BA4",
+    "capabilities.surface.addresses.session": "\u5730\u5740\u96C6\uFF1A\u65B0\u4F1A\u8BDD\u9ED8\u8BA4\uFF08\u4FDD\u5B58\uFF09\xB7 \u672C\u4F1A\u8BDD\u8BB0\u5F55\uFF08{session}\uFF09",
+    "capabilities.surface.addresses.settings": "\u5730\u5740\u96C6\uFF1A\u65B0\u4F1A\u8BDD\u9ED8\u8BA4\uFF08\u4FDD\u5B58\uFF09",
+    "capabilities.control.savedEnabled": "\u4FDD\u5B58\xB7\u542F\u7528\uFF1A{name}",
+    "capabilities.control.savedDisclosure": "\u4FDD\u5B58\xB7\u62AB\u9732\uFF1A{name}",
+    "capabilities.control.sessionEnabled": "\u672C\u4F1A\u8BDD\xB7\u542F\u7528\uFF1A{name}",
+    "capabilities.control.sessionDisclosure": "\u672C\u4F1A\u8BDD\xB7\u62AB\u9732\uFF1A{name}",
+    "capabilities.batch.effectSession": "\u5199\u5165\u7684\u662F\u672C\u4F1A\u8BDD\u8BB0\u5F55\uFF1A\u672C\u4F1A\u8BDD\u7684\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u8BFB\u53D6\u5B83\uFF0C\u5176\u4ED6\u4F1A\u8BDD\u4E0D\u53D7\u5F71\u54CD\u3002",
+    "capabilities.batch.effect": "\u786E\u8BA4\u540E\u9010\u4E2A\u5199\u5165\u8FD9\u4E9B\u5355\u9879\u8BBE\u7F6E\uFF0C\u672A\u4FEE\u6539\u7684\u7EF4\u5EA6\u4FDD\u6301\u4E0D\u53D8\uFF1B\u65B0\u4F1A\u8BDD\u91C7\u7528\uFF0C\u5DF2\u6709\u4F1A\u8BDD\u9700\u660E\u786E\u5237\u65B0\u3002",
     "capabilities.batch.selected": "\u5DF2\u9009\u62E9 {count} \u9879\u80FD\u529B",
-    "capabilities.batch.stage": "\u6682\u5B58\u4FEE\u6539\uFF08{count} \u9879\uFF09",
-    "capabilities.batch.sessionStage": "\u786E\u8BA4\u540E\u5199\u5165\u5F85\u5E94\u7528\u66F4\u6539\uFF1B\u7531\u5E95\u90E8\u6309\u94AE\u51B3\u5B9A\u5E94\u7528\u5230\u4F1A\u8BDD\u6216\u4FDD\u5B58\u4E3A\u5168\u5C40\u9ED8\u8BA4\u3002",
-    "capabilities.batch.sessionInherit": "\u4E0D\u6539\u52A8\uFF08\u6E05\u9664\u672C\u4F1A\u8BDD\u4FEE\u6539\uFF09",
     "capabilities.selectForBatch": "\u9009\u62E9 {name}",
-    "capabilities.selectAllVisible": "\u9009\u62E9\u5F53\u524D\u7B5B\u9009\u7ED3\u679C",
-    "capabilities.selectionCount": "\u5DF2\u9009 {count} \u9879",
+    "capabilities.column.object": "\u5BF9\u8C61",
     "capabilities.typesColumn": "\u7C7B\u578B",
     "capabilities.sourceColumn": "\u6765\u6E90",
-    "capabilities.enabledColumn": "\u662F\u5426\u542F\u7528",
-    "capabilities.contextColumn": "\u4E0A\u4E0B\u6587",
-    "capabilities.rowState.source-closed": "\u6765\u6E90\u5DF2\u505C\u7528",
-    "capabilities.rowState.unapplied": "\u672A\u5E94\u7528",
-    "capabilities.rowState.enabled": "\u5DF2\u542F\u7528",
-    "capabilities.rowState.closed": "\u5DF2\u505C\u7528",
-    "capabilities.editContextFor": "\u7F16\u8F91\u4E0A\u4E0B\u6587\u8BBE\u7F6E\uFF1A{name}",
-    "capabilities.closeDetails": "\u6536\u8D77\u8BE6\u60C5",
-    "capabilities.contextHelp": "\u542F\u505C\u548C\u4E0A\u4E0B\u6587\u5206\u522B\u4FDD\u5B58\uFF1B\u66F4\u6539\u8BF4\u660E\u4E0D\u4F1A\u6539\u53D8\u80FD\u529B\u662F\u5426\u53EF\u7528\u3002",
+    "capabilities.column.savedEnabled": "\u4FDD\u5B58\xB7\u542F\u7528",
+    "capabilities.column.savedDisclosure": "\u4FDD\u5B58\xB7\u62AB\u9732",
+    "capabilities.column.sessionEnabled": "\u672C\u4F1A\u8BDD\xB7\u542F\u7528",
+    "capabilities.column.sessionDisclosure": "\u672C\u4F1A\u8BDD\xB7\u62AB\u9732",
+    "capabilities.column.receipt": "\u56DE\u6267",
     "capabilities.coverageScope": "\u7EDF\u8BA1\u8303\u56F4",
     "capabilities.scope.workspace": "\u5F53\u524D\u5DE5\u4F5C\u533A",
     "capabilities.scope.global": "\u6240\u6709\u5DE5\u4F5C\u533A",
@@ -41138,7 +40657,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.previewHelp": "\u9650\u5236\u6A21\u578B\u4E0A\u4E0B\u6587\u4E2D\u7ED3\u679C\u4E0E\u65E5\u5FD7\u7684\u957F\u5EA6\uFF0C\u7701\u7565\u5185\u5BB9\u4ECD\u53EF\u8BFB\u53D6\uFF1B\u5B8C\u6574\u7ED3\u679C\u548C\u6267\u884C\u72B6\u6001\u4E0D\u53D8\u3002",
     "capabilities.previewEnabled": "\u8F93\u51FA\u8282\u9009",
     "capabilities.estimatedTokens": "\u7EA6 {count} token",
-    "capabilities.descriptionDependency": "\u521D\u59CB\u63D0\u793A\u91C7\u7528\u80FD\u529B\u914D\u7F6E\u4E2D\u7684\u8BF4\u660E\u89C4\u5219\uFF1B\u5E38\u7528\u96C6\u5728\u80FD\u529B\u914D\u7F6E\u4E2D\u7F16\u8F91\u3002\u63D0\u793A\u6062\u590D\u3001\u8F93\u51FA\u8282\u9009\u548C\u4F7F\u7528\u7EDF\u8BA1\u53EF\u72EC\u7ACB\u9009\u7528\u3002",
+    "capabilities.descriptionDependency": "\u521D\u59CB\u63D0\u793A\u91C7\u7528\u80FD\u529B\u914D\u7F6E\u4E2D\u7684\u8BF4\u660E\u89C4\u5219\uFF1B\u5E38\u7528\u96C6\u7531\u914D\u7F6E\u6587\u6863\u9648\u8FF0\uFF0C\u672C\u9875\u53EA\u8BFB\u3002\u63D0\u793A\u6062\u590D\u3001\u8F93\u51FA\u8282\u9009\u548C\u4F7F\u7528\u7EDF\u8BA1\u53EF\u72EC\u7ACB\u9009\u7528\u3002",
     "capabilities.descriptionHelp": "\u8BBE\u7F6E\u65B0\u4F1A\u8BDD\u7684\u521D\u59CB\u80FD\u529B\u63D0\u793A\uFF1A\u5B8C\u6574\u8BF4\u660E\u3001\u6309\u9700\u76EE\u5F55\u6216\u6309\u4F9D\u636E\u5206\u914D\uFF1B\u5355\u9879\u8BBE\u7F6E\u4F18\u5148\u3002",
     "capabilities.defaultDisclosure": "\u9ED8\u8BA4\u63D0\u4F9B\u65B9\u5F0F",
     "capabilities.savedForNew": "\u5DF2\u4FDD\u5B58 \xB7 \u65B0\u4F1A\u8BDD\u91C7\u7528",
@@ -41165,31 +40684,28 @@ var CHROME_COPY = Object.freeze({
     "capabilities.selectObservation": "\u9009\u62E9\u4E00\u4E2A\u6D3B\u8DC3 PTC \u4F1A\u8BDD\u4F5C\u4E3A\u89C2\u5BDF\u951A\u70B9\uFF1B\u7EDF\u8BA1\u548C\u9884\u7B97\u9884\u89C8\u90FD\u6309\u5B83\u7684\u80FD\u529B\u6E05\u5355\u5C55\u793A\uFF0C\u7EDF\u8BA1\u8303\u56F4\u53EF\u5207\u6362\u5F53\u524D\u5DE5\u4F5C\u533A\u6216\u5168\u90E8\u5DE5\u4F5C\u533A\u3002",
     "capabilities.quick.title": "\u4F1A\u8BDD\u80FD\u529B\u63A7\u5236",
     "capabilities.quick.modalTitle": "\u7BA1\u7406\u4F1A\u8BDD\u80FD\u529B",
-    "capabilities.quick.sessionIdentity": "\u5F53\u524D\u4F1A\u8BDD\uFF1A{session}",
     "capabilities.quick.temporary": "\u4E34\u65F6\u8986\u76D6",
     "capabilities.quick.globalSaved": "\u5168\u5C40\u8BBE\u7F6E",
-    "capabilities.quick.unknown": "\u672A\u786E\u8BA4",
+    "capabilities.quick.unknown": "\u65E7\u7248\u53D6\u503C",
     "capabilities.quick.members": "\u80FD\u529B\u6E05\u5355",
     "capabilities.quick.catalogError": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}",
     "capabilities.quick.supplyEmpty": "\u5BBF\u4E3B\u6CA1\u6709\u58F0\u660E\u4EFB\u4F55\u80FD\u529B\u6761\u76EE\u3002",
     "capabilities.quick.writeError": "\u5199\u5165\u88AB\u62D2\u7EDD\uFF1A{error}",
-    "capabilities.column.name": "\u540D\u79F0",
-    "capabilities.column.saved": "\u4FDD\u5B58",
-    "capabilities.column.availability": "\u53EF\u7528\u6027",
-    "capabilities.column.disclosure": "\u62AB\u9732",
-    "capabilities.column.evidence": "\u8BC1\u636E",
-    "capabilities.word.enabled": "\u5F00\u542F",
+    "capabilities.word.enabled": "\u542F\u7528",
     "capabilities.word.closed": "\u5173\u95ED",
     "capabilities.word.automatic": "\u81EA\u52A8",
     "capabilities.word.inherit": "\u7EE7\u627F",
-    "capabilities.word.host": "\u5BBF\u4E3B",
-    "capabilities.word.full": "\u5B8C\u6574",
-    "capabilities.word.on-demand": "\u6309\u9700",
-    "capabilities.word.adaptive": "\u81EA\u9002\u5E94",
+    "capabilities.word.perMember": "\u5404\u6210\u5458\u81EA\u5B9A",
+    "capabilities.word.unwritten": "\u672A\u5199\u4E0B",
+    "capabilities.word.sessionRecord": "\u672C\u4F1A\u8BDD\u8BB0\u5F55",
+    "capabilities.word.bindingRecord": "\u7ED1\u5B9A\u91C7\u7EB3\u8BB0\u5F55",
+    "capabilities.word.host": "\u4EBA\u673A\xB7\u539F\u6587\xB7\u9996\u8F6E",
+    "capabilities.word.full": "\u4EBA\u673A\xB7\u5168\u6587\xB7\u9996\u8F6E",
+    "capabilities.word.on-demand": "\u4EC5\u6A21\u578B\xB7\u76EE\u5F55\xB7\u9996\u8F6E",
+    "capabilities.word.adaptive": "\u4EC5\u6A21\u578B\xB7\u5206\u914D\xB7\u4E0D\u91CD\u8BFB",
     "capabilities.word.use": "\u4F7F\u7528",
     "capabilities.word.skip": "\u4E0D\u4F7F\u7528",
     "capabilities.word.damaged": "\u8BB0\u5F55\u635F\u574F",
-    "capabilities.word.proven": "\u5DF2\u8BC1\u660E",
     "capabilities.source.bindings": "\u5168\u5C40\u7ED1\u5B9A",
     "capabilities.batch.record": "\u5199\u5165 {count} \u9879",
     "capabilities.batch.kept": "\u672C\u6B21\u6279\u91CF\u4FDD\u6301\u5F53\u524D\u8BBE\u7F6E\uFF0C\u5199\u5165 0 \u6761\u8BB0\u5F55\u3002",
@@ -41202,8 +40718,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.tools": "\u57FA\u7840\u5DE5\u5177",
     "capabilities.quick.mcp": "MCP \u670D\u52A1\u4E0E\u8D44\u6E90",
     "capabilities.quick.mcp_tools": "MCP Tools",
-    "capabilities.action.enable": "\u542F\u7528",
-    "capabilities.action.close": "\u5173\u95ED",
     "capabilities.card.recorded": "\u4F1A\u8BDD\u80FD\u529B\u5DF2\u66F4\u65B0\u3002",
     "capabilities.card.paused": "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587\u5DF2\u5173\u95ED\uFF1B\u672C\u4F1A\u8BDD\u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.card.off": "\u80FD\u529B\u7BA1\u7406\u5DF2\u5173\u95ED\uFF1B\u672C\u4F1A\u8BDD\u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
@@ -41225,6 +40739,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.receipt.paused": "\u80FD\u529B\u4E0E\u4E0A\u4E0B\u6587\u5DF2\u5173\u95ED\uFF1B\u4F1A\u8BDD {session} \u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.receipt.off": "\u80FD\u529B\u7BA1\u7406\u5DF2\u5173\u95ED\uFF1B\u4F1A\u8BDD {session} \u6CBF\u7528\u5BBF\u4E3B\u80FD\u529B\u3002",
     "capabilities.receipt.usage": "\u4F7F\u7528 /capabilities \u67E5\u770B\uFF0C\u6216 /capabilities refresh \u540C\u6B65\u5DF2\u4FDD\u5B58\u8BBE\u7F6E\u3002",
+    "capabilities.receipt.layer": "\u7ECF {layer}",
     "capabilities.receipt.record": "\u4F1A\u8BDD {session} \u5DF2\u8BB0\u5F55 {record}\u3002",
     "capabilities.receipt.record.global": "\u5168\u5C40\u8BBE\u7F6E\u5DF2\u8BB0\u5F55 {record}\u3002",
     "bindings.toggleEnabled": "\u5DF2\u4FDD\u5B58\u201C{name}\u201D\u7684\u542F\u7528\u9009\u62E9\uFF1B\u6A21\u578B\u76EE\u5F55\u5728\u4E0B\u4E00\u6B21\u83B7\u51C6\u6B65\u9AA4\u66F4\u65B0\uFF0C\u7A0B\u5E8F\u503C\u5C1A\u672A\u8BC1\u660E\u521D\u59CB\u5316\u3002",
@@ -41274,7 +40789,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.saveSessionConfiguration": "\u4FDD\u5B58\u8BE5\u4F1A\u8BDD\u7684\u914D\u7F6E",
     "capabilities.frozenHint": "\u4EE5\u4E0B\u662F\u8BE5\u4F1A\u8BDD\u6B63\u5728\u751F\u6548\u7684\u51BB\u7ED3\u7ED3\u679C\uFF0C\u4E0D\u662F\u53EF\u5207\u6362\u7684\u547D\u540D\u914D\u7F6E\u3002",
     "capabilities.reason.manual-override": "\u624B\u52A8\u9009\u62E9",
-    "capabilities.serverHint": "MCP \u53EF\u6309\u6574\u53F0 server \u5173\u95ED\uFF0C\u4E5F\u53EF\u5355\u72EC\u914D\u7F6E\u5176\u5DE5\u5177\uFF1B\u5173\u95ED server \u4F1A\u8986\u76D6\u5B50\u9879\uFF0C\u91CD\u65B0\u5F00\u542F\u540E\u4FDD\u7559\u5B50\u9879\u8BBE\u7F6E\u3002",
     "capabilities.serverToggle": "\u542F\u7528 MCP server {name}",
     "capabilities.serverOff": "\u5DF2\u5173\u95ED",
     "capabilities.serverOn": "\u5DF2\u542F\u7528",
@@ -41292,27 +40806,23 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.statistics-unavailable": "\u7EDF\u8BA1\u6837\u672C\u4E0D\u8DB3",
     "capabilities.reason.workspace": "\u5DE5\u4F5C\u533A\u7EDF\u8BA1",
     "capabilities.reason.global": "\u5168\u5C40\u7EDF\u8BA1\u53C2\u8003",
-    "capabilities.host": "\u6CBF\u7528 DSH",
-    "capabilities.policy.inheritRule": "\u4E0D\u5355\u72EC\u8BBE\u7F6E",
     "capabilities.policy.availabilityFilter": "\u5DF2\u4FDD\u5B58\u7684\u53EF\u7528\u6027",
     "capabilities.policy.disclosureFilter": "\u5DF2\u4FDD\u5B58\u7684\u8BF4\u660E\u65B9\u5F0F",
-    "capabilities.policy.frozenSource": "\u51BB\u7ED3\u6765\u6E90\u7684\u89C4\u5219\u7ED3\u679C",
-    "capabilities.policy.effectiveDimensions": "\u5DF2\u751F\u6548\u7684\u7EF4\u5EA6\u4E0E\u6765\u6E90",
     "capabilities.sort.availabilityRule": "\u53EF\u7528\u6027\u89C4\u5219",
     "capabilities.sort.disclosureRule": "\u8BF4\u660E\u89C4\u5219",
-    "capabilities.adaptive": "\u6309\u4F9D\u636E\u5206\u914D",
     "capabilities.policy.rules": "\u53EF\u7528\u6027\u4E0E\u8BF4\u660E\u89C4\u5219",
     "capabilities.policy.precedence": "\u9ED8\u8BA4 \u2192 \u7C7B\u522B \u2192 MCP \u6765\u6E90 \u2192 \u5355\u9879\uFF0C\u5206\u522B\u51B3\u5B9A\u542F\u505C\u548C\u8BF4\u660E\uFF1BMCP \u6765\u6E90\u505C\u7528\u4F18\u5148\uFF0C\u4FDD\u7559\u5B50\u9879\u504F\u597D\u3002",
+    "capabilities.policy.layerAbove": "\u7531\u4E0A\u4E00\u5C42",
     "capabilities.policy.default": "\u9ED8\u8BA4\u89C4\u5219",
     "capabilities.policy.categories": "\u7C7B\u522B\u89C4\u5219",
     "capabilities.policy.availability": "\u53EF\u7528\u6027",
     "capabilities.policy.disclosure": "\u8BF4\u660E\u65B9\u5F0F",
-    "capabilities.policy.availabilityFor": "{name} \u7684\u53EF\u7528\u6027",
+    "capabilities.dimension.availability": "\u542F\u7528",
+    "capabilities.dimension.disclosure": "\u62AB\u9732",
     "capabilities.policy.allocate.baseline": "\u4F7F\u7528\u5E38\u7528\u96C6\u5206\u914D\u8BF4\u660E",
     "capabilities.policy.allocate.statistics": "\u4F7F\u7528\u7EDF\u8BA1\u5206\u914D\u8BF4\u660E",
     "capabilities.policy.allocate.budget": "\u7528\u9884\u7B97\u7EA6\u675F\u6309\u4F9D\u636E\u5206\u914D\u7684\u8BF4\u660E",
     "capabilities.policy.adaptiveHint": "\u4EC5\u300C\u6309\u4F9D\u636E\u5206\u914D\u300D\u4F7F\u7528\u4E0A\u8FF0\u4F9D\u636E\u3002\u91C7\u96C6\u7EDF\u8BA1\u72EC\u7ACB\u8BBE\u7F6E\uFF1B\u5B8C\u6574\u8BF4\u660E\u4E0D\u4F1A\u88AB\u9884\u7B97\u964D\u7EA7\uFF0C\u505C\u7528\u4E0D\u4F1A\u4E22\u5931\u8BF4\u660E\u504F\u597D\u3002",
-    "capabilities.policy.resolved": "\u89C4\u5219\u7ED3\u679C\uFF1A{availability} \xB7 {disclosure}\uFF08{source}\uFF09",
     "capabilities.policy.category.tool": "Tools",
     "capabilities.policy.category.skill": "Skills",
     "capabilities.policy.category.resource": "MCP \u8D44\u6E90\u4E0E\u6A21\u677F",
@@ -41321,34 +40831,25 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.host-disclosure": "\u6CBF\u7528\u5BBF\u4E3B\u8BF4\u660E",
     "capabilities.reason.availability-rule": "\u53EF\u7528\u6027\u89C4\u5219",
     "capabilities.reason.disclosure-rule": "\u8BF4\u660E\u89C4\u5219",
-    "capabilities.previousSource": "\u5148\u524D\u6765\u6E90\uFF08\u5F53\u524D\u672A\u5217\u51FA\uFF09",
     "capabilities.management": "\u80FD\u529B\u914D\u7F6E",
     "capabilities.foundation": "\u57FA\u7840\u6267\u884C\u73AF\u5883",
     "capabilities.foundationHint": "\u4E0D\u53D7\u80FD\u529B\u7BA1\u7406\u63A7\u5236",
     "capabilities.types": "\u80FD\u529B\u7C7B\u578B",
-    "capabilities.type.all": "\u5168\u90E8",
     "capabilities.type.tool": "Tools",
     "capabilities.type.skill": "Skills",
     "capabilities.type.resource": "MCP",
     "capabilities.type.server": "MCP \u6765\u6E90",
     "capabilities.type.binding": "\u7ED1\u5B9A",
-    "capabilities.type.other": "\u5176\u5B83 / \u5F85\u786E\u8BA4",
-    "capabilities.sort": "\u6392\u5E8F",
     "capabilities.sort.name": "\u540D\u79F0",
     "capabilities.sort.id": "\u7CBE\u786E ID",
     "capabilities.sort.strategy": "\u624B\u52A8\u7B56\u7565",
     "capabilities.sort.common": "\u5E38\u7528\u4F18\u5148",
-    "capabilities.sortCycle": "\u4F9D\u6B21\u6309\u5347\u5E8F\u3001\u964D\u5E8F\u6392\u5217\uFF0C\u518D\u6062\u590D\u9ED8\u8BA4\u987A\u5E8F",
     "capabilities.ascending": "\u5347\u5E8F\u6392\u5217",
     "capabilities.descending": "\u964D\u5E8F\u6392\u5217",
     "capabilities.filters": "\u7B5B\u9009\uFF08{count}\uFF09",
     "capabilities.sourceFilter": "\u80FD\u529B\u6765\u6E90",
     "capabilities.strategyFilter": "\u624B\u52A8\u7B56\u7565",
     "capabilities.allSources": "\u5168\u90E8\u6765\u6E90",
-    "capabilities.allStrategies": "\u5168\u90E8\u7B56\u7565",
-    "capabilities.onlyCommon": "\u4EC5\u5E38\u7528",
-    "capabilities.clear": "\u6E05\u9664\u7B5B\u9009",
-    "capabilities.results": "\u663E\u793A {count} / {total} \u9879",
     "capabilities.reloadCatalog": "\u91CD\u65B0\u8BFB\u53D6\u6E05\u5355",
     "capabilities.group.tool": "\u57FA\u7840\u5DE5\u5177 \xB7 DSH \u5DE5\u5177\u8868\u9762",
     "capabilities.group.mcp-tool": "\u6269\u5C55\u5DE5\u5177 \xB7 MCP",
@@ -41370,20 +40871,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.source.other-skill": "\u5176\u5B83\u6280\u80FD\u6765\u6E90",
     "capabilities.commonBaseline": "\u5E38\u7528\u57FA\u7EBF",
     "capabilities.details": "\u80FD\u529B\u8BE6\u60C5",
-    "capabilities.inBaseline": "\u5DF2\u52A0\u5165",
-    "capabilities.notInBaseline": "\u672A\u52A0\u5165",
     "capabilities.savedStrategy": "\u5DF2\u4FDD\u5B58\u7B56\u7565",
-    "capabilities.restoreAutomatic": "\u6062\u590D\u81EA\u52A8",
     "capabilities.closedBaseline": "\u5173\u95ED\u9009\u62E9\u4F18\u5148\uFF1B\u4FDD\u7559\u7684\u5E38\u7528\u57FA\u7EBF\u6682\u4E0D\u53C2\u4E0E\u5206\u914D\u3002",
-    "capabilities.skillDisclosure": "Skill \u7684\u5B8C\u6574\u8BF4\u660E\u4EC5\u63D0\u4F9B\u76EE\u5F55\u63CF\u8FF0\uFF0C\u6B63\u6587\u5728\u5B9E\u9645\u4F7F\u7528\u65F6\u52A0\u8F7D\u3002",
-    "capabilities.invocation.both": "\u6A21\u578B\u53EF\u4EE5\u52A0\u8F7D\u6B63\u6587\uFF0C\u7528\u6237\u4E5F\u53EF\u4EE5\u901A\u8FC7 /{name} \u8C03\u7528\u3002",
-    "capabilities.invocation.model": "\u4EC5\u5141\u8BB8\u6A21\u578B\u52A0\u8F7D\u6B63\u6587\uFF1B\u6B64 Skill \u4E0D\u63D0\u4F9B\u7528\u6237\u659C\u6760\u8C03\u7528\u3002",
-    "capabilities.invocation.user": "\u4EC5\u5141\u8BB8\u7528\u6237\u901A\u8FC7 /{name} \u8C03\u7528\uFF1B\u6A21\u578B\u4E0D\u80FD\u4F7F\u7528 tools.skill \u52A0\u8F7D\u5B83\u3002",
-    "capabilities.catalogDescription": "\u80FD\u529B\u8BF4\u660E",
-    "capabilities.removeSaved": "\u79FB\u9664\u5DF2\u4FDD\u5B58\u914D\u7F6E",
-    "capabilities.currentSession": "\u6240\u9009\u4F1A\u8BDD\u65B9\u6848",
-    "capabilities.sessionSelector": "\u67E5\u770B\u4F1A\u8BDD",
-    "capabilities.notInSession": "\u8BE5\u4F1A\u8BDD\u65B9\u6848\u672A\u5305\u542B\u6B64\u80FD\u529B",
     "capabilities.baselineHint": "\u7EDF\u8BA1\u6837\u672C\u4E0D\u8DB3\u65F6\uFF0C\u5E38\u7528\u57FA\u7EBF\u4F18\u5148\u63D0\u4F9B\u5B8C\u6574\u8BF4\u660E\uFF1B\u5355\u9879\u624B\u52A8\u9009\u62E9\u59CB\u7EC8\u4F18\u5148\u3002",
     "capabilities.managementOff": "\u80FD\u529B\u7BA1\u7406\u5DF2\u5173\u95ED\uFF1B\u624B\u52A8\u914D\u7F6E\u53EF\u7EE7\u7EED\u6574\u7406\uFF0C\u5DF2\u6709\u4F1A\u8BDD\u53EF\u4E3B\u52A8\u5237\u65B0\u4EE5\u540C\u6B65\u5173\u95ED\u914D\u7F6E\u3002",
     "capabilities.applyGroup": "\u5E94\u7528\u4F1A\u8BDD\u80FD\u529B\u8BBE\u7F6E",
@@ -41484,18 +40973,10 @@ var CHROME_COPY = Object.freeze({
     "capabilities.tab.budgets": "\u63D0\u793A\u8BBE\u7F6E",
     "capabilities.tab.plans": "\u914D\u7F6E\u65B9\u6848",
     "capabilities.savedStatisticsInvalid": "\u5DF2\u4FDD\u5B58\u7684\u7EDF\u8BA1\u8BBE\u7F6E\u4E0D\u53EF\u7528\u3002\u4E0B\u65B9\u663E\u793A\u5EFA\u8BAE\u503C\uFF1B\u4FEE\u6539\u540E\u4FDD\u5B58\uFF0C\u624B\u52A8\u80FD\u529B\u9009\u62E9\u4ECD\u6709\u6548\u3002",
-    "capabilities.catalogReadFailed": "\u80FD\u529B\u6E05\u5355\u8BFB\u53D6\u5931\u8D25\uFF1A{error}\u3002\u5DF2\u4FDD\u5B58\u7684\u9009\u62E9\u4ECD\u53EF\u7F16\u8F91\u3002",
     "capabilities.search": "\u641C\u7D22\u80FD\u529B\uFF08\u540D\u79F0\u3001ID \u6216\u6765\u6E90\uFF09",
-    "capabilities.catalogEmpty": "\u5C1A\u65E0\u53EF\u7528\u80FD\u529B\u6E05\u5355\u3002\u6253\u5F00\u4E00\u4E2A PTC \u4F1A\u8BDD\u540E\u91CD\u65B0\u8BFB\u53D6\u3002",
     "capabilities.noMatches": "\u6CA1\u6709\u5339\u914D\u7684\u80FD\u529B",
     "capabilities.notAvailable": "\u5F53\u524D\u6E05\u5355\u672A\u5217\u51FA\uFF0C\u4FDD\u7559\u5DF2\u4FDD\u5B58\u9009\u62E9",
     "capabilities.common": "\u5E38\u7528",
-    "capabilities.baselineFor": "\u8BBE\u4E3A\u5E38\u7528\uFF1A{name}",
-    "capabilities.disclosureFor": "\u62AB\u9732\u65B9\u5F0F\uFF1A{name}",
-    "capabilities.automatic": "\u8DDF\u968F\u81EA\u52A8",
-    "capabilities.full": "\u5B8C\u6574\u63D0\u4F9B",
-    "capabilities.on-demand": "\u6309\u9700\u63D0\u4F9B",
-    "capabilities.closed": "\u5173\u95ED\u80FD\u529B",
     "capabilities.statisticsEnabled": "\u4F7F\u7528\u7EDF\u8BA1",
     "capabilities.windowSize": "\u6837\u672C\u7A97\u53E3\uFF08\u4F1A\u8BDD\u5BB6\u65CF\uFF09",
     "capabilities.minimumSamples": "\u6700\u4F4E\u6837\u672C\u6570",
@@ -41506,8 +40987,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshHint": "\u80FD\u529B\u8BBE\u7F6E\u4F9B\u65B0\u4F1A\u8BDD\u4F7F\u7528\uFF1B\u5DF2\u6709\u4F1A\u8BDD\u6267\u884C /capabilities refresh \u540E\u540C\u6B65\u3002",
     "capabilities.unavailable": "\u65B9\u6848\u8BFB\u53D6\u5931\u8D25\uFF1A{error}",
     "capabilities.empty": "\u5C1A\u65E0\u5DF2\u51C6\u5907\u7684\u4F1A\u8BDD\u65B9\u6848",
-    "capabilities.pending": "\u4FDD\u5B58\u914D\u7F6E\u5F85\u5237\u65B0",
-    "capabilities.current": "\u4F7F\u7528\u5DF2\u51BB\u7ED3\u65B9\u6848",
     "capabilities.budget": "\u5B8C\u6574\u8BF4\u660E {bytes} \u5B57\u8282\uFF0C\u663E\u5F0F\u8D85\u989D {overage} \u5B57\u8282",
     "capabilities.member": "\u80FD\u529B",
     "capabilities.selection": "\u62AB\u9732",
@@ -41753,41 +41232,33 @@ var CHROME_COPY = Object.freeze({
     "capabilities.effect.collectionOff": "Stop collecting new records; retained statistics remain available as allocation evidence.",
     "capabilities.effect.statisticsIndependent": "Collection and allocation are independent. Select statistics use under Prompt settings \u2192 Initial prompt.",
     "capabilities.sourceRules": "Source rules",
-    "capabilities.filterAction": "Filter",
     "capabilities.batchSettings": "Batch settings",
     "capabilities.batch.cancel": "Cancel",
     "capabilities.inheritedRules": "Inherited rules",
     "capabilities.inheritedRulesHelp": "Set persistent defaults, category and MCP source rules. Changes save immediately and are independent of current filters. Item preferences override each dimension; MCP source closure takes precedence.",
-    "capabilities.batch.targets": "One-time change to {count} catalog capabilities",
     "capabilities.batch.targetList": "Targets for this batch",
-    "capabilities.batch.empty": "There are no confirmed catalog capabilities in the current filters.",
-    "capabilities.batch.availability": "Batch availability",
-    "capabilities.batch.disclosure": "Batch disclosure",
     "capabilities.batch.keep": "Keep unchanged",
-    "capabilities.batch.effect": "Confirm saves these item preferences once, preserving unchanged dimensions. New sessions use them; existing sessions require explicit refresh.",
-    "capabilities.batch.sourceClosure": "Enabling an item does not reopen a disabled MCP source.",
-    "capabilities.batch.changedTargets": "{count} targets are absent from the latest complete catalog or unconfirmed. Cancel and review the targets again.",
-    "capabilities.batch.failed": "Save was not confirmed. Targets and choices are retained; confirm again to retry.",
-    "capabilities.batch.confirm": "Confirm {count} changes",
-    "capabilities.batch.all": "Current complete capability catalog",
+    "capabilities.batch.address.saved": "Saved",
+    "capabilities.batch.address.session": "This session",
+    "capabilities.surface.settingsTitle": "Capability surface \xB7 new-session default",
+    "capabilities.surface.addresses.session": "Addresses: new-session default (saved) \xB7 this session's record ({session})",
+    "capabilities.surface.addresses.settings": "Addresses: new-session default (saved)",
+    "capabilities.control.savedEnabled": "Saved \xB7 on: {name}",
+    "capabilities.control.savedDisclosure": "Saved \xB7 disclosure: {name}",
+    "capabilities.control.sessionEnabled": "This session \xB7 on: {name}",
+    "capabilities.control.sessionDisclosure": "This session \xB7 disclosure: {name}",
+    "capabilities.batch.effectSession": "This writes this session's record: its next accepted step reads it, and other sessions are unaffected.",
+    "capabilities.batch.effect": "Confirm writes each of these item preferences in turn, preserving unchanged dimensions. New sessions use them; existing sessions require explicit refresh.",
     "capabilities.batch.selected": "Selected {count} capabilities",
-    "capabilities.batch.stage": "Stage changes ({count})",
-    "capabilities.batch.sessionStage": "Confirm stages these changes; the footer decides whether they apply to this session or become global defaults.",
-    "capabilities.batch.sessionInherit": "No change (clears this session\u2019s change)",
     "capabilities.selectForBatch": "Select {name}",
-    "capabilities.selectAllVisible": "Select all visible results",
-    "capabilities.selectionCount": "{count} selected",
+    "capabilities.column.object": "Object",
     "capabilities.typesColumn": "Type",
     "capabilities.sourceColumn": "Source",
-    "capabilities.enabledColumn": "Enabled",
-    "capabilities.contextColumn": "Context",
-    "capabilities.rowState.source-closed": "Source disabled",
-    "capabilities.rowState.unapplied": "Not applied",
-    "capabilities.rowState.enabled": "Enabled",
-    "capabilities.rowState.closed": "Disabled",
-    "capabilities.editContextFor": "Edit context settings: {name}",
-    "capabilities.closeDetails": "Close details",
-    "capabilities.contextHelp": "Availability and context are saved separately. Changing disclosure does not enable or disable a capability.",
+    "capabilities.column.savedEnabled": "Saved \xB7 on",
+    "capabilities.column.savedDisclosure": "Saved \xB7 disclosure",
+    "capabilities.column.sessionEnabled": "This session \xB7 on",
+    "capabilities.column.sessionDisclosure": "This session \xB7 disclosure",
+    "capabilities.column.receipt": "Receipt",
     "capabilities.coverageScope": "Statistics scope",
     "capabilities.scope.workspace": "Current workspace",
     "capabilities.scope.global": "All workspaces",
@@ -41819,7 +41290,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.previewHelp": "Limit result and log length in model context. Omitted content remains readable; complete results and execution status are preserved.",
     "capabilities.previewEnabled": "Output excerpts",
     "capabilities.estimatedTokens": "{count} estimated tokens",
-    "capabilities.descriptionDependency": "Initial prompts use the description rules in Capability configuration, where the common set is edited. Prompt recovery, output excerpts and usage statistics are independent choices.",
+    "capabilities.descriptionDependency": "Initial prompts use the description rules in Capability configuration; the common set is stated from the configuration and is read-only here. Prompt recovery, output excerpts and usage statistics are independent choices.",
     "capabilities.descriptionHelp": "Choose first-turn capability prompts for new sessions: full descriptions, an on-demand directory, or allocation from evidence. Individual settings take precedence.",
     "capabilities.defaultDisclosure": "Default disclosure",
     "capabilities.savedForNew": "Saved \xB7 used by new sessions",
@@ -41846,31 +41317,28 @@ var CHROME_COPY = Object.freeze({
     "capabilities.selectObservation": "Select an active PTC session as the observation anchor; statistics and budget preview follow its capability inventory, and the scope switches between its workspace and all workspaces.",
     "capabilities.quick.title": "Session capability controls",
     "capabilities.quick.modalTitle": "Manage session capabilities",
-    "capabilities.quick.sessionIdentity": "Current session: {session}",
     "capabilities.quick.temporary": "Temporary override",
     "capabilities.quick.globalSaved": "Global settings",
-    "capabilities.quick.unknown": "Unknown",
+    "capabilities.quick.unknown": "Legacy value",
     "capabilities.quick.members": "Capabilities",
     "capabilities.quick.catalogError": "Could not read capabilities: {error}",
     "capabilities.quick.supplyEmpty": "The Host declares no capability entries.",
     "capabilities.quick.writeError": "Write refused: {error}",
-    "capabilities.column.name": "Name",
-    "capabilities.column.saved": "Saved",
-    "capabilities.column.availability": "Availability",
-    "capabilities.column.disclosure": "Disclosure",
-    "capabilities.column.evidence": "Evidence",
     "capabilities.word.enabled": "On",
     "capabilities.word.closed": "Off",
     "capabilities.word.automatic": "Automatic",
     "capabilities.word.inherit": "Inherit",
-    "capabilities.word.host": "Host",
-    "capabilities.word.full": "Full",
-    "capabilities.word.on-demand": "On demand",
-    "capabilities.word.adaptive": "Adaptive",
+    "capabilities.word.perMember": "Per member",
+    "capabilities.word.unwritten": "Not written",
+    "capabilities.word.sessionRecord": "This session's record",
+    "capabilities.word.bindingRecord": "Binding adoption record",
+    "capabilities.word.host": "both\xB7source\xB7turn1",
+    "capabilities.word.full": "both\xB7full\xB7turn1",
+    "capabilities.word.on-demand": "model\xB7listing\xB7turn1",
+    "capabilities.word.adaptive": "model\xB7share\xB7no-reread",
     "capabilities.word.use": "Use",
     "capabilities.word.skip": "Do not use",
     "capabilities.word.damaged": "Record damaged",
-    "capabilities.word.proven": "Proven",
     "capabilities.source.bindings": "Global bindings",
     "capabilities.batch.record": "Record {count} entries",
     "capabilities.batch.kept": "This batch keeps the current settings and writes 0 records.",
@@ -41883,8 +41351,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.quick.tools": "Ordinary tools",
     "capabilities.quick.mcp": "MCP servers and resources",
     "capabilities.quick.mcp_tools": "MCP tools",
-    "capabilities.action.enable": "Enable",
-    "capabilities.action.close": "Close",
     "capabilities.card.recorded": "Session capabilities updated.",
     "capabilities.card.paused": "Capabilities and context are off; this session stays with the Host capabilities.",
     "capabilities.card.off": "Capability management is off; this session stays with the Host capabilities.",
@@ -41906,6 +41372,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.receipt.paused": "Capabilities and context are off; session {session} stays with the Host capabilities.",
     "capabilities.receipt.off": "Capability management is off; session {session} stays with the Host capabilities.",
     "capabilities.receipt.usage": "Use /capabilities to inspect or /capabilities refresh to apply saved settings.",
+    "capabilities.receipt.layer": "via {layer}",
     "capabilities.receipt.record": "Session {session} recorded {record}.",
     "capabilities.receipt.record.global": "Global settings recorded {record}.",
     "bindings.toggleEnabled": "Enabled \u201C{name}\u201D in saved configuration. The model catalog updates at the next accepted step; worker initialization is not yet established.",
@@ -41955,7 +41422,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.saveSessionConfiguration": "Save this session\u2019s configuration",
     "capabilities.frozenHint": "These are the session\u2019s effective frozen results, separate from named configurations.",
     "capabilities.reason.manual-override": "Manual selection",
-    "capabilities.serverHint": "Disable an entire MCP server or configure its individual tools. Server closure takes precedence; tool preferences are retained when re-enabled.",
     "capabilities.serverToggle": "Enable MCP server {name}",
     "capabilities.serverOff": "Disabled",
     "capabilities.serverOn": "Enabled",
@@ -41973,27 +41439,23 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.statistics-unavailable": "Insufficient statistics samples",
     "capabilities.reason.workspace": "Workspace statistics",
     "capabilities.reason.global": "Global statistics fallback",
-    "capabilities.host": "Host defaults",
-    "capabilities.policy.inheritRule": "Not set here",
     "capabilities.policy.availabilityFilter": "Saved availability",
     "capabilities.policy.disclosureFilter": "Saved disclosure",
-    "capabilities.policy.frozenSource": "Frozen source rule result",
-    "capabilities.policy.effectiveDimensions": "Effective dimensions and sources",
     "capabilities.sort.availabilityRule": "Availability rule",
     "capabilities.sort.disclosureRule": "Disclosure rule",
-    "capabilities.adaptive": "Allocate from evidence",
     "capabilities.policy.rules": "Availability and disclosure rules",
     "capabilities.policy.precedence": "Default \u2192 category \u2192 MCP source \u2192 item, independently for each dimension. MCP source closure wins and preserves child preferences.",
+    "capabilities.policy.layerAbove": "Layer above",
     "capabilities.policy.default": "Default rule",
     "capabilities.policy.categories": "Category rules",
     "capabilities.policy.availability": "Availability",
     "capabilities.policy.disclosure": "Disclosure",
-    "capabilities.policy.availabilityFor": "Availability for {name}",
+    "capabilities.dimension.availability": "On",
+    "capabilities.dimension.disclosure": "Disclosure",
     "capabilities.policy.allocate.baseline": "Allocate descriptions from the common set",
     "capabilities.policy.allocate.statistics": "Allocate descriptions from usage evidence",
     "capabilities.policy.allocate.budget": "Bound evidence-based allocation by the contract budget",
     "capabilities.policy.adaptiveHint": "Only evidence-based choices consume these inputs. Collection is separate; budgets never demote full contracts, and closing preserves disclosure preferences.",
-    "capabilities.policy.resolved": "Rule result: {availability} \xB7 {disclosure} ({source})",
     "capabilities.policy.category.tool": "Tools",
     "capabilities.policy.category.skill": "Skills",
     "capabilities.policy.category.resource": "MCP resources and templates",
@@ -42002,34 +41464,25 @@ var CHROME_COPY = Object.freeze({
     "capabilities.reason.host-disclosure": "Host disclosure",
     "capabilities.reason.availability-rule": "Availability rule",
     "capabilities.reason.disclosure-rule": "Disclosure rule",
-    "capabilities.previousSource": "Previous source (not currently listed)",
     "capabilities.management": "Capability configuration",
     "capabilities.foundation": "Core execution environment",
     "capabilities.foundationHint": "Outside capability management",
     "capabilities.types": "Capability types",
-    "capabilities.type.all": "All",
     "capabilities.type.tool": "Tools",
     "capabilities.type.skill": "Skills",
     "capabilities.type.resource": "MCP",
     "capabilities.type.server": "MCP source",
     "capabilities.type.binding": "Binding",
-    "capabilities.type.other": "Other / Unconfirmed",
-    "capabilities.sort": "Sort by",
     "capabilities.sort.name": "Name",
     "capabilities.sort.id": "Exact ID",
     "capabilities.sort.strategy": "Manual strategy",
     "capabilities.sort.common": "Common first",
-    "capabilities.sortCycle": "Sort ascending, descending, then restore the default order",
     "capabilities.ascending": "Sort ascending",
     "capabilities.descending": "Sort descending",
     "capabilities.filters": "Filters ({count})",
     "capabilities.sourceFilter": "Capability source",
     "capabilities.strategyFilter": "Manual strategy",
     "capabilities.allSources": "All sources",
-    "capabilities.allStrategies": "All strategies",
-    "capabilities.onlyCommon": "Common only",
-    "capabilities.clear": "Clear filters",
-    "capabilities.results": "Showing {count} / {total}",
     "capabilities.reloadCatalog": "Reload catalog",
     "capabilities.group.tool": "Base tools \xB7 DSH tool surface",
     "capabilities.group.mcp-tool": "Extension tools \xB7 MCP",
@@ -42051,20 +41504,8 @@ var CHROME_COPY = Object.freeze({
     "capabilities.source.other-skill": "Other skill source",
     "capabilities.commonBaseline": "Common baseline",
     "capabilities.details": "Capability details",
-    "capabilities.inBaseline": "Included",
-    "capabilities.notInBaseline": "Not included",
     "capabilities.savedStrategy": "Saved strategy",
-    "capabilities.restoreAutomatic": "Restore automatic",
     "capabilities.closedBaseline": "Closed selection takes priority; the retained common preference does not participate.",
-    "capabilities.skillDisclosure": "Full Skill disclosure supplies its catalog description; the body loads only when used.",
-    "capabilities.invocation.both": "The model can load the body; users can also invoke /{name}.",
-    "capabilities.invocation.model": "Only the model can load the body; this Skill has no user slash invocation.",
-    "capabilities.invocation.user": "Only users can invoke /{name}; the model cannot load it with tools.skill.",
-    "capabilities.catalogDescription": "Capability description",
-    "capabilities.removeSaved": "Remove saved preferences",
-    "capabilities.currentSession": "Selected session plan",
-    "capabilities.sessionSelector": "Inspect session",
-    "capabilities.notInSession": "Not included in this session plan",
     "capabilities.baselineHint": "When statistics lack samples, common preferences favor full disclosure; explicit manual selections always take priority.",
     "capabilities.managementOff": "Capability management is off. Manual preferences remain editable; refresh existing sessions to apply the disabled configuration.",
     "capabilities.applyGroup": "Apply session capability settings",
@@ -42162,18 +41603,10 @@ var CHROME_COPY = Object.freeze({
     "capabilities.tab.budgets": "Prompt settings",
     "capabilities.tab.plans": "Configurations",
     "capabilities.savedStatisticsInvalid": "Saved statistics are unusable. Suggested values are shown; edit to save them. Manual capability choices remain effective.",
-    "capabilities.catalogReadFailed": "The capability catalog read failed: {error}. Saved choices remain editable.",
     "capabilities.search": "Search name, purpose or source",
-    "capabilities.catalogEmpty": "No capability catalog is available yet. Open a PTC session, then reload.",
     "capabilities.noMatches": "No matching capabilities",
     "capabilities.notAvailable": "Not in the current catalog; saved selection retained",
     "capabilities.common": "Common",
-    "capabilities.baselineFor": "Include {name} in common baseline",
-    "capabilities.disclosureFor": "Disclosure for {name}",
-    "capabilities.automatic": "Follow automatic",
-    "capabilities.full": "Full contract",
-    "capabilities.on-demand": "On demand",
-    "capabilities.closed": "Closed",
     "capabilities.statisticsEnabled": "Usage statistics",
     "capabilities.windowSize": "Sample window (session families)",
     "capabilities.minimumSamples": "Minimum samples",
@@ -42184,8 +41617,6 @@ var CHROME_COPY = Object.freeze({
     "capabilities.refreshHint": "Capability settings apply to new sessions; run /capabilities refresh to update an existing session.",
     "capabilities.unavailable": "Cannot read plans: {error}",
     "capabilities.empty": "No prepared session plans",
-    "capabilities.pending": "Saved settings await refresh",
-    "capabilities.current": "Using frozen plan",
     "capabilities.budget": "Full contracts: {bytes} bytes; explicit overage: {overage} bytes",
     "capabilities.member": "Capability",
     "capabilities.selection": "Disclosure",
@@ -43555,16 +42986,22 @@ function createClientPlugin(require2) {
     const bindingCommands = createBindingCommandAvailability(ctx);
     const CapabilityCommandCard = createCapabilityCommandCard(React32);
     const CapabilityRefreshButton = createCapabilityRefreshView(React32, capabilityCommands);
-    const SessionCapabilityControls = createSessionCapabilityControlsView(React32, {
+    async function inspectSessionCatalog(sessionId, signal) {
+      const result = await rpc.call(
+        RPC_CONTRACTS.capabilities,
+        "session-catalog",
+        typeof sessionId === "string" && sessionId ? { sessionId } : {},
+        signal
+      );
+      if (result?.ok !== true) throw new Error(result?.error?.message ?? "Session capability catalog unavailable");
+      return result.value;
+    }
+    const CapabilitySurface = createCapabilitySurfaceView(React32, {
       commands: capabilityCommands,
       bindingCommands,
       Modal,
       Select: Select2,
-      async inspectSessionCatalog(sessionId, signal) {
-        const result = await rpc.call(RPC_CONTRACTS.capabilities, "session-catalog", { sessionId }, signal);
-        if (result?.ok !== true) throw new Error(result?.error?.message ?? "Session capability catalog unavailable");
-        return result.value;
-      }
+      inspectSessionCatalog
     });
     const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React32, {
       ActionButton,
@@ -43573,6 +43010,7 @@ function createClientPlugin(require2) {
       Select: Select2,
       useWorkbenchController,
       CapabilityRefreshButton,
+      CapabilitySurface,
       async inspectCapabilityTargets(signal) {
         const result = await rpc.call(RPC_CONTRACTS.capabilities, "targets", {}, signal);
         if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability refresh targets unavailable");
@@ -43583,22 +43021,14 @@ function createClientPlugin(require2) {
         if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability plans unavailable");
         return result.value;
       },
-      async inspectCapabilityCatalog(sessionId, signal) {
-        const result = await rpc.call(
-          RPC_CONTRACTS.capabilities,
-          "catalog",
-          typeof sessionId === "string" && sessionId ? { sessionId } : {},
-          signal
-        );
-        if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability catalog unavailable");
-        return result.value;
-      },
       async inspectCapabilityAllocation(payload, signal) {
         const result = await rpc.call(RPC_CONTRACTS.capabilities, "allocation", payload, signal);
         if (result?.ok !== true) throw new Error(result?.error?.message ?? "Capability allocation unavailable");
         return result.value;
       },
-      icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 }
+      // The settings page reads one icon: its navigation chevron. The search icon belonged to
+      // the second renderer's toolbar row, which this page no longer has.
+      icons: { chevron: IconChevronDownOutline14 }
     });
     const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React32, {
       CodeBlock,
@@ -43630,9 +43060,14 @@ function createClientPlugin(require2) {
       const before = preferenceScope.getSnapshot();
       if (before.status !== "ready" || before.writable !== true || !featureEnabled(before, "plugin")) throw new Error("Capability settings are not writable");
       const validated = capabilityProfileConfiguration(configuration);
-      await preferenceScope.mutate(Object.entries(validated).map(([key, value]) => ({ op: "set", path: [key], value })));
+      const synthesized = JSON.stringify(capabilityPolicyForConfig({ ...validated, capabilityPolicy: void 0 }));
+      const ops = Object.entries(validated).filter(([key]) => key !== "capabilityPolicy").map(([key, value]) => ({ op: "set", path: [key], value }));
+      const policyWritten = validated.capabilityPolicy !== void 0 && validated.capabilityPolicy !== synthesized;
+      ops.push(policyWritten ? { op: "set", path: ["capabilityPolicy"], value: validated.capabilityPolicy } : { op: "unset", path: ["capabilityPolicy"] });
+      await preferenceScope.mutate(ops);
       const after = preferenceScope.getSnapshot();
-      if (after.status !== "ready" || Object.entries(validated).some(([key, value]) => after.value?.[key] !== value)) throw new Error("Capability configuration was not applied");
+      const unchanged = Object.entries(validated).every(([key, value]) => key === "capabilityPolicy" ? policyWritten ? after.value?.capabilityPolicy === value : after.value?.capabilityPolicy === void 0 : after.value?.[key] === value);
+      if (after.status !== "ready" || !unchanged) throw new Error("Capability configuration was not applied");
       return "status.applied";
     };
     const settingsGate = (feature, register) => ({
@@ -43735,7 +43170,7 @@ function createClientPlugin(require2) {
       updateSetting,
       updateCapabilityConfiguration,
       menuChildren,
-      SessionCapabilityControls,
+      SessionCapabilityControls: CapabilitySurface,
       icons: {
         sparkle: IconSparkle16,
         chevron: IconChevronDownOutline14,

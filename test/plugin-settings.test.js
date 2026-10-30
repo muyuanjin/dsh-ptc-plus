@@ -44,6 +44,8 @@ function errorMessages(error) {
 function settingsScope(value) {
   let current = value
   const watchers = []
+  const patches = []
+  const mutateOps = []
   const commit = next => {
     const previous = current
     current = next
@@ -59,9 +61,22 @@ function settingsScope(value) {
       commit(next)
     },
     async update(patch) {
+      patches.push(patch)
       commit({ ...current, ...patch })
     },
+    // The service's own field edits: `unset` removes the field, `set` replaces it.
+    async mutate(ops) {
+      const next = { ...current }
+      for (const operation of ops) {
+        mutateOps.push(operation)
+        if (operation.op === 'unset') delete next[operation.path[0]]
+        else next[operation.path[0]] = operation.value
+      }
+      commit(next)
+    },
     watchers,
+    patches,
+    mutateOps,
   }
 }
 
@@ -153,6 +168,7 @@ function settingsContext(scope) {
     settings: {
       register: () => scope,
       update: (_namespace, patch) => scope.update(patch),
+      mutate: (_namespace, ops) => scope.mutate(ops),
     },
     effect(register) {
       register()
@@ -1304,6 +1320,10 @@ test('asynchronous initial Cordis failure rolls back the enabled setting', async
   assert.equal(executionInstalled(host.runtime), false)
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => definitions.has(name)), false)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
+  // The rollback writes back only settings the record holds. This configuration never
+  // saved a capability policy, so writing the synthesized document back would make the
+  // next resolution report it as saved and the saved column would state its bottom layer.
+  assert.equal(scope.patches.some(patch => Object.hasOwn(patch, 'capabilityPolicy')), false)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 
@@ -1678,6 +1698,40 @@ test('rolls back a failed live Cordis reconfiguration', async () => {
   assert.equal(scope.get().cordisToolsEnabled, false)
   assert.equal(executionInstalled(host.runtime), true)
   assert.equal(host.ctx.logger.warnings.length > 0, true)
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+})
+
+test('a rollback removes a synthesized policy through the settings unset op', async () => {
+  // §8.7: a policy this process synthesized is not a record the document holds, so the rollback
+  // removes it with the service's own `unset` instead of writing it back as a value.
+  const scope = settingsScope({ enabled: true, capabilityManagementEnabled: true,
+    capabilityRecoveryEnabled: true, modelPreviewEnabled: true })
+  const agent = cordisAgent(undefined, { activationError: new Error('Cordis activation failed') })
+  const host = hostContext(settingsContext(scope), [agent.agent])
+  apply(host.ctx)
+  scope.set({ enabled: true, cordisToolsEnabled: true })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scope.get().enabled, true)
+  assert.deepEqual(scope.mutateOps, [{ op: 'unset', path: ['capabilityPolicy'] }])
+  assert.equal(Object.hasOwn(scope.get(), 'capabilityPolicy'), false)
+  assert.equal(host.ctx.logger.warnings.every(warning => !/roll back/.test(warning)), true)
+  for (const cleanup of host.cleanups.reverse()) await cleanup()
+})
+
+test('a rollback keeps a policy the committed record had saved', async () => {
+  // The removal only applies to a policy this process derived: a record that saved one keeps it.
+  const { CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
+  const policy = CAPABILITY_POLICY_DEFAULT
+  const scope = settingsScope({ enabled: true, capabilityPolicy: policy, capabilityManagementEnabled: true })
+  const agent = cordisAgent(undefined, { activationError: new Error('Cordis activation failed') })
+  const host = hostContext(settingsContext(scope), [agent.agent])
+  apply(host.ctx)
+  scope.set({ enabled: true, cordisToolsEnabled: true })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(scope.mutateOps, [])
+  assert.equal(scope.get().capabilityPolicy, policy)
   for (const cleanup of host.cleanups.reverse()) await cleanup()
 })
 

@@ -160,7 +160,16 @@ test('validates every declared field from its CONFIG_FIELDS type and bounds', ()
 })
 
 test('keeps defaults and unknown fields while rejecting every invalid value', () => {
-  assert.deepEqual(resolveConfig(), CONFIG_DEFAULTS)
+  // The resolved shape is the declared defaults plus the one derived key that records
+  // whether this document itself held a capability policy. That key is not a config field:
+  // a document that writes it without holding a policy states no provenance, so the marker
+  // cannot be forged into existence, while a document the resolver already produced keeps
+  // the answer its own resolution gave.
+  assert.deepEqual(resolveConfig(), { ...CONFIG_DEFAULTS, capabilityPolicySaved: false })
+  assert.equal(resolveConfig({ capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy }).capabilityPolicySaved, true)
+  assert.equal(resolveConfig({ capabilityPolicySaved: true }).capabilityPolicySaved, false)
+  assert.equal(resolveConfig(resolveConfig()).capabilityPolicySaved, false)
+  assert.equal(resolveConfig(resolveConfig({ capabilityPolicy: CONFIG_DEFAULTS.capabilityPolicy })).capabilityPolicySaved, true)
   assert.equal(resolveConfig().userBindingsEnabled, true)
   assert.equal(resolveConfig({ userBindingsEnabled: false }).userBindingsEnabled, false)
   assert.equal(resolveConfig({ userBindingsEnabled: { get: () => undefined } }).userBindingsEnabled, true)

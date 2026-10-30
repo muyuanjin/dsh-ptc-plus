@@ -74,6 +74,12 @@ export function installSettingsSectionCompat({
       && typeof writeNamespace === 'string' && writeNamespace.length > 0
       ? Object.freeze({
         update: (patch, expectedRevision) => provider.update(writeNamespace, patch, expectedRevision),
+        // The service applies field edits as `{ op: 'set' | 'unset', path }`; `update` can only
+        // restate values, so expose the primitive when it exists instead of narrowing the callers
+        // to a writer that cannot remove a field.
+        ...(typeof provider.mutate === 'function'
+          ? { mutate: (ops, expectedRevision) => provider.mutate(writeNamespace, ops, expectedRevision) }
+          : {}),
         read: () => provider.describe?.().find(descriptor => descriptor.ns === writeNamespace),
       }) : undefined
     const unbind = onProvider(provider, writer)

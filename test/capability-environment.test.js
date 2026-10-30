@@ -29,7 +29,7 @@ import { BINDING_ADOPTION_SCHEMA, bindingAdoptionMessage } from '../internal/bin
 import { CAPABILITY_SELECTION_FORM, CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage, capabilitySelectionOf } from '../internal/capability-selection.js'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
-import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
+import { capabilityProfileConfiguration, resolveConfig } from '../internal/runtime-config.js'
 import { CapabilityStatisticsStore } from '../internal/capability-statistics-store.js'
 
 // Repository test readers supply the immutable public-query cut; production
@@ -73,7 +73,7 @@ test('session catalog lists every supplied row with its saved and recorded colum
   assert.deepEqual(catalog.rows.map(row => row.id), ['tools.probe', 'tools.other'])
   assert.deepEqual(catalog.rows.map(row => ({ id: row.id, kind: row.kind, saved: row.saved, session: row.session,
     evidence: row.evidence })), [
-    { id: 'tools.probe', kind: 'capability', saved: { availability: 'enabled', disclosure: 'full' },
+    { id: 'tools.probe', kind: 'capability', saved: { availability: 'automatic', disclosure: 'full' },
       session: { availability: 'closed', disclosure: 'on-demand' }, evidence: true },
     { id: 'tools.other', kind: 'capability', saved: { availability: 'automatic', disclosure: 'automatic' },
       session: { availability: 'inherit', disclosure: 'inherit' }, evidence: false },
@@ -126,9 +126,11 @@ test('session catalog marks the binding entry this session declined, and leaves 
     ]) })
   t.after(() => env.dispose())
   const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
-  // One bit, one row: the entry this session declined reads `skip`, the other `use`.
-  assert.deepEqual(catalog.rows.map(row => ({ id: row.id, kind: row.kind, use: row.session.use })),
-    [{ id: 'alpha', kind: 'binding', use: 'skip' }, { id: 'beta', kind: 'binding', use: 'use' }])
+  // One bit, one row: the entry this session declined reads `skip` and carries the record's own
+  // receipt, while the entry it never decided reads `use` and states that no record wrote it.
+  assert.deepEqual(catalog.rows.map(row => ({ id: row.id, kind: row.kind, session: row.session })),
+    [{ id: 'alpha', kind: 'binding', session: { use: 'skip', recorded: true } },
+      { id: 'beta', kind: 'binding', session: { use: 'use', recorded: false } }])
 })
 
 test('session catalog lists no binding row while global bindings are off and keeps the capability rows', async t => {
@@ -257,10 +259,10 @@ test('session capability controls still list the capability catalogue when the s
   await acceptPreparation(recorded, recordedAgents[0], [])
   recordedAgents.length = 0
   const observed = await recorded.describeSessionCatalog({ sessionId: recordedSession.id })
-  // Two sources, one row: the saved column is the configuration's answer and the
+  // Two sources, one row: the saved column is what the configuration wrote and the
   // session column is the record's, and neither is read from the other.
   assert.deepEqual(observed.rows.find(row => row.id === 'tools.probe').saved,
-    { availability: 'enabled', disclosure: 'full' })
+    { availability: 'automatic', disclosure: 'full' })
   assert.deepEqual(observed.rows.find(row => row.id === 'tools.probe').session,
     { availability: 'closed', disclosure: 'inherit' })
 })
@@ -291,9 +293,12 @@ test('session catalog states a damaged adoption record on the binding rows it st
   const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
   // Both rows are still listed and still carry a control: the record is what is
   // damaged, not the row. Reading them from the older record would answer `use`
-  // for `alpha` on evidence the session replaced.
-  assert.deepEqual(catalog.rows.filter(row => row.kind === 'binding').map(row => ({ id: row.id, use: row.session.use })),
-    [{ id: 'alpha', use: 'damaged' }, { id: 'beta', use: 'damaged' }])
+  // for `alpha` on evidence the session replaced. The damaged record is still a
+  // record this session holds, so both rows state it beside their receipt.
+  assert.deepEqual(catalog.rows.filter(row => row.kind === 'binding')
+    .map(row => ({ id: row.id, session: row.session })),
+    [{ id: 'alpha', session: { use: 'damaged', recorded: true } },
+      { id: 'beta', session: { use: 'damaged', recorded: true } }])
 })
 
 test('session catalog leaves a disabled binding entry out of the rows read through the user bindings store list()', async t => {
@@ -320,6 +325,151 @@ test('session catalog leaves a disabled binding entry out of the rows read throu
   // only possible control cannot work is exactly what the contract removes.
   assert.deepEqual(catalog.rows.map(row => ({ id: row.id, kind: row.kind, name: row.name, use: row.session.use })),
     [{ id: 'alpha', kind: 'binding', name: 'alphaHelpers', use: 'use' }])
+})
+
+test('a binding row states the bindings document and the adoption record as its two addresses', async t => {
+  // The two fields the page states for a binding are produced here and nowhere else: the
+  // saved address is the document that lists the entry and the one preference its model
+  // context holds, and the adoption address is the session record, which names an entry
+  // only when this session actually decided it.
+  const agents = [agentFor(Session.create('binding-saved-session'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config(), userBindingsEnabled: true },
+    toolSchemasForAgent: () => [schema('run_code')],
+    readUserBindings: bindingSupply([
+      { id: 'alpha', name: 'alphaHelpers', enabled: true, modelContext: { includeDeclaration: true } },
+      { id: 'beta', name: 'betaHelpers', enabled: true, modelContext: { includeDeclaration: false } },
+    ]) })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agents[0], [])
+  const catalog = await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)
+  assert.deepEqual(catalog.rows.map(row => ({ saved: row.saved, session: row.session })),
+    [{ saved: { availability: 'enabled', disclosure: 'full' },
+      session: { use: 'use', recorded: false } },
+    { saved: { availability: 'enabled', disclosure: 'on-demand' },
+      session: { use: 'use', recorded: false } }])
+})
+
+test('a saved cell keeps its value when the capability-management switch flips', async t => {
+  // §1's first falsification: a global switch decides no cell. The same policy read with
+  // the switch on and off states the same saved values, because the bottom layer a chain
+  // falls back to is synthesized configuration and no cell states it.
+  const session = Session.create('switch-saved-session')
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
+  const read = async capabilityManagementEnabled => {
+    const env = createCapabilityEnvironment({ ctx,
+      config: composedConfig(policy, { capabilityManagementEnabled }), toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+    t.after(() => env.dispose())
+    const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+    return catalog.rows.map(row => ({ id: row.id, saved: row.saved }))
+  }
+  const on = await read(true)
+  const off = await read(false)
+  assert.deepEqual(off, on)
+  assert.deepEqual(on.find(row => row.id === 'tools.probe').saved, { availability: 'closed', disclosure: 'full' })
+  // A supplied row the policy wrote nothing for states `automatic` in both positions. This row is
+  // what makes the case able to fail: if the column resolved the whole chain instead of reading the
+  // object's own entry, the switch would move it — every other row states a written value.
+  assert.deepEqual(on.find(row => row.id === 'tools.other').saved, { availability: 'automatic', disclosure: 'automatic' })
+  assert.deepEqual(off.find(row => row.id === 'tools.other').saved, { availability: 'automatic', disclosure: 'automatic' })
+  // One supplied row is managed, and no cell states the disclosure the switch synthesizes: this
+  // configuration saved a policy, so its own bottom layer is what the column could state.
+  assert.deepEqual(on.map(row => row.id), ['tools.probe', 'tools.other'])
+  assert.equal(on.some(row => row.saved.disclosure === 'adaptive'), false)
+})
+
+test('the saved column states one cell whichever injection carries the policy and whichever way the switch points', async t => {
+  // Three shapes a configuration can have, carrying the same written rules: no policy
+  // document at all (`config`, the shape a caller can hand in directly), the synthesized
+  // document `resolveConfig` always writes (the shape the running plugin reads), and a
+  // document the user saved. The management switch decides the synthesized document's
+  // bottom layer, so a cell that read that layer would move when the switch flips — and
+  // that bottom layer is the only thing the first two shapes cannot share with the third,
+  // which is what the source criterion §8.1c states: a synthesized bottom belongs to no
+  // record, so it states no value; a saved one was written, so it does.
+  const session = Session.create('source-criterion-session')
+  const agents = [agentFor(session)]
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs server owner instructions' }]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const schemas = ['run_code', 'probe', 'other', 'mcp__docs__search'].map(schema)
+  const record = config({ 'tools.probe': 'full' })
+  const savedDocument = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  savedDocument.items['tools.probe'] = { disclosure: 'full' }
+  const injections = { record, resolved: resolveConfig(record), resolvedTwice: resolveConfig(resolveConfig(record)),
+    saved: composedConfig(savedDocument) }
+  const read = async (configuration, capabilityManagementEnabled) => {
+    const env = createCapabilityEnvironment({ ctx, toolSchemasForAgent: () => schemas,
+      config: { ...configuration, capabilityManagementEnabled } })
+    t.after(() => env.dispose())
+    const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+    return new Map(catalog.rows.map(row => [row.id, JSON.stringify(row.saved)]))
+  }
+  const cells = {}
+  for (const [shape, configuration] of Object.entries(injections)) {
+    cells[shape] = { on: await read(configuration, true), off: await read(configuration, false) }
+  }
+  const statement = rows => JSON.stringify([...rows])
+  for (const [shape, { on, off }] of Object.entries(cells)) {
+    assert.equal(statement(off), statement(on), `the ${shape} injection states byte-identical cells with the switch on and off`)
+  }
+  // The synthesized document is not a record of its own: the same configuration states the
+  // same cells whether the document field carries it or not, and whether the resolver ran
+  // once or over its own output — the shape the runtime reconciles through.
+  for (const shape of ['resolved', 'resolvedTwice']) {
+    assert.equal(statement(cells[shape].on), statement(cells.record.on), `the ${shape} injection states the read's cells`)
+    assert.equal(statement(cells[shape].off), statement(cells.record.off), `the ${shape} injection states the read's cells with the switch off`)
+  }
+  const cell = (shape, id, enabled = true) => JSON.parse(cells[shape][enabled ? 'on' : 'off'].get(id))
+  // The saved column states the words the document wrote for that object, and no switch state
+  // moves them: the one rule this document wrote for `tools.probe` is its disclosure.
+  for (const shape of Object.keys(injections)) {
+    assert.deepEqual(cell(shape, 'tools.probe'), { availability: 'automatic', disclosure: 'full' })
+  }
+  // A dimension the document wrote nothing for states no value, whether the document is
+  // synthesized or written: a layer that would answer at runtime is behaviour, not this cell's word.
+  for (const shape of Object.keys(injections)) {
+    for (const enabled of [true, false]) {
+      assert.deepEqual(cell(shape, 'tools.other', enabled), { availability: 'automatic', disclosure: 'automatic' })
+    }
+  }
+  // A server's saved address is the one `mcpServers.<server>` rule (see §8.1a): with no
+  // such rule the row states no value in any shape, saved document included.
+  for (const shape of Object.keys(injections)) {
+    assert.deepEqual(cell(shape, 'mcpServers.docs'), { availability: 'automatic' })
+  }
+})
+
+test('both columns state the word their own record holds, so no switch reaches a recorded automatic', async t => {
+  // Two addresses, one rule each. The saved column states what the configuration wrote
+  // (§8.1c, no saved policy here, so the synthesized bottom states nothing) and the session
+  // column states the word the record holds: a record that wrote `automatic` reads
+  // `automatic`, not what that word would resolve to, because a resolution is behaviour and
+  // the page states records. Neither column can follow the management switch.
+  const session = Session.create('resolved-automatic-session')
+  const agents = [agentFor(session)]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'tools.probe': { disclosure: 'automatic' } } }), { surfaceOp: 'append' })
+  const read = async capabilityManagementEnabled => {
+    // The shape the runtime reads: resolveConfig always writes a policy document, and this
+    // configuration saved none, so its bottom layer is the composition's.
+    const env = createCapabilityEnvironment({ ctx, toolSchemasForAgent: () => [schema('run_code'), schema('probe')],
+      config: resolveConfig({ ...config(), capabilityManagementEnabled }) })
+    t.after(() => env.dispose())
+    const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+    return catalog.rows.find(row => row.id === 'tools.probe')
+  }
+  const on = await read(true)
+  const off = await read(false)
+  assert.deepEqual(on.saved, { availability: 'automatic', disclosure: 'automatic' })
+  assert.deepEqual(off.saved, on.saved)
+  assert.deepEqual(on.session, { availability: 'inherit', disclosure: 'automatic' })
+  assert.deepEqual(off.session, on.session)
+  assert.deepEqual(on.record.disclosure, 'automatic')
 })
 
 test('session catalog reports a readable but empty binding supply as no binding row', async t => {
@@ -359,7 +509,9 @@ test('session catalog moves only the saved column when the saved configuration o
     const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
     assert.deepEqual(catalog.rows, baseline.rows)
   }
-  // A saved value that really changed moves the saved column only.
+  // A saved value that really changed moves the saved column only. The saved column
+  // states what the configuration wrote and nothing else: a dimension no layer wrote
+  // reads `automatic`, so neither the stored default nor the group switch reaches it.
   const savedOff = make(config())
   const catalog = await savedOff.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
   assert.deepEqual(shape(catalog.rows), shape(baseline.rows))
@@ -394,7 +546,11 @@ test('a session whose frozen policy predates the saved one still lists the decla
   const server = (await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal))
     .rows.find(row => row.id === 'mcpServers.docs')
   assert.equal(server.kind, 'server')
-  assert.deepEqual(server.saved, { availability: 'automatic', disclosure: 'automatic' })
+  // A server's saved address is the one `mcpServers.<server>` rule it has, and this policy
+  // writes none: no bottom layer of the document stands in for it, so the row states no
+  // value. A server has no disclosure of its own — its members carry one — so the row
+  // states availability only instead of a second value no address holds.
+  assert.deepEqual(server.saved, { availability: 'automatic' })
   assert.deepEqual(server.session, { availability: 'inherit', disclosure: 'inherit' })
   assert.equal(Object.hasOwn(server, 'effective'), false, 'the listing states no composition')
   // The frozen composition is untouched by the read: it still supplies both members.
@@ -404,43 +560,205 @@ test('a session whose frozen policy predates the saved one still lists the decla
 
 test('a paused session catalog states each configured and recorded value without a negative word', async t => {
   const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
-  const schemas = ['run_code', 'probe', 'mcp__docs__search', 'read_mcp_resource'].map(schema)
+  const schemas = ['run_code', 'probe', 'other', 'mcp__docs__search', 'read_mcp_resource'].map(schema)
   const agent = agentFor(Session.create('paused-catalog'))
   const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
   const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
   policy.items['tools.probe'] = { availability: 'closed', disclosure: 'full' }
   policy.mcpServers.docs = { availability: 'enabled', disclosure: 'on-demand' }
+  policy.categories.tool = { disclosure: 'on-demand' }
   const env = createCapabilityEnvironment({ ctx, config: composedConfig(policy, { capabilityContextEnabled: false }),
     toolSchemasForAgent: () => schemas })
   t.after(() => env.dispose())
   await acceptPreparation(env, agent, hostSections)
   agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
-    choices: { 'tools.probe': { availability: 'enabled' }, 'mcpServers.docs': { availability: 'closed' } } }),
+    choices: { 'tools.probe': { availability: 'enabled' }, 'mcpServers.docs': { availability: 'closed' },
+      'tools.other': { availability: 'automatic' } } }),
     { surfaceOp: 'append' })
   const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
   assert.ok(catalog.rows.length > 0)
-  // Every column states a fact from its own source: the saved value is the policy's
-  // and the session value is the record's (or `inherit` where nothing was recorded).
+  // Every column states a fact from its own source: the saved value is what the policy
+  // wrote (or `automatic` where it wrote nothing) and the session value is the record's,
+  // `inherit` where nothing was recorded. A server-level record answers its members at
+  // runtime, so the member reads `inherit` with that layer named in `record.layers`.
   const availability = new Set(['enabled', 'closed', 'automatic', 'inherit'])
   const disclosure = new Set(['host', 'full', 'on-demand', 'adaptive', 'automatic', 'inherit'])
   for (const row of catalog.rows) {
     assert.ok(availability.has(row.saved.availability), `${row.id} saved.availability`)
     assert.ok(availability.has(row.session.availability), `${row.id} session.availability`)
-    assert.ok(disclosure.has(row.saved.disclosure), `${row.id} saved.disclosure`)
+    if (row.kind === 'server') {
+      assert.equal(Object.hasOwn(row.saved, 'disclosure'), false, `${row.id} saved states no server disclosure`)
+    } else {
+      assert.ok(disclosure.has(row.saved.disclosure), `${row.id} saved.disclosure`)
+    }
     assert.ok(disclosure.has(row.session.disclosure), `${row.id} session.disclosure`)
   }
   const row = id => catalog.rows.find(candidate => candidate.id === id)
   assert.deepEqual(row('tools.probe').saved, { availability: 'closed', disclosure: 'full' })
   assert.deepEqual(row('tools.probe').session, { availability: 'enabled', disclosure: 'inherit' })
-  assert.deepEqual(row('mcpServers.docs').saved, { availability: 'enabled', disclosure: 'on-demand' })
+  assert.deepEqual(row('mcpServers.docs').saved, { availability: 'enabled' })
   assert.deepEqual(row('mcpServers.docs').session, { availability: 'closed', disclosure: 'inherit' })
+  // A server row carries its record words too: the receipt column states the layer's own word for
+  // the members it answers, and it reads that word from this row's record instead of inventing one.
+  assert.deepEqual(row('mcpServers.docs').record,
+    { availability: 'closed', disclosure: undefined, layers: { availability: null, disclosure: null } })
+  // The member's own record wrote nothing for availability, so the session column states
+  // `inherit`; the receipt names the layer that answers it at runtime instead of letting the
+  // member cell look like it took the server's decision as its own.
   assert.deepEqual(row('tools.mcp__docs__search').session, { availability: 'inherit', disclosure: 'inherit' })
+  assert.equal(row('tools.mcp__docs__search').record.layers.availability, 'mcpServers.docs')
+  assert.equal(row('tools.mcp__docs__search').record.availability, undefined)
+  // Both columns state the record's own words: a recorded `automatic` stays in the record and
+  // the value column states it too, so nothing resolved reaches either column and the two
+  // cannot collapse into one.
+  assert.deepEqual(row('tools.other').record,
+    { availability: 'automatic', disclosure: undefined, layers: { availability: null, disclosure: null } })
+  assert.equal(row('tools.other').session.availability, 'automatic')
+  // A category or server rule answers these objects at runtime, but the saved cell states only the
+  // entry this document wrote for the object itself — so both read `automatic` here (§8.1c).
+  assert.deepEqual(row('tools.other').saved, { availability: 'automatic', disclosure: 'automatic' })
+  assert.deepEqual(row('tools.mcp__docs__search').saved, { availability: 'automatic', disclosure: 'automatic' })
+  // A server record that wrote `automatic` deleted that dimension from the server rule
+  // (changeCapabilityRule), so it decides no member: the member records nothing there, states
+  // `inherit` and keeps its own control instead of becoming a read-only statement (§8.1b/§8.2).
+  agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'mcpServers.docs': { availability: 'automatic' } } }), { surfaceOp: 'append' })
+  const afterAutomatic = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const rowAfter = id => afterAutomatic.rows.find(candidate => candidate.id === id)
+  assert.deepEqual(rowAfter('mcpServers.docs').session, { availability: 'automatic', disclosure: 'inherit' })
+  assert.deepEqual(rowAfter('tools.mcp__docs__search').session, { availability: 'inherit', disclosure: 'inherit' })
+  assert.equal(rowAfter('tools.mcp__docs__search').record.layers.availability, null)
   // No value is a translation of "the panel cannot say": the whole response is free
   // of the negative word family, so nothing here reports a missing outside source.
   const response = JSON.stringify(catalog)
   for (const word of ['unavailable', 'unobserved', 'notObserved', 'unrecorded']) {
     assert.equal(response.includes(word), false, `the catalog must not contain ${word}`)
   }
+})
+
+test('a member that wrote its own availability states that word instead of the layer above it', async t => {
+  // §8.1b: a dimension this member's own entry wrote belongs to this address, so both the value
+  // column and the receipt state that word and the receipt names no layer — naming the closed
+  // server there would leave the receipt owing a dimension the value column says this row holds.
+  // The rule's runtime precedence stays behaviour: it moves neither column nor the controls.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
+  const schemas = ['run_code', 'mcp__docs__search'].map(schema)
+  const agent = agentFor(Session.create('member-word-over-layer'))
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'mcpServers.docs': { availability: 'closed' }, 'tools.mcp__docs__search': { availability: 'enabled' } } }),
+    { surfaceOp: 'append' })
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const member = catalog.rows.find(candidate => candidate.id === 'tools.mcp__docs__search')
+  assert.deepEqual(member.session, { availability: 'enabled', disclosure: 'inherit' })
+  assert.deepEqual(member.record, { availability: 'enabled', disclosure: undefined,
+    layers: { availability: null, disclosure: null } })
+})
+
+test('a catalogue read that names no session states the Host declaration and no binding row', async t => {
+  // §1: the settings entrance fixes the new-session default, so its read names no session. That
+  // read states the Host's own declaration and writes `inherit` in both session columns because it
+  // was given no log; it lists no binding row, because an adoption record has no saved address and
+  // this read has no session whose record it could state. The bindings reader is deliberately a
+  // failure: a read that reached it would fail instead of answering with these rows.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
+  const schemas = ['run_code', 'probe', 'mcp__docs__search'].map(schema)
+  const ctx = { agents: { list: () => [] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: { ...config({ 'tools.probe': 'closed' }), userBindingsEnabled: true },
+    toolSchemasForAgent: () => schemas,
+    readUserBindings: async () => { throw new Error('an unnamed read has no binding supply') } })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({}, undefined)
+  assert.equal(catalog.sessionId, undefined)
+  assert.deepEqual(catalog.config, { bindingsEnabled: true })
+  // The row set is the declared face and nothing else: the two tools the Host declares, the
+  // server whose prompt section declares them, and the resource row that section also declares,
+  // with no binding row and no session-only row.
+  assert.deepEqual(catalog.rows.map(row => row.id).sort(), ['mcp.docs', 'mcpServers.docs', 'tools.mcp__docs__search', 'tools.probe'])
+  const row = id => catalog.rows.find(candidate => candidate.id === id)
+  // No log was read, so every session cell is this column's word for "not recorded here"; the
+  // saved column still states the configuration's own words, which is why this read is the new
+  // session default and not an empty page.
+  assert.deepEqual(row('tools.probe').saved, { availability: 'closed', disclosure: 'automatic' })
+  assert.deepEqual(row('tools.probe').session, { availability: 'inherit', disclosure: 'inherit' })
+  assert.deepEqual(row('mcpServers.docs').saved, { availability: 'automatic' })
+  assert.deepEqual(row('mcpServers.docs').session, { availability: 'inherit', disclosure: 'inherit' })
+  assert.deepEqual(row('tools.mcp__docs__search').record.layers, { availability: null, disclosure: null })
+  assert.equal(catalog.rows.some(candidate => candidate.kind === 'binding'), false)
+})
+
+test('a server rule disclosure answers only the members that wrote none of their own', async () => {
+  // §8.1b/§8.3: the rule chain applies the server layer to a member's disclosure only where the
+  // member's own entry wrote nothing; the member's own word is higher. The exception direction was
+  // already pinned (`test/capability-plan.test.js`), so what this case adds is the positive one plus
+  // the availability exception, which keeps its own separate order.
+  const { capabilityRule, CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.mcpServers.docs = { disclosure: 'full' }
+  policy.items = { 'tools.own': { disclosure: 'host' } }
+  const own = capabilityRule(policy, { id: 'tools.own', mcpServer: 'docs' })
+  assert.deepEqual({ disclosure: own.disclosure, source: own.disclosureSource }, { disclosure: 'host', source: 'item:tools.own' })
+  const inherited = capabilityRule(policy, { id: 'tools.inherited', mcpServer: 'docs' })
+  assert.deepEqual({ disclosure: inherited.disclosure, source: inherited.disclosureSource }, { disclosure: 'full', source: 'mcp:docs' })
+  // The availability exception stays separate from the disclosure order.
+  policy.mcpServers.docs.availability = 'closed'
+  assert.equal(capabilityRule(policy, { id: 'tools.own', mcpServer: 'docs' }).availabilitySource, 'mcp:docs')
+})
+
+test('a recorded server disclosure word states the server row and names the layer on its members', async t => {
+  // §8.3: `set session mcpServers.<server> disclosure <word>` is accepted once a dimension is named,
+  // so a server record can hold a disclosure word and nothing else. The server row's record states
+  // it — the receipt prints that word instead of `未写下` — and a member that wrote nothing names the
+  // layer, while a member with its own word keeps it (§8.1b).
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs","other"].' },
+    { name: 'mcp:docs', text: 'Docs server' }, { name: 'mcp:other', text: 'Other server' }]
+  const schemas = ['run_code', 'mcp__docs__search', 'mcp__docs__edit', 'mcp__other__search'].map(schema)
+  const agent = agentFor(Session.create('server-disclosure-record'))
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'mcpServers.docs': { disclosure: 'full' }, 'mcpServers.other': { disclosure: 'on-demand' },
+      'tools.mcp__docs__search': { disclosure: 'host' } } }), { surfaceOp: 'append' })
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const row = id => catalog.rows.find(candidate => candidate.id === id)
+  // Both server rows state the word their record holds and invent no availability word.
+  assert.deepEqual(row('mcpServers.docs').record,
+    { availability: undefined, disclosure: 'full', layers: { availability: null, disclosure: null } })
+  assert.deepEqual(row('mcpServers.other').record,
+    { availability: undefined, disclosure: 'on-demand', layers: { availability: null, disclosure: null } })
+  assert.deepEqual(row('mcpServers.other').session, { availability: 'inherit', disclosure: 'on-demand' })
+  // A member that wrote nothing names the layer; the member that wrote its own word keeps it.
+  assert.deepEqual(row('tools.mcp__docs__edit').record.layers, { availability: null, disclosure: 'mcpServers.docs' })
+  assert.equal(row('tools.mcp__docs__edit').session.disclosure, 'inherit')
+  assert.equal(row('tools.mcp__docs__search').record.layers.disclosure, null)
+  assert.equal(row('tools.mcp__docs__search').session.disclosure, 'host')
+})
+
+test('the session command records a server rule disclosure word the catalogue then states', async t => {
+  // §8.3 claims the writer side too: `set session mcpServers.<server> disclosure <word>` is accepted
+  // once a dimension is named. This case drives the command that names it, so the record the previous
+  // case fabricates is reachable through the one writer this plugin owns.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }, { name: 'mcp:docs', text: 'Docs server' }]
+  const schemas = ['run_code', 'mcp__docs__search'].map(schema)
+  const agent = agentFor(Session.create('server-disclosure-writer'))
+  const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const written = await env.change(agent, { scope: 'session', id: 'mcpServers.docs', dimension: 'disclosure',
+    selection: 'full' }, agent.signal)
+  assert.deepEqual(written, { globalSaved: false, sessionApplied: true, publication: 'recorded' })
+  const catalog = await env.describeSessionCatalog({ sessionId: agent.session.id }, agent.signal)
+  const row = id => catalog.rows.find(candidate => candidate.id === id)
+  // The server row states the word it wrote, and its member names that layer.
+  assert.deepEqual(row('mcpServers.docs').record,
+    { availability: undefined, disclosure: 'full', layers: { availability: null, disclosure: null } })
+  assert.deepEqual(row('tools.mcp__docs__search').record.layers, { availability: null, disclosure: 'mcpServers.docs' })
 })
 
 test('live and cold session catalog reads state one face and the same recorded values', async t => {
@@ -849,7 +1167,8 @@ test('session capability choices preserve their sources across refresh, global c
   // never touched stays `automatic`, whatever the composition froze.
   const rows = (await env.describeSessionCatalog({ sessionId: agents[0].session.id }, agents[0].signal)).rows
   assert.deepEqual(rows.find(row => row.id === 'tools.other').session, { availability: 'closed', disclosure: 'inherit' })
-  assert.deepEqual(rows.find(row => row.id === 'tools.other').saved, { availability: 'automatic', disclosure: 'automatic' })
+  assert.deepEqual(rows.find(row => row.id === 'tools.other').saved,
+    { availability: 'automatic', disclosure: 'automatic' })
 })
 
 test('a capability write reports the one thing it did and a refused write leaves no partial state', async t => {
@@ -881,6 +1200,41 @@ test('a capability write reports the one thing it did and a refused write leaves
   agent.runMaintenance = () => { throw new Error('maintenance busy') }
   const recorded = await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
   assert.deepEqual(recorded, { globalSaved: false, sessionApplied: true, publication: 'recorded' })
+})
+
+test('a global rule write from a document that saved no policy starts from the record own layers', async t => {
+  // §8.1c: a document that carries no capabilityPolicy holds only the document the plugin
+  // synthesized, whose bottom layer the capability-management switch shaped. The writer starts the
+  // first saved write from the words the record itself wrote, so that synthesized layer is never
+  // frozen into the record. With management on, a writer that fell back to the synthesized document
+  // would write `adaptive` as the saved default; the declared default is `host`.
+  let saved = config({ 'tools.probe': 'closed' })
+  let revision = 1
+  const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
+  const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(() => env.dispose())
+  const agent = agentFor(Session.create('policy-less-global-write'))
+  const patches = []
+  const recorded = await env.change(agent, { scope: 'global', id: 'tools.other', dimension: 'availability', selection: 'closed' },
+    agent.signal, {
+      read: () => ({ value: saved, revision }),
+      update: async (patch, expectedRevision) => {
+        assert.equal(expectedRevision, revision, 'the write states the revision it read')
+        patches.push(patch)
+        saved = { ...saved, ...patch }
+        revision++
+      },
+    })
+  assert.deepEqual(recorded, { globalSaved: true, sessionApplied: true, publication: 'recorded' })
+  assert.equal(patches.length, 1)
+  const policy = JSON.parse(patches[0].capabilityPolicy)
+  // The bottom layer is the declared default, and the record's own override is restated as the word
+  // it wrote beside the decision this write made.
+  assert.deepEqual(policy.defaults, { availability: 'enabled', disclosure: 'host' })
+  assert.deepEqual(policy.items, { 'tools.probe': { availability: 'closed' }, 'tools.other': { availability: 'closed' } })
+  // A dimension write states the policy and nothing else: the override map is the whole-selection
+  // channel's, not this one's.
+  assert.deepEqual(Object.keys(patches[0]), ['capabilityPolicy'])
 })
 
 test('a session choice is a record the next composition materializes, and a global save is the writer\'s', async t => {
@@ -2731,9 +3085,25 @@ test('MCP namespace ambiguity cannot close another server by guessing ownership'
   await assert.rejects(() => env.prepare(agent, [{name:'mcp-resource-servers',text:'as the server argument: ["docs","docs__nested"].'}]), /cannot determine the MCP server owner/)
 })
 
+test('a catalog read still states the rows an ambiguous MCP owner would make the plan refuse', async t => {
+  // The page states the words a record wrote; which server owns an ambiguously named tool is the
+  // plan's question, and the refusal stays there. A closed candidate rule therefore makes the
+  // saved column state no value for that object instead of rejecting the whole read.
+  const session = Session.create('mcp-ambiguous-catalog')
+  const agents = [agentFor(session)]
+  const sections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs","docs__nested"].' }]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: config({ 'mcpServers.docs': 'closed' }),
+    toolSchemasForAgent: () => [schema('mcp__docs__nested__search')] })
+  t.after(() => env.dispose())
+  const catalog = await env.describeSessionCatalog({ sessionId: session.id }, agents[0].signal)
+  const row = catalog.rows.find(candidate => candidate.id === 'tools.mcp__docs__nested__search')
+  assert.deepEqual(row.saved, { availability: 'automatic', disclosure: 'automatic' })
+})
+
 
 const composedConfig = (policy, extra = {}) => ({ ...config(), capabilityPolicy: JSON.stringify(policy ?? JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)),
-  capabilityRecoveryEnabled: false, modelPreviewEnabled: false, ...extra })
+  capabilityPolicySaved: true, capabilityRecoveryEnabled: false, modelPreviewEnabled: false, ...extra })
 
 test('composed availability controls retain host SDK and shared instructions while freezing independent choices across restore', async t => {
   const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
@@ -3398,6 +3768,29 @@ for (const damage of ['missing', 'wrong-type', 'historical', 'plan-mismatch']) t
   assert.match(warnings[0], damage === 'plan-mismatch' ? /inconsistent session capability plan/ : /capability context generation/)
 })
 
+
+test('a global capability change composes into the policy the record already holds', async t => {
+  // The settings document this writer reads is the record, so one object's change must keep every
+  // other rule it wrote; a document carrying no policy starts from the record's own layers instead.
+  const agent = agentFor(Session.create('global-choice-saved'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  policy.items['tools.other'] = { availability: 'closed' }
+  policy.categories.tool = { disclosure: 'on-demand' }
+  const document = { ...config(), capabilityPolicy: JSON.stringify(policy) }
+  const env = createCapabilityEnvironment({ ctx: { systemPrompt: { assemble: async () => ({ sections: [] }) } },
+    config: document, toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const writes = []
+  await env.change(agent, { scope: 'global', id: 'tools.probe', dimension: 'availability', selection: 'closed' },
+    agent.signal, { read: () => ({ value: document, revision: 1 }), update: patch => { writes.push(patch) } })
+  const written = JSON.parse(writes[0].capabilityPolicy)
+  assert.deepEqual(written.items['tools.other'], { availability: 'closed' })
+  assert.deepEqual(written.categories.tool, { disclosure: 'on-demand' })
+  assert.deepEqual(written.items['tools.probe'], { availability: 'closed' })
+  assert.deepEqual(written.defaults, policy.defaults)
+})
 
 test('global capability choices require writer revision and write nothing when the writer refuses', async t => {
   const agent = agentFor(Session.create('global-choice-evidence'))

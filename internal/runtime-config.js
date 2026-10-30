@@ -130,6 +130,16 @@ export function resolveConfig(config = {}) {
     }
   }
   resolved.capabilityPolicy = JSON.stringify(capabilityPolicyForConfig(provided.has('capabilityPolicy') ? resolved : { ...resolved, capabilityPolicy: undefined }))
+  // Whether the record holds this policy is a fact about the input document, not about this
+  // resolution's output: a configuration this function already resolved carries the answer,
+  // and resolving that answer's own product again must not re-infer it from the policy this
+  // function just wrote. Callers that reconcile by resolving a source that may itself be
+  // resolved (the plugin resolves its raw document and then re-resolves the result) would
+  // otherwise report every policy as saved, which is what makes a synthesized bottom layer
+  // decide the saved column. The marker only means something beside a policy the document
+  // itself holds, so a document that writes the marker without one states no provenance.
+  resolved.capabilityPolicySaved = provided.has('capabilityPolicy')
+    && (typeof config.capabilityPolicySaved === 'boolean' ? config.capabilityPolicySaved : true)
   if (!provided.has('capabilityPolicy') && resolved.capabilityManagementEnabled) {
     if (!provided.has('capabilityRecoveryEnabled')) resolved.capabilityRecoveryEnabled = true
     if (!provided.has('modelPreviewEnabled')) resolved.modelPreviewEnabled = true

@@ -12,6 +12,7 @@
 
 - [Architecture](architecture.md): ownership boundaries, prompt-prefix stability, runtime lifecycle, journals, and recovery.
 - [Context management](context-management.md): model-facing layers, evidence limits, progressive disclosure, and measured optimization rules.
+- [Capability page contract](capability-surface.md): the capability page's concept contract — its two addresses, columns, words, receipt, single renderer, and its stated limitations.
 - [Capability Surface](capability-projection.md): typed program bindings and progressive discovery.
 - [Program Data Plane](program-data-plane.md): canonical values and result completeness.
 - [Durable / Volatile Recovery](durability-design.md): replay model and external-input boundaries.

@@ -3,8 +3,9 @@
  *
  * A receipt states the one write a command performed: which entry, which choice,
  * and which owner now records it. Whether a cell later reached that entry is a
- * different question with a different owner — the panel's evidence column, where
- * a marker means an accepted execution obtained it — so a receipt that restated
+ * different question with a different owner — a catalogue row's `evidence` field,
+ * where a marker means an accepted execution obtained it, and which the page does
+ * not state — so a receipt that restated
  * a degree of proof would answer a question this command never asked and could
  * not answer.
  */

@@ -1214,7 +1214,9 @@ test('registered capability command lists public inventory and records the choic
     { 'tools.probe': { availability: 'closed' } })
   // The listing states the dimensions this row decides, each from its own source: the
   // availability this session recorded and the disclosure it never did, which stays
-  // `inherit` rather than becoming a second claim about the same record.
+  // `inherit` rather than becoming a second claim about the same record. The saved
+  // column states what the configuration wrote: this configuration saved no policy, so a
+  // dimension only its synthesized bottom layer would answer reads `automatic`.
   assert.deepEqual((await list('list tools probe')).map(entry => ({ saved: entry.saved, temporary: entry.temporary })),
     [{ saved: { availability: 'automatic', disclosure: 'automatic' },
       temporary: { availability: 'closed', disclosure: 'inherit' } }])

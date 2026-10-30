@@ -1,4 +1,4 @@
-import { capabilityRule, capabilityPolicyForConfig, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
+import { capabilityRule, capabilityPolicyForConfig, capabilityPolicyFromRecord, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from './capability-policy.js'
 /** One session-owned capability view for presentation, discovery and preparation. */
 import { createHash } from 'node:crypto'
 import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from './host-tool-sdk.js'
@@ -11,6 +11,7 @@ import { readSessionLog } from './session-events.js'
 import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
 import { createCapabilityPlan } from './capability-plan.js'
 import { bindingAdoptionOf } from './binding-adoption.js'
+import { bindingModelPreferences } from './user-binding-model-context.js'
 import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilityRuleOfSelection, capabilitySelectionMessage, capabilitySelectionOf, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
 import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
@@ -1113,24 +1114,100 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return proved
   }
 
-  /** The saved column: what the global configuration states for one entry. */
-  function savedChoice(configuration, id) {
-    if (configuration.policy) {
-      const rule = id.startsWith('mcpServers.')
-        ? configuration.policy.mcpServers[id.slice('mcpServers.'.length)]
-        : configuration.policy.items[id]
-      return { availability: rule?.availability ?? 'automatic', disclosure: rule?.disclosure ?? 'automatic' }
+  const ROW_DIMENSIONS = Object.freeze(['availability', 'disclosure'])
+
+  /**
+   * The words this configuration wrote for one object.
+   *
+   * The saved column follows the same rule as the session column: it states what its own record
+   * holds for that object. A rule the document wrote for the object is stated in the record's
+   * words; a dimension it wrote nothing for reads `automatic`. A layer that would outrank that
+   * entry at runtime — a category or `mcpServers.<server>` rule, or a document's bottom layer — is
+   * behaviour rather than a word this (object, address) holds, so it changes neither the cell nor
+   * the control. A server has no disclosure of its own, so a server row states availability only.
+   */
+  function savedChoice(configuration, capability) {
+    if (capability.kind === 'server') {
+      // A server's saved address is the one `mcpServers.<server>` rule it has.
+      const availability = configuration.policy
+        ? configuration.policy.mcpServers[capability.id.slice('mcpServers.'.length)]?.availability
+        : capabilityOverrideWord(configuration, capability.id, 'availability')
+      return { availability: availability ?? 'automatic' }
     }
-    const override = configuration.manual?.overrides?.[id]
-    if (override === undefined || override === 'automatic') return { availability: 'automatic', disclosure: 'automatic' }
-    if (override === 'closed') return { availability: 'closed', disclosure: 'automatic' }
-    return { availability: 'enabled', disclosure: override }
+    const rule = configuration.policy && Object.hasOwn(configuration.policy.items, capability.id)
+      ? configuration.policy.items[capability.id] : undefined
+    // The override record is this address's write channel only while the document holds no
+    // policy. Once it does, that policy is the record — the override field stays as historical
+    // input and must not answer a dimension the policy left unwritten (the server branch above
+    // has the same guard), otherwise §8.2's removal would be invisible.
+    const override = dimension => configuration.policy === undefined
+      ? capabilityOverrideWord(configuration, capability.id, dimension) : undefined
+    return { availability: rule?.availability ?? override('availability') ?? 'automatic',
+      disclosure: rule?.disclosure ?? override('disclosure') ?? 'automatic' }
   }
 
-  /** The session column: what this session recorded, or `inherit` when it recorded nothing. */
-  function sessionChoice(statement, id) {
-    const choice = capabilityChoiceOf(statement, id)
-    return { availability: choice?.availability ?? 'inherit', disclosure: choice?.disclosure ?? 'inherit' }
+  /**
+   * One dimension the legacy override record wrote for an object, in the record's own
+   * words.
+   *
+   * The legacy record holds a whole selection: `closed` is an availability word and a
+   * delivery word is a disclosure word. Neither writes the other dimension, so the
+   * other dimension stays unwritten instead of borrowing a value from the resolution.
+   */
+  function capabilityOverrideWord(configuration, id, dimension) {
+    const override = configuration.manual?.overrides?.[id]
+    if (override === undefined || override === 'automatic') return undefined
+    if (override === 'closed') return dimension === 'availability' ? 'closed' : undefined
+    return dimension === 'disclosure' ? override : undefined
+  }
+
+  /**
+   * The words this session's record wrote for one object, and which layer wrote each.
+   *
+   * One (object, address) holds one value, so a dimension this object's own entry wrote is
+   * never also its server's: the layer map names a server only for a dimension this entry
+   * wrote nothing for. The words stay the record's own because both the value column and the
+   * receipt state what was written; the receipt names the layer that wrote them.
+   */
+  function sessionWords(statement, capability) {
+    const own = capabilityChoiceOf(statement, capability.id) ?? {}
+    const serverId = capability.mcpServer === undefined ? undefined : `mcpServers.${capability.mcpServer}`
+    const server = serverId === undefined ? {} : capabilityChoiceOf(statement, serverId) ?? {}
+    const words = {}
+    const layers = {}
+    for (const dimension of ROW_DIMENSIONS) {
+      // The session column states this object's own record: an entry of its own, or `inherit`
+      // when the record wrote none. A dimension this entry wrote belongs to this address, so the
+      // receipt states it as this row's word and names no layer — naming the server there would
+      // have the receipt owe a dimension the value column says this row holds (§8.1b), while the
+      // runtime precedence of a closed server belongs to behaviour and does not reach the page.
+      if (own[dimension] !== undefined) {
+        words[dimension] = own[dimension]
+        continue
+      }
+      // A server that wrote this dimension answers the member's at runtime, so the receipt names
+      // it; a server that wrote `automatic` deleted that dimension from its rule and decides no
+      // member, which is why the receipt names it only for a word the rule actually holds.
+      if (capability.kind !== 'server' && server[dimension] !== undefined && server[dimension] !== 'automatic') {
+        layers[dimension] = serverId
+      }
+    }
+    return { words, layers }
+  }
+
+  /**
+   * The session address's value for one object: the record's own words.
+   *
+   * Both columns state what their own record wrote, so a recorded `automatic` reads
+   * `automatic` here — the word the record holds — and `inherit` is this column's word for
+   * an address that recorded nothing, so no cell is blank. What those words would resolve
+   * to is the runtime's answer and belongs to behaviour, not to this page: no resolved
+   * value is put on screen. A dimension a server-level entry decided states that entry's
+   * word and the receipt names the layer, which is where a delegation is readable.
+   */
+  function sessionChoice(capability, statement) {
+    const { words } = sessionWords(statement, capability)
+    return { availability: words.availability ?? 'inherit', disclosure: words.disclosure ?? 'inherit' }
   }
 
   /**
@@ -1166,23 +1243,30 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    * keeps one supply read behind both surfaces.
    */
   function capabilityRows(capabilities, presentation, configuration, statement, proved) {
-    const rows = capabilities.map(capability => ({
-      ...capabilityEntry(capability, presentation),
-      kind: 'capability',
-      saved: savedChoice(configuration, capability.id),
-      session: sessionChoice(statement, capability.id),
-      evidence: proved.has(capability.id),
-    }))
+    const rows = capabilities.map(capability => {
+      const { words, layers } = sessionWords(statement, capability)
+      return {
+        ...capabilityEntry(capability, presentation),
+        kind: 'capability',
+        saved: savedChoice(configuration, capability),
+        session: sessionChoice(capability, statement),
+        // What the record wrote, in its own words, and the layer that wrote it: the session and
+        // receipt columns state these words, and the receipt names the layer that wrote them.
+        record: { availability: words.availability, disclosure: words.disclosure,
+          layers: { availability: layers.availability ?? null, disclosure: layers.disclosure ?? null } },
+        evidence: proved.has(capability.id),
+      }
+    })
     for (const server of new Set(capabilities.map(item => item.mcpServer).filter(Boolean))) {
       const id = `mcpServers.${server}`
+      const row = { id, kind: 'server', name: server, category: 'server', source: { kind: 'mcp', server } }
+      const { words, layers } = sessionWords(statement, row)
       rows.push({
-        id,
-        kind: 'server',
-        name: server,
-        category: 'server',
-        source: { kind: 'mcp', server },
-        saved: savedChoice(configuration, id),
-        session: sessionChoice(statement, id),
+        ...row,
+        saved: savedChoice(configuration, row),
+        session: sessionChoice(row, statement),
+        record: { availability: words.availability, disclosure: words.disclosure,
+          layers: { availability: layers.availability ?? null, disclosure: layers.disclosure ?? null } },
         // A server is not a capability: no execution can obtain it as a whole.
         evidence: false,
       })
@@ -1206,8 +1290,16 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       name: entry.name ?? entry.id,
       category: 'binding',
       source: { kind: 'bindings' },
-      saved: null,
-      session: { use: adoption.state === 'unreadable' ? 'damaged' : declined.has(entry.id) ? 'skip' : 'use' },
+      // The bindings document is a binding's saved address: an entry is listed only
+      // while it is enabled, and its model-context preference decides whether the
+      // model reads the declaration from the first request or only the callable
+      // contract on demand.
+      saved: { availability: 'enabled',
+        disclosure: bindingModelPreferences(entry.modelContext).includeDeclaration ? 'full' : 'on-demand' },
+      // The adoption record names the entries this session declined, so an entry it
+      // does not name has no receipt at that address.
+      session: { use: adoption.state === 'unreadable' ? 'damaged' : declined.has(entry.id) ? 'skip' : 'use',
+        recorded: adoption.state === 'unreadable' || declined.has(entry.id) },
       evidence: false,
     }))
   }
@@ -1358,7 +1450,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         if (intent.selection === 'automatic') delete overrides[intent.id]
         else overrides[intent.id] = intent.selection
         signal?.throwIfAborted()
-        const policy = capabilityPolicyForConfig(before.value)
+        // The settings document this writer reads holds the record: a document carrying a policy
+        // is composed into verbatim. Only a document that carries none starts from the record's
+        // own layers, so the synthesized bottom layer is never frozen into the record (§8.1c).
+        const policy = before.value.capabilityPolicy !== undefined
+          ? capabilityPolicyForConfig(before.value) : capabilityPolicyFromRecord(before.value)
         let nextPolicy = dimension ? changeCapabilityRule(policy, intent.id, dimension, intent.selection)
           : changeCapabilityRule(policy, intent.id, 'availability', intent.selection === 'closed' ? 'closed'
             : intent.selection === 'automatic' ? 'automatic' : 'enabled')
@@ -1672,14 +1768,19 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     async describeSessionCatalog({ sessionId } = {}, signal) {
       // Three permanent sources, no fourth. The session's own log is the record, the
       // supply of this session's own plane is the declared face, and the saved
-      // configuration is the saved column. `sessionCatalogSupply` reads the first two
-      // for the one session this request names.
-      const { events, supply } = await sessionCatalogSupply(sessionId, signal)
+      // configuration is the saved column. A request that names no session states the
+      // Host's own declaration — the process-scope object set, not a session's full
+      // declared face, which also carries a preset's agent-scope entries (capability-surface
+      // §8.9) — and no session record exists to state, so those columns read `inherit` and
+      // no binding adoption is drawn from a log this read was not given.
+      const named = typeof sessionId === 'string' && sessionId.length > 0
+      const { events, supply } = named ? await sessionCatalogSupply(sessionId, signal)
+        : { events: [], supply: await hostSupply({}, signal) }
       const configuration = capabilityConfiguration(currentConfig)
       const rows = capabilityRows(supply.capabilities, supply.presentation, configuration,
         capabilitySelectionOf(events, sessionId), capabilityProofOf(events))
       const bindingsEnabled = currentConfig.userBindingsEnabled === true
-      if (bindingsEnabled) rows.push(...await bindingRows(events))
+      if (bindingsEnabled && named) rows.push(...await bindingRows(events))
       signal?.throwIfAborted()
       // No `live`, no `scope`, no `plan`, no `management`, no `unreadableSupply`, no
       // nullable row group: a failed source fails this read, it does not become a

@@ -1,4 +1,6 @@
-import { CAPABILITY_POLICY_DEFAULT } from '../internal/capability-policy.js'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { CAPABILITY_DISCLOSURES, CAPABILITY_POLICY_DEFAULT, capabilityPolicyForConfig } from '../internal/capability-policy.js'
 import { PROMPT_ASSETS, PROMPT_TEXT_MAX_SLOT_BYTES } from '../internal/prompt-text.js'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -27,27 +29,39 @@ import { bindingToggleMessage } from '../internal/binding-toggle-receipt.js'
 import { bindingToggleConversationDefinition } from '../src/client-binding-toggle.js'
 import { isHostComponent } from '../src/client-host-compat.js'
 import { createFallbackModal, createSelect } from '../src/client-primitives.js'
-import { capabilityCommandText, capabilityReceiptVisible, createCapabilityCommandCard, createSessionCapabilityControlsView, firstHumanMessageSeq } from '../src/client-capabilities-view.js'
-import { cycleCapabilitySort, sortCapabilityEntries } from '../src/client-capability-sort.js'
+import { CLIENT_CSS } from '../src/client-styles.js'
+import { capabilityCommandText, capabilityReceiptVisible, createCapabilityCommandCard, createCapabilitySurfaceView, firstHumanMessageSeq } from '../src/client-capabilities-view.js'
 
 const replProjection = (runtime, memory, runtimeId = 'client-test-runtime') => (
   runtime.sessions.behavior('client-session').projections.set('ptcPlusRepl', { runtime: runtimeId, memory })
 )
 // The v2 catalogue answers three permanent questions: which rows the Host supplies,
-// what this session recorded for each row, and whether an execution proved it. The
-// global switch travels in `config` and no cell may draw it.
+// what each address states for each row, and which record the row's decision leaves.
+// The global switch travels in `config` and no cell may draw it. A saved value is the
+// word the document wrote for that object, or `automatic` when it wrote none — a rule
+// chain's answer for the object is behaviour and reaches no cell (capability-surface
+// §8.1c); a server states availability only and a binding states both from its own
+// document.
 const sessionCatalog = (rows, config = { bindingsEnabled: true }) => (
   { schema: 'ptc-capability-session-catalog/v2', sessionId: 'client-session', rows, config })
+const writtenWord = value => value === undefined || value === 'inherit' ? undefined : value
 const capabilityRow = (id, { kind = 'capability', name = id, category, source = { kind: 'host' },
   saved = { availability: 'automatic', disclosure: 'automatic' },
-  session = { availability: 'inherit', disclosure: 'inherit' }, evidence = false } = {}) => ({
+  session = { availability: 'inherit', disclosure: 'inherit' }, record, evidence = false } = {}) => ({
   id, kind, name,
   category: category ?? (id.startsWith('skills.') ? 'skill' : kind === 'server' ? 'server' : 'tool'),
-  source, saved, session, evidence,
+  source,
+  saved: kind === 'server' ? { availability: saved.availability } : saved,
+  session,
+  // The Host states the record's own words, and the layer that wrote them; a fixture that
+  // names no separate record states the words its session values were written with.
+  record: record ?? { availability: writtenWord(session.availability),
+    disclosure: writtenWord(session.disclosure), layers: { availability: null, disclosure: null } },
+  evidence,
 })
-const bindingRow = (id, name, use = 'use') => ({
+const bindingRow = (id, name, use = 'use', recorded = use !== 'use') => ({
   id, kind: 'binding', name, category: 'binding', source: { kind: 'bindings' },
-  saved: null, session: { use }, evidence: false,
+  saved: { availability: 'enabled', disclosure: 'full' }, session: { use, recorded }, evidence: false,
 })
 // The declaration-policy control is named by its field owner, not by this spec: the
 // settings view renders the field's English label, and the compatibility selector and
@@ -218,7 +232,8 @@ async function fixture({ enabled = true, bindings, conversation = true, repl = f
     const value = await (async () => {
     if (method === 'ptcPlusCapabilities/invoke') {
       capabilityRpcCalls.push({ endpoint, payload, signal })
-      return capabilityRpc ? capabilityRpc(endpoint, payload, signal) : { ok: true, value: [] }
+      return capabilityRpc ? capabilityRpc(endpoint, payload, signal)
+        : { ok: true, value: endpoint === 'session-catalog' ? sessionCatalog([]) : [] }
     }
     if (method === 'ptcPlusRepl/invoke') {
       rpcCalls.push({ endpoint, payload, signal })
@@ -1050,7 +1065,11 @@ test('the plugin row seat renders both views when the page declares it first', a
   }
   const writesBeforeBatch = settings.set.mock.calls.length
   fireEvent.click(within(form).getByRole('button', { name: 'Batch settings' }))
-  // Batch acts only on an explicit selection; an empty catalog leaves it disabled.
+  // Batch acts only on an explicit selection: with none, the dialog states zero targets
+  // and its record button writes nothing.
+  const emptyBatch = view.getByRole('dialog', { name: 'Batch settings' })
+  expect(within(emptyBatch).getByRole('status').textContent).toContain('Selected 0')
+  fireEvent.click(within(emptyBatch).getByRole('button', { name: 'Record 0 entries' }))
   expect(view.queryByRole('dialog', { name: 'Batch settings' })).toBeNull()
   expect(within(form).queryByRole('region', { name: SETTINGS_COPY.en['capabilities.policy.rules'] })).toBeNull()
   expect(settings.set).toHaveBeenCalledTimes(writesBeforeBatch)
@@ -1254,8 +1273,18 @@ test('REPL observations and shared workbench remain separate from session execut
     symbols: ['readFileWithLongName', 'write', 'copy', 'remove'], purpose: 'Shared file utilities', enabled: false,
     source: 'export function readFileWithLongName(path: string) {\n  return path\n}', declaration: 'declare function readFileWithLongName(path: string): string;' }
   let revision = 1
-  const { runtime, settings, value, rpcCalls, setLocale } = await fixture({ repl: true, capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'catalog'
-    ? Array.from({ length: 48 }, (_, index) => ({ id: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool', description: 'Read and transform project files' })) : [] }), rpc: async (endpoint, payload) => {
+  const { runtime, settings, value, rpcCalls, setLocale } = await fixture({ repl: true,
+    // The Client reads one session-catalog catalogue, so the fixture states its rows in that shape
+    // instead of the retired `catalog` op whose answer the surface no longer asks for.
+    capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+      ? { schema: 'ptc-capability-session-catalog/v2', sessionId: 'fixture',
+        rows: Array.from({ length: 48 }, (_, index) => ({
+          id: `tools.longCapabilityNameForNarrowLayouts${index}`, kind: 'capability',
+          name: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool',
+          source: { kind: 'host' }, saved: { availability: 'automatic', disclosure: 'automatic' },
+          session: { availability: 'inherit', disclosure: 'inherit' }, evidence: false })),
+        config: { bindingsEnabled: false } }
+      : [] }), rpc: async (endpoint, payload) => {
     if (endpoint === 'list' || endpoint === 'reload') return { ok: true, value: { revision, entries: [entry] } }
     if (endpoint === 'load') return { ok: true, value: { revision, entry } }
     if (endpoint === 'validate') return { ok: true, value: { ...payload.entry, symbols: entry.symbols, declaration: entry.declaration } }
@@ -1437,8 +1466,15 @@ test('REPL observations and shared workbench remain separate from session execut
   await saveLayout('settings-dialog-zh', settingsDialog().parentElement)
   fireEvent.click(view.getByRole('button', { name: '关闭 PTC Plus 设置' }))
   await runtime.flush()
-  const rowFixture = await fixture({ settingsCardSeat: 'row', capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'catalog'
-    ? Array.from({ length: 48 }, (_, index) => ({ id: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool', description: 'Read and transform project files' })) : [] }) })
+  const rowFixture = await fixture({ settingsCardSeat: 'row', capabilityRpc: async endpoint => ({ ok: true, value: endpoint === 'session-catalog'
+    ? { schema: 'ptc-capability-session-catalog/v2', sessionId: 'fixture',
+      rows: Array.from({ length: 48 }, (_, index) => ({
+        id: `tools.longCapabilityNameForNarrowLayouts${index}`, kind: 'capability',
+        name: `tools.longCapabilityNameForNarrowLayouts${index}`, category: 'tool',
+        source: { kind: 'host' }, saved: { availability: 'automatic', disclosure: 'automatic' },
+        session: { availability: 'inherit', disclosure: 'inherit' }, evidence: false })),
+      config: { bindingsEnabled: false } }
+    : [] }) })
   const rowView = rowFixture.runtime.renderRoot()
   await rowFixture.runtime.flush()
   await saveLayout('settings-page-en', rowView.container.querySelector('.ptcPlusSettingsPage'))
@@ -1480,16 +1516,19 @@ test('REPL observations and shared workbench remain separate from session execut
   const controls = [...settingsCard.querySelectorAll('[role=switch], [role=combobox], input[type=number], select, textarea')]
   expect(controls.some(control => control.getAttribute('aria-label') === 'Usage statistics')).toBe(true)
   expect(settingsCard.querySelectorAll('textarea')).toHaveLength(0)
-  expect(controls.filter(control => !control.disabled && !control.closest('.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields'))
+  expect(controls.filter(control => !control.disabled && !control.closest('.ptcPlusSessionCapabilityToolbar,.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields'))
     .map(control => control.getAttribute('aria-label'))).toEqual(['Enable PTC Plus'])
   settings.publish({ writable: false, value })
   await runtime.flush()
   const readonlyControls = [...settingsCard.querySelectorAll('[role=switch], [role=combobox], input[type=number], select, textarea')]
-  expect(readonlyControls.filter(control => !control.closest('.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields,.ptcPlusCapabilityApply'))
+  expect(readonlyControls.filter(control => !control.closest('.ptcPlusSessionCapabilityToolbar,.ptcPlusCapabilityToolbar,.ptcPlusCapabilityFilterFields,.ptcPlusCapabilityApply'))
     .every(control => control.disabled)).toBe(true)
   expect([...settingsCard.querySelectorAll('.ptcPlusCapabilityApply [role=combobox]')]
     .every(control => !control.disabled)).toBe(true)
-})
+  // This case mounts the whole client over a 48-row capability table and a 58-entry binding
+  // projection, which takes several seconds on its own. Under the gate's parallel group runner it
+  // must not race the default per-case budget.
+}, 60_000)
 
 test('workbench edits and saves per-entry model prompts while preserving cancel and reload semantics', async () => {
   let entry = { id: 'files', name: 'fileTools', scope: 'namespace', symbols: ['readText'],
@@ -1768,7 +1807,7 @@ function capabilityRecordNotice(locale, record, { args = 'set session tools.prob
 
 test('a capability command notice states the record it wrote and no degree of proof', () => {
   const record = { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' }
-  const choice = `${receiptCopy('en', 'capabilities.policy.availability')} ${receiptCopy('en', 'capabilities.word.closed')}`
+  const choice = `${receiptCopy('en', 'capabilities.dimension.availability')} ${receiptCopy('en', 'capabilities.word.closed')}`
   const expected = receiptCopy('en', 'capabilities.receipt.record', { session: 'record-session', record: `tools.probe · ${choice}` })
   expect(capabilityRecordNotice('en', record)).toBe(expected)
   expect(expected).toContain('tools.probe')
@@ -1777,7 +1816,7 @@ test('a capability command notice states the record it wrote and no degree of pr
   const global = capabilityRecordNotice('en', { scope: 'global', id: 'tools.probe', dimension: 'disclosure', selection: 'full' },
     { args: 'set global tools.probe disclosure full' })
   expect(global).toBe(receiptCopy('en', 'capabilities.receipt.record.global',
-    { record: `tools.probe · ${receiptCopy('en', 'capabilities.policy.disclosure')} ${receiptCopy('en', 'capabilities.word.full')}` }))
+    { record: `tools.probe · ${receiptCopy('en', 'capabilities.dimension.disclosure')} ${receiptCopy('en', 'capabilities.word.full')}` }))
   // The composer toast and the chat card read one composition, so the same receipt
   // reads the same sentence on both surfaces.
   const text = capabilityCommandReceipt('recorded', 'record-session', undefined, undefined, record)
@@ -1790,7 +1829,7 @@ test('a capability command notice states the record it wrote and no degree of pr
   // The Chinese notice is Chinese and states the same three facts.
   const chinese = capabilityRecordNotice('zh', record)
   expect(chinese).toBe(receiptCopy('zh', 'capabilities.receipt.record',
-    { session: 'record-session', record: `tools.probe · ${receiptCopy('zh', 'capabilities.policy.availability')} ${receiptCopy('zh', 'capabilities.word.closed')}` }))
+    { session: 'record-session', record: `tools.probe · ${receiptCopy('zh', 'capabilities.dimension.availability')} ${receiptCopy('zh', 'capabilities.word.closed')}` }))
   for (const word of ['未证明', '不可用', '未记录', '未启用', '未观察']) expect(chinese).not.toContain(word)
 })
 
@@ -1964,13 +2003,13 @@ test('capability command catalog states the saved rule and this session\'s recor
   const headers = () => [...card.querySelectorAll('th')].map(cell => cell.textContent)
   expect(headers()).toEqual(['Capability', 'Global settings', 'Temporary override'])
   const expected = [
-    ['Disclosure: Full contract', 'None'],
-    ['Not set here', 'Availability: Closed · Disclosure: Allocate from evidence'],
-    ['Closed', 'On demand'],
-    ['Disclosure: Allocate from evidence', 'None'],
-    ['Not set here', 'Availability: Not set here'],
-    ['Not set here', 'Disclosure: Not set here'],
-    ['Not set here', 'Availability: Not set here · Disclosure: Not set here'],
+    ['Disclosure: both·full·turn1', 'None'],
+    ['Layer above', 'Availability: Off · Disclosure: model·share·no-reread'],
+    ['Off', 'model·listing·turn1'],
+    ['Disclosure: model·share·no-reread', 'None'],
+    ['Layer above', 'Availability: Layer above'],
+    ['Layer above', 'Disclosure: Layer above'],
+    ['Layer above', 'Availability: Layer above · Disclosure: Layer above'],
   ]
   const rows = () => within(card).getAllByRole('row', { hidden: true }).slice(1)
     .map(row => within(row).getAllByRole('cell', { hidden: true }).slice(1).map(cell => cell.textContent))
@@ -1981,13 +2020,13 @@ test('capability command catalog states the saved rule and this session\'s recor
   setLocale('zh'); await runtime.flush()
   expect(headers()).toEqual(['能力', '全局设置', '临时覆盖'])
   expect(rows()).toEqual([
-    ['说明方式: 完整提供', '无覆盖'],
-    ['不单独设置', '可用性: 关闭能力 · 说明方式: 按依据分配'],
-    ['关闭能力', '按需提供'],
-    ['说明方式: 按依据分配', '无覆盖'],
-    ['不单独设置', '可用性: 不单独设置'],
-    ['不单独设置', '说明方式: 不单独设置'],
-    ['不单独设置', '可用性: 不单独设置 · 说明方式: 不单独设置'],
+    ['说明方式: 人机·全文·首轮', '无覆盖'],
+    ['由上一层', '可用性: 关闭 · 说明方式: 仅模型·分配·不重读'],
+    ['关闭', '仅模型·目录·首轮'],
+    ['说明方式: 仅模型·分配·不重读', '无覆盖'],
+    ['由上一层', '可用性: 由上一层'],
+    ['由上一层', '说明方式: 由上一层'],
+    ['由上一层', '可用性: 由上一层 · 说明方式: 由上一层'],
   ])
   expect(card.querySelector('pre').textContent).toBe(text)
   expect(commandNode.outcome.text).toBe(text)
@@ -2023,9 +2062,9 @@ test('capability command catalog restates each row\'s own dimensions in the pane
   const card = view.getByRole('region', { name: 'Session capabilities' })
   const rows = () => within(card).getAllByRole('row', { hidden: true }).slice(1)
     .map(row => within(row).getAllByRole('cell', { hidden: true }).slice(1).map(cell => cell.textContent))
-  expect(rows()).toEqual([['Automatic · Full', 'Inherit · Full'], ['Off', 'Inherit']])
+  expect(rows()).toEqual([['Automatic · both·full·turn1', 'Inherit · both·full·turn1'], ['Off', 'Inherit']])
   setLocale('zh'); await runtime.flush()
-  expect(rows()).toEqual([['自动 · 完整', '继承 · 完整'], ['关闭', '继承']])
+  expect(rows()).toEqual([['自动 · 人机·全文·首轮', '继承 · 人机·全文·首轮'], ['关闭', '继承']])
   const disclosure = card.querySelector('.ptcPlusCapabilityReceiptSource')
   disclosure.open = true; fireEvent(disclosure, new Event('toggle')); await runtime.flush()
   expect(card.querySelector('pre').textContent).toBe(text)
@@ -2187,46 +2226,60 @@ test('shared Select preserves empty and arbitrary string values, skips disabled 
   expect(trigger.disabled).toBe(true)
 })
 
-test('the session capability panel states the seven contract columns from the v2 catalogue', async () => {
+test('the session capability panel states the seven contract columns and the receipt column from the v2 catalogue', async () => {
   const rows = [
     capabilityRow('tools.probe', { saved: { availability: 'closed', disclosure: 'on-demand' },
-      session: { availability: 'enabled', disclosure: 'full' }, evidence: true }),
-    capabilityRow('skills.review', { category: 'skill', source: { kind: 'skill', bucket: 'user-agents' },
-      saved: { availability: 'automatic', disclosure: 'automatic' } }),
+      session: { availability: 'enabled', disclosure: 'full' } }),
+    capabilityRow('skills.review', { category: 'skill', source: { kind: 'skill', bucket: 'user-agents' } }),
     capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'docs',
-      source: { kind: 'mcp', server: 'docs' }, saved: { availability: 'automatic', disclosure: 'host' },
+      source: { kind: 'mcp', server: 'docs' }, saved: { availability: 'closed', disclosure: 'host' },
       session: { availability: 'closed', disclosure: 'inherit' } }),
   ]
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
   const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
   const table = panel.querySelector('.ptcPlusSessionCapabilityTable')
+  // §4's page: every address states both dimensions, and the session entrance adds the
+  // record the decision leaves. The address is part of the header, so no cell has to
+  // borrow its neighbour's to be read.
   expect([...table.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
+    .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure',
+      'This session · on', 'This session · disclosure', 'Receipt'])
   const row = id => table.querySelector(`[data-capability-id="${id}"]`)
-  expect([...row('tools.probe').children]).toHaveLength(7)
+  expect([...row('tools.probe').children]).toHaveLength(8)
   expect(row('tools.probe').querySelector('.ptcPlusCapabilitySource').textContent).toBe('DSH tools')
   expect(row('tools.probe').querySelector('.ptcPlusCapabilityBadge').textContent).toBe('Tools')
-  // The saved column is the configuration's own value, with no control of its own.
+  // The saved address is stated, not controlled: this entrance fixes the session record,
+  // so a control here would write an address it does not own.
   const saved = row('tools.probe').querySelector('.ptcPlusSessionCapabilitySaved')
+  expect(saved.textContent).toBe('Off')
   expect(saved.querySelector('button, [role="combobox"], input, select')).toBeNull()
-  // Each dimension owns the cell the header names, so a cell holds exactly one control
-  // instead of two unlabelled ones sharing one.
+  expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilitySavedDisclosure').textContent)
+    .toBe('model·listing·turn1')
+  // Each dimension owns the cell the header names, and its control names the address it
+  // writes instead of relying on the column beside it.
   const availability = row('tools.probe').querySelector('.ptcPlusSessionCapabilityAvailability')
   const disclosure = row('tools.probe').querySelector('.ptcPlusSessionCapabilityDisclosure')
   expect([...availability.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
-    .toEqual(['Availability for tools.probe'])
+    .toEqual(['This session · on: tools.probe'])
   expect([...disclosure.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
-    .toEqual(['Disclosure for tools.probe'])
-  // A server row decides availability only, and its saved column states that one value.
+    .toEqual(['This session · disclosure: tools.probe'])
+  expect(availability.textContent).toContain('On')
+  expect(disclosure.textContent).toContain('both·full·turn1')
+  // The receipt names the record and what it states there.
+  expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe("This session's record · availability enabled · disclosure full")
+  // A server row decides availability only, so its disclosure cells state where that
+  // decision lives instead of a denial or another row's answer.
   const server = row('mcpServers.docs')
   expect([...server.querySelectorAll('[role="combobox"]')].map(control => control.getAttribute('aria-label')))
-    .toEqual(['Availability for mcpServers.docs'])
-  expect(server.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('')
-  expect(server.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('Automatic')
-  expect(server.querySelector('.ptcPlusSessionCapabilityEvidence').textContent).toBe('')
-  // Evidence is a mark where a completed execution proved the capability, and an
-  // empty cell everywhere else.
-  expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityEvidence').textContent).toBe('')
+    .toEqual(['This session · on: mcpServers.docs'])
+  expect(server.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('Per member')
+  expect(server.querySelector('.ptcPlusSessionCapabilitySavedDisclosure').textContent).toBe('Per member')
+  expect(server.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('Off')
+  // A row this session recorded nothing for states that address's own unwritten receipt.
+  expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityAvailability').textContent).toContain('Inherit')
+  expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe("This session's record · Not written")
   // Nothing on the panel is disabled: every row states a decision it can record.
   expect(panel.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
 })
@@ -2239,29 +2292,30 @@ test('a capability row records its availability and disclosure through the capab
     return { text: `recorded ${dimension} ${choice}` }
   })
   const { view, commands } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run })
-  await chooseCapabilityOption(view, 'Availability for tools.probe', 'Off')
+  await chooseCapabilityOption(view, 'This session · on: tools.probe', 'Off')
   expect(commands.run.mock.calls.map(([, line]) => line)).toEqual(['set session tools.probe availability closed'])
-  expect(view.getByRole('combobox', { name: 'Availability for tools.probe' }).textContent).toContain('Off')
+  expect(view.getByRole('combobox', { name: 'This session · on: tools.probe' }).textContent).toContain('Off')
   // The footer keeps the command's own receipt, verbatim.
   expect(view.baseElement.textContent).toContain('recorded availability closed')
-  await chooseCapabilityOption(view, 'Disclosure for tools.probe', 'Full')
+  await chooseCapabilityOption(view, 'This session · disclosure: tools.probe', 'both·full·turn1')
   expect(commands.run.mock.calls.map(([, line]) => line)).toEqual([
     'set session tools.probe availability closed', 'set session tools.probe disclosure full'])
-  expect(view.getByRole('combobox', { name: 'Disclosure for tools.probe' }).textContent).toContain('Full')
+  expect(view.getByRole('combobox', { name: 'This session · disclosure: tools.probe' }).textContent)
+    .toContain('both·full·turn1')
   expect(view.baseElement.textContent).toContain('recorded disclosure full')
 })
 
 test('a server capability row records only its availability decision', async () => {
   let rows = [capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'docs',
     source: { kind: 'mcp', server: 'docs' } })]
-  const run = vi.fn(async (sessionId, line) => {
+  const run = vi.fn(async () => {
     rows = [capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'docs',
       source: { kind: 'mcp', server: 'docs' }, session: { availability: 'closed', disclosure: 'inherit' } })]
     return { text: 'server record written' }
   })
   const { view, commands } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run })
-  expect(view.queryByRole('combobox', { name: 'Disclosure for mcpServers.docs' })).toBeNull()
-  await chooseCapabilityOption(view, 'Availability for mcpServers.docs', 'Off')
+  expect(view.queryByRole('combobox', { name: 'This session · disclosure: mcpServers.docs' })).toBeNull()
+  await chooseCapabilityOption(view, 'This session · on: mcpServers.docs', 'Off')
   expect(commands.run.mock.calls.map(([, line]) => line)).toEqual(['set session mcpServers.docs availability closed'])
   expect(view.baseElement.textContent).toContain('server record written')
 })
@@ -2271,27 +2325,35 @@ test('binding rows record their adoption through the `/binding` command, includi
     bindingRow('gamma', 'gammaHelpers', 'damaged')]
   const bindingRun = vi.fn(async (sessionId, line) => {
     const [decision, id] = line.split(' ')
-    rows = rows.map(row => row.id === id ? { ...row, session: { use: decision === 'skip' ? 'skip' : 'use' } } : row)
+    rows = rows.map(row => row.id === id
+      ? { ...row, session: { use: decision === 'skip' ? 'skip' : 'use', recorded: true } } : row)
     return { text: `adoption recorded: ${line}` }
   })
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), bindingRun })
   const group = view.baseElement.querySelector('.ptcPlusBindingGroup')
   expect(group.querySelectorAll('[data-binding-id]')).toHaveLength(3)
   const toggle = id => group.querySelector(`[data-binding-id="${id}"] .ptcPlusBindingToggle`)
-  // A binding row makes one decision, so it keeps one control: adoption owns the
-  // availability cell, and the disclosure cell stays empty because a binding states no
-  // disclosure of its own.
+  // A binding row decides adoption, so its saved cells state the binding document and
+  // its session cell carries the one control.
   const alphaRow = group.querySelector('[data-binding-id="alpha"]')
   expect(alphaRow.querySelectorAll('[role="combobox"], .ptcPlusBindingToggle')).toHaveLength(1)
   expect(alphaRow.querySelector('.ptcPlusSessionCapabilityAvailability .ptcPlusBindingToggle')).not.toBeNull()
-  expect(alphaRow.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('')
-  expect(alphaRow.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('')
+  // A binding's adoption record holds no disclosure decision, so the cell states this
+  // address's own word instead of the one a service row owns.
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilityDisclosure').textContent).toBe('Inherit')
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('On')
+  expect(alphaRow.querySelector('.ptcPlusSessionCapabilitySavedDisclosure').textContent).toBe('both·full·turn1')
+  expect(toggle('alpha').getAttribute('aria-label')).toBe('This session · on: alpha')
   expect(toggle('alpha').textContent).toBe('Use')
   expect(toggle('beta').textContent).toBe('Do not use')
   // A binding row decides one thing: two states, and a third word for a record the
   // session cannot parse that still leaves the control usable.
   expect(toggle('gamma').textContent).toBe('Record damaged')
   expect(toggle('gamma').disabled).toBe(false)
+  expect(group.querySelector('[data-binding-id="alpha"] .ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe('Binding adoption record · Not written')
+  expect(group.querySelector('[data-binding-id="beta"] .ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe('Binding adoption record · Do not use')
   fireEvent.click(toggle('alpha')); await act(async () => {})
   expect(bindingRun.mock.calls[0].slice(0, 2)).toEqual(['client-session', 'skip alpha'])
   expect(toggle('alpha').textContent).toBe('Do not use')
@@ -2301,14 +2363,15 @@ test('binding rows record their adoption through the `/binding` command, includi
   expect(view.baseElement.textContent).toContain('adoption recorded: use gamma')
 })
 
-test('the binding group is always rendered, with the same seven columns and possibly no rows', async () => {
+test('the binding group is always rendered, with the same columns and possibly no rows', async () => {
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog([capabilityRow('tools.probe')]) })
   const group = view.baseElement.querySelector('.ptcPlusBindingGroup')
   expect(group).not.toBeNull()
   expect(within(group).getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
   expect(group.querySelectorAll('[data-binding-id]')).toHaveLength(0)
   expect([...group.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
+    .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure',
+      'This session · on', 'This session · disclosure', 'Receipt'])
   // An empty group is an empty table, not a sentence explaining its absence.
   expect(group.querySelector('.ptcPlusSessionCapabilityMessage')).toBeNull()
 })
@@ -2362,9 +2425,9 @@ test('a session capability response that is not the v2 catalogue is a defect, no
 test('a refused session capability write is reported as the command returned it instead of disabling its control', async () => {
   const run = vi.fn(async () => { throw new Error('/capabilities is unavailable in this session') })
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog([capabilityRow('tools.probe')]), run })
-  const trigger = () => view.getByRole('combobox', { name: 'Availability for tools.probe' })
+  const trigger = () => view.getByRole('combobox', { name: 'This session · on: tools.probe' })
   expect(trigger().disabled).toBe(false)
-  await chooseCapabilityOption(view, 'Availability for tools.probe', 'Off')
+  await chooseCapabilityOption(view, 'This session · on: tools.probe', 'Off')
   expect(view.baseElement.textContent).toContain('Write refused: /capabilities is unavailable in this session')
   expect(trigger().disabled).toBe(false)
   expect(view.baseElement.querySelectorAll('[disabled]')).toHaveLength(0)
@@ -2374,9 +2437,9 @@ test('a session capability write in flight leaves every other control usable', a
   const pending = deferred()
   const rows = [capabilityRow('tools.first'), capabilityRow('tools.second')]
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run: () => pending.promise })
-  await chooseCapabilityOption(view, 'Availability for tools.first', 'Off')
-  expect(view.getByRole('combobox', { name: 'Availability for tools.first' }).disabled).toBe(false)
-  expect(view.getByRole('combobox', { name: 'Availability for tools.second' }).disabled).toBe(false)
+  await chooseCapabilityOption(view, 'This session · on: tools.first', 'Off')
+  expect(view.getByRole('combobox', { name: 'This session · on: tools.first' }).disabled).toBe(false)
+  expect(view.getByRole('combobox', { name: 'This session · on: tools.second' }).disabled).toBe(false)
   await act(async () => pending.resolve({ text: 'first record written' }))
   expect(view.baseElement.textContent).toContain('first record written')
 })
@@ -2436,12 +2499,40 @@ test('a session capability batch records one decision for every selected row', a
   fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
   const dialog = view.getByRole('dialog', { name: 'Batch settings' })
   expect(dialog.querySelectorAll('.ptcPlusCapabilityBatchTargets li')).toHaveLength(2)
-  await chooseCapabilityOption(view, 'Availability', 'Off')
+  // The batch's own field names the address it writes, so one dialog serves both
+  // entrances without asking the reader which record it edits.
+  await chooseCapabilityOption(view, 'This session · On', 'Off')
   fireEvent.click(within(dialog).getByRole('button', { name: 'Record 2 entries' }))
   await act(async () => {})
   expect(commands.run.mock.calls.map(([, line]) => line)).toEqual([
     'set session tools.first availability closed', 'set session tools.second availability closed'])
   expect(view.baseElement.textContent).toContain('recorded tools.second')
+})
+
+test('a session capability batch writes one command at a time', async () => {
+  // Each `/capabilities set session` composes the whole session record from the log it reads, so
+  // the batch must start the next command only after the previous one settles.
+  const first = deferred()
+  const started = []
+  const run = vi.fn(async (sessionId, line) => {
+    started.push(line)
+    if (started.length === 1) await first.promise
+    return { text: `recorded ${line}` }
+  })
+  const rows = [capabilityRow('tools.first'), capabilityRow('tools.second')]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run })
+  fireEvent.click(view.getByLabelText('Select tools.first'))
+  fireEvent.click(view.getByLabelText('Select tools.second'))
+  fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+  await chooseCapabilityOption(view, 'This session · On', 'Off')
+  fireEvent.click(within(view.getByRole('dialog', { name: 'Batch settings' }))
+    .getByRole('button', { name: 'Record 2 entries' }))
+  await act(async () => {})
+  expect(started).toEqual(['set session tools.first availability closed'])
+  first.resolve()
+  await act(async () => {})
+  expect(started).toEqual(['set session tools.first availability closed',
+    'set session tools.second availability closed'])
 })
 
 test.each(['zh', 'en'])('a session capability batch that keeps every dimension still answers the click with one receipt in %s', async locale => {
@@ -2459,8 +2550,8 @@ test.each(['zh', 'en'])('a session capability batch that keeps every dimension s
   const footer = view.baseElement.querySelector('.ptcPlusSessionCapabilityFooter')
   expect(footer?.textContent).toBe(copy['capabilities.batch.kept'])
   const text = String(footer?.textContent ?? '').toLowerCase()
-  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知',
-    'not observed', 'unavailable', 'not recorded', 'unproven', 'not enabled', 'unknown', 'unconfirmed']) {
+  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知', '未应用',
+    'not observed', 'unavailable', 'not recorded', 'unproven', 'not enabled', 'unknown', 'unconfirmed', 'not applied']) {
     expect(text).not.toContain(word)
   }
   expect(commands.run).not.toHaveBeenCalled()
@@ -2483,7 +2574,7 @@ test('a session switch discards an obsolete capability read', async () => {
 
 test.each(['zh', 'en'])('the session capability panel states no absence and disables nothing in %s', async locale => {
   const rows = [
-    capabilityRow('tools.probe', { evidence: true, saved: { availability: 'enabled', disclosure: 'host' } }),
+    capabilityRow('tools.probe', { saved: { availability: 'enabled', disclosure: 'host' } }),
     capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'docs', source: { kind: 'mcp', server: 'docs' } }),
     bindingRow('alpha', 'alphaHelpers', 'damaged'),
   ]
@@ -2491,11 +2582,11 @@ test.each(['zh', 'en'])('the session capability panel states no absence and disa
   const text = view.baseElement.textContent
   // The panel concept's whole ban list, in the panel that states it: a row may not report a
   // denial of supply, a missing record or an unconfirmed source.
-  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知']) {
+  for (const word of ['未观察', '尚未清点', '不可用', '暂不可用', '未记录', '未证明', '未启用', '未确认', '未知', '未应用']) {
     expect(text).not.toContain(word)
   }
   for (const word of ['not observed', 'not yet inventoried', 'unavailable', 'not recorded', 'unproven',
-    'not enabled', 'unknown', 'unconfirmed']) {
+    'not enabled', 'unknown', 'unconfirmed', 'not applied']) {
     expect(text.toLowerCase()).not.toContain(word)
   }
   expect(view.baseElement.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
@@ -2531,7 +2622,7 @@ async function sessionControlsFixture({ read, run, bindingRun, sessionId = 'clie
     signal?.throwIfAborted()
     return read(requested)
   })
-  const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
+  const SessionCapabilityControls = createCapabilitySurfaceView(React, {
     commands, bindingCommands, Modal: createFallbackModal(React, createPortal), Select: createSelect(React), inspectSessionCatalog,
   })
   const copy = SETTINGS_COPY[locale]
@@ -2577,7 +2668,7 @@ test('the mounted plugin panel writes a binding decision through the `/binding` 
   await openGlobalMenu(view, runtime, 'click')
   fireEvent.click(view.getByRole('menuitem', { name: 'Session capability controls' })); await runtime.flush()
   const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
-  const toggle = within(panel).getByRole('button', { name: 'Use' })
+  const toggle = within(panel).getByRole('button', { name: 'This session · on: alpha' })
   expect(toggle.disabled).toBe(false)
   fireEvent.click(toggle); await runtime.flush()
   expect(execute.mock.calls.map(([, line]) => line)).toContain('/binding skip alpha')
@@ -3149,12 +3240,14 @@ test('the authoring entry opens the complete settings dialog from every host sea
     expect(dialog.querySelector(`[aria-label="${SETTINGS_COPY.en['capabilities.targetSession']}"]`)).not.toBeNull()
     fireEvent.click(within(dialog).getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.manual'] }))
     await runtime.flush()
-    expect(dialog.querySelector('[aria-label="Saved disclosure"]')).toBeNull()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Filter', exact: true }))
-    const filterDialog = view.getByRole('dialog', { name: 'Filter' })
-    expect(filterDialog.querySelector('[aria-label="Saved disclosure"]')).not.toBeNull()
-    fireEvent.click(within(filterDialog).getByRole('button', { name: SETTINGS_COPY.en['capabilities.dialogDone'] }))
-    expect(view.queryByRole('dialog', { name: 'Filter' })).toBeNull()
+    // The page is the one renderer: it states its own address set and its own columns,
+    // and its saved cells are the controls this entrance owns.
+    const surface = dialog.querySelector('.ptcPlusCapabilitySurface')
+    expect(surface).not.toBeNull()
+    expect(surface.querySelector('.ptcPlusSessionCapabilityAddresses').textContent)
+      .toBe(SETTINGS_COPY.en['capabilities.surface.addresses.settings'])
+    expect([...surface.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
+      .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure'])
     expect(dialog.querySelector('textarea')).toBeNull()
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
@@ -3223,90 +3316,6 @@ test('the settings dialog falls back to its close button when the form has no en
   view.unmount()
 })
 
-test('capability settings use searchable choices and validated statistics while preserving frozen and saved-only selections', async () => {
-  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false, capabilityManagementEnabled: true,
-    capabilityBaseline: '["tools.missing"]', capabilityOverrides: '{"tools.missing":"full"}',
-    capabilityStatistics: '{"enabled":true,"windowSize":10,"minimumSamples":10,"fullThreshold":0.5}' } }
-  const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return 'status.applied' })
-  const inspectCapabilityPlans = vi.fn(async () => [{ sessionId: 'frozen-session', pendingRefresh: true,
-    effective: { budgets: { contractBytes: 234, overageBytes: 12 }, entries: [{ id: 'tools.probe',
-      selection: 'on-demand', reason: 'manual', statisticsReason: 'statistics-disabled',
-      evidence: { used: 2, eligible: 3, scope: 'workspace' } }] } }])
-  const inspectCapabilityCatalog = vi.fn(async () => [{ id: 'tools.probe', category: 'tool', description: 'Read project files' },
-    { id: 'skills.research', category: 'skill', description: 'Look up online references' }])
-  const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
-    ActionButton: props => React.createElement('button', props), BindingsDialog: () => null,
-    Select: createSelect(React),
-    useWorkbenchController: () => null, inspectCapabilityPlans, inspectCapabilityCatalog, icons: {},
-  })
-  const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
-    .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
-  const view = render(React.createElement(PTCPlusSettingsCard, { t, view: 'page',
-    usePtcSettings: select => select(snapshot), updateSetting }))
-  await act(async () => {})
-  await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-session')
-  await act(async () => {})
-  expect(view.container.textContent).toContain(SETTINGS_COPY.en['capabilities.combination.different'])
-  expect(view.container.textContent).toContain('234')
-  expect(view.container.querySelectorAll('textarea')).toHaveLength(0)
-  const search = view.getByRole('searchbox', { name: t('capabilities.search') })
-  expect(search.getAttribute('placeholder')).toBe(t('capabilities.search'))
-  expect(search.closest('.ptcPlusSearch').querySelector('svg[aria-hidden=true]')).not.toBeNull()
-  expect(view.container.querySelector('.ptcPlusCapabilityPlans').closest('[data-experimental=true]')).not.toBeNull()
-  fireEvent.change(search, { target: { value: 'project files' } })
-  expect(view.queryByLabelText('Disclosure for skills.research')).toBeNull()
-  await chooseCapabilityOption(view, 'Availability for tools.probe', 'Closed')
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items).toEqual({ 'tools.missing': { disclosure: 'full' }, 'tools.probe': { availability: 'closed' } })
-  fireEvent.click(view.getByLabelText('Include tools.probe in common baseline'))
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityBaseline)).toEqual(['tools.missing', 'tools.probe'])
-  fireEvent.click(view.getByRole('tab', { name: 'Usage statistics' }))
-  const window = view.getByLabelText('Sample window (session families)')
-  const minimum = view.getByLabelText('Minimum samples')
-  const threshold = view.getByLabelText('Full disclosure threshold (%)')
-  fireEvent.change(window, { target: { value: '5' } })
-  fireEvent.blur(window)
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: true, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 })
-  expect(view.container.textContent).toContain('minimum cannot exceed window')
-  fireEvent.click(view.getAllByRole('switch', { name: 'Usage statistics' })[0])
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: false, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 })
-  fireEvent.change(minimum, { target: { value: '3' } })
-  fireEvent.blur(minimum)
-  await act(async () => {})
-  fireEvent.change(threshold, { target: { value: '65' } })
-  fireEvent.blur(threshold)
-  await act(async () => {})
-  fireEvent.click(view.container.querySelector('input[aria-label="Usage statistics"]'))
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityStatistics)).toEqual({ enabled: true, windowSize: 10, minimumSamples: 3, fullThreshold: 0.65 })
-  fireEvent.click(view.getByRole('tab', { name: 'Capability configuration' }))
-  fireEvent.change(search, { target: { value: '' } })
-  // A saved-only identity keeps its row, and that row states the rule it resolves to;
-  // the table exposes no catalog-availability state in any column or filter.
-  const savedOnlyRow = view.container.querySelector('[data-capability-edit-id="tools.missing"]').closest('.ptcPlusCapabilityItem')
-  expect(savedOnlyRow).not.toBeNull()
-  expect(['enabled', 'closed', 'source-closed', 'unapplied'])
-    .toContain(savedOnlyRow.querySelector('.ptcPlusCapabilityAvailability').dataset.state)
-  expect(view.queryByLabelText('Availability')).toBeNull()
-  await chooseCapabilityOption(view, 'Disclosure for tools.missing', 'Not set here')
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items).toEqual({ 'tools.probe': { availability: 'closed' } })
-  const reads = inspectCapabilityPlans.mock.calls.length
-  const catalogReads = inspectCapabilityCatalog.mock.calls.length
-  // The list states the supply of the session this page observes, so selecting the
-  // target re-reads it for that session's workspace directory.
-  expect(inspectCapabilityCatalog.mock.calls.at(-1)[0]).toBe('frozen-session')
-  fireEvent.click(view.getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.plans'] }))
-  fireEvent.click(view.getByRole('button', { name: 'Reload plans' }))
-  await act(async () => {})
-  expect(inspectCapabilityPlans).toHaveBeenCalledTimes(reads + 1)
-  expect(inspectCapabilityCatalog).toHaveBeenCalledTimes(catalogReads + 1)
-  view.unmount()
-})
-
 test('session plan observations follow plugin lifecycle independently of saved capability rules', async () => {
   const delayed = deferred()
   const plan = sessionId => ({ sessionId, pendingRefresh: false,
@@ -3316,8 +3325,8 @@ test('session plan observations follow plugin lifecycle independently of saved c
   const { runtime, settings, value, capabilityRpcCalls } = await fixture({
     enabled: false, settingsCardSeat: 'row',
     capabilityRpc: async endpoint => {
-      if (endpoint === 'catalog') return { ok: true, value: [{ id: 'tools.probe', category: 'tool', description: 'Probe owner' }] }
       if (endpoint === 'targets') return { ok: true, value: [] }
+      if (endpoint === 'session-catalog') return { ok: true, value: sessionCatalog([capabilityRow('tools.probe')]) }
       if (endpoint === 'allocation') return { ok: false, error: { message: 'Allocation observation unavailable' } }
       expect(endpoint).toBe('inspect')
       requests += 1
@@ -3329,7 +3338,7 @@ test('session plan observations follow plugin lifecycle independently of saved c
     await runtime.flush()
     const plans = () => view.container.querySelector('.ptcPlusCapabilityPlans')
     expect(plans()).toBeNull()
-    expect(capabilityRpcCalls).toHaveLength(0)
+    expect(capabilityRpcCalls.map(call => call.endpoint)).toEqual(['session-catalog'])
     settings.publish({ value: { ...value, enabled: true, capabilityManagementEnabled: false } })
     await runtime.flush()
     expect(requests).toBe(1)
@@ -3337,11 +3346,13 @@ test('session plan observations follow plugin lifecycle independently of saved c
     await chooseCapabilityOption(view, SETTINGS_COPY.en['capabilities.targetSession'], 'frozen-1')
     await runtime.flush()
     expect(plans().textContent).toContain('frozen-1')
-    fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.probe' }))
-    expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
-    // Selecting the observed target re-reads the list for that session's workspace
-    // directory, after the allocation it already asked for.
-    expect(capabilityRpcCalls.map(call => call.endpoint)).toEqual(['targets', 'catalog', 'inspect', 'allocation', 'catalog'])
+    // Selecting the observed target re-reads the observation, never the page: the settings
+    // table's rows come from the Host's own declaration — the process-scope object set, not a
+    // session's full declared face (capability-surface §8.9) — so the surface keeps stating the
+    // unnamed read (capability-surface §1: the row set is not the observation's).
+    const pageReads = capabilityRpcCalls.filter(call => call.endpoint === 'session-catalog')
+    expect(pageReads.map(call => call.payload.sessionId)).toEqual([undefined])
+    expect(capabilityRpcCalls.map(call => call.endpoint)).toContain('allocation')
     fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.reloadObservation'] }))
     await runtime.flush()
     expect(requests).toBe(2)
@@ -3356,7 +3367,7 @@ test('session plan observations follow plugin lifecycle independently of saved c
     await runtime.flush()
     expect(plans().closest('[data-experimental=true]')).not.toBeNull()
     expect(plans().textContent).toContain('frozen-3')
-    expect(view.getByLabelText('Disclosure for tools.probe').disabled).toBe(false)
+    expect(view.getByRole('combobox', { name: 'Saved · disclosure: tools.probe', exact: true }).disabled).toBe(false)
     settings.publish({ value: { ...value, enabled: false, capabilityManagementEnabled: true } })
     await runtime.flush()
     expect(plans()).toBeNull()
@@ -3372,44 +3383,44 @@ test('session plan observations follow plugin lifecycle independently of saved c
   } finally { view.unmount() }
 })
 
-test('capability controls preserve manual selections on catalog failure and repair unusable statistics without JSON entry', async () => {
-  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
-    capabilityBaseline: '["tools.saved"]', capabilityOverrides: '{"tools.saved":"full"}', capabilityStatistics: 'invalid' } }
-  const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return 'status.applied' })
-  const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
-    ActionButton: props => React.createElement('button', props), BindingsDialog: () => null, Select: createSelect(React), useWorkbenchController: () => null, icons: {},
-    inspectCapabilityPlans: async () => [], inspectCapabilityCatalog: async () => { throw new Error('Owner unavailable') },
-  })
-  const t = (key, params = {}) => (SETTINGS_COPY.en[key] ?? key)
-    .replace(/\{(\w+)\}/g, (token, name) => params[name] ?? token)
-  const view = render(React.createElement(PTCPlusSettingsCard, { t, view: 'page',
-    usePtcSettings: select => select(snapshot), updateSetting }))
-  await act(async () => {})
-  expect(view.container.textContent).toContain('Owner unavailable')
-  expect(view.container.textContent).toContain('Saved statistics are unusable')
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.saved' }))
-  expect(view.getByRole('combobox', { name: 'Disclosure for tools.saved' }).textContent).toContain('Full contract')
-  expect(updateSetting).not.toHaveBeenCalled()
-  fireEvent.click(view.getByRole('tab', { name: 'Usage statistics' }))
-  fireEvent.click(view.container.querySelector('input[aria-label="Usage statistics"]'))
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityStatistics).enabled).toBe(true)
-  expect(snapshot.value.capabilityOverrides).toBe('{"tools.saved":"full"}')
-  expect(view.container.textContent).not.toContain('Saved statistics are unusable')
-  view.unmount()
-})
-
-async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], overrides = {}, catalogReader, plansReader, targetsReader, configuration = {}, allocationReader, locale = 'en' } = {}) {
-  const snapshot = { status: 'ready', writable: true, value: { enabled: true, userBindingsEnabled: false,
+async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], overrides = {}, plansReader, targetsReader, configuration = {}, allocationReader, locale = 'en', writable = true } = {}) {
+  const snapshot = { status: 'ready', writable, value: { enabled: true, userBindingsEnabled: false,
     capabilityManagementEnabled: true, capabilityBaseline: JSON.stringify(baseline), capabilityOverrides: JSON.stringify(overrides), ...configuration } }
   const updateSetting = vi.fn(async (key, value) => { snapshot.value[key] = value; return 'status.applied' })
   const updateCapabilityConfiguration = vi.fn(async next => { Object.assign(snapshot.value, next); return 'status.applied' })
-  const inspectCapabilityCatalog = vi.fn(catalogReader ?? (async () => catalog))
   const inspectCapabilityPlans = vi.fn(plansReader ?? (async () => plans))
+  // The page states each row's address values from the catalogue, so the fixture derives them
+  // the way the Host does: the saved column states the entry this document wrote for the object
+  // and nothing a category, server or bottom layer would answer.
+  const inspectSessionCatalog = vi.fn(async (requested, signal) => {
+    signal?.throwIfAborted()
+    const policy = capabilityPolicyForConfig(snapshot.value)
+    return { schema: 'ptc-capability-session-catalog/v2', sessionId: requested,
+      rows: (catalog ?? []).map(entry => {
+        const kind = entry.kind ?? 'capability'
+        const rule = kind === 'server'
+          ? (Object.hasOwn(policy.mcpServers, entry.id.slice('mcpServers.'.length))
+            ? policy.mcpServers[entry.id.slice('mcpServers.'.length)] : {})
+          : (Object.hasOwn(policy.items, entry.id) ? policy.items[entry.id] : {})
+        return { id: entry.id, kind, name: entry.name ?? entry.id, category: entry.category,
+          source: entry.source ?? { kind: 'host' },
+          saved: kind === 'server'
+            ? { availability: rule.availability ?? 'automatic' }
+            : { availability: rule.availability ?? 'automatic', disclosure: rule.disclosure ?? 'automatic' },
+          session: { availability: 'inherit', disclosure: 'inherit' }, evidence: false }
+      }), config: { bindingsEnabled: false } }
+  })
+  const present = { getSnapshot: () => true, subscribe: () => () => {} }
+  const commands = { source: () => present, run: vi.fn(async () => ({ text: '' })) }
+  const CapabilitySurface = createCapabilitySurfaceView(React, {
+    commands,
+    bindingCommands: { source: () => present, run: async () => ({ text: '' }) },
+    Modal: createFallbackModal(React, createPortal), Select: createSelect(React), inspectSessionCatalog,
+  })
   const { PTCPlusSettingsCard } = createPtcSettingsView(React, {
     ActionButton: props => React.createElement('button', props), BindingsDialog: () => null,
-    Select: createSelect(React),
-    useWorkbenchController: () => null, icons: {}, inspectCapabilityCatalog, inspectCapabilityPlans,
+    Select: createSelect(React), CapabilitySurface, inspectSessionCatalog,
+    useWorkbenchController: () => null, icons: {}, inspectCapabilityPlans,
     inspectCapabilityAllocation: allocationReader, inspectCapabilityTargets: targetsReader ?? (allocationReader ? async () => plans.map(plan => ({ sessionId: plan.sessionId })) : undefined),
     CapabilityRefreshButton: allocationReader || targetsReader ? ({ onApplied, onInvalidated, enabled }) => React.createElement('button', {
       disabled: !enabled, onClick: () => { onInvalidated?.(); onApplied?.() },
@@ -3422,30 +3433,8 @@ async function capabilityWorkbenchFixture({ catalog, plans = [], baseline = [], 
   const view = render(element())
   cleanups.push(() => view.unmount())
   await act(async () => {})
-  const ids = () => [...view.container.querySelectorAll('.ptcPlusCapabilityIdentity code')].map(item => item.textContent)
-  return { view, ids, snapshot, updateSetting, updateCapabilityConfiguration, inspectCapabilityCatalog, inspectCapabilityPlans, rerender: () => view.rerender(element()) }
+  return { view, snapshot, updateSetting, updateCapabilityConfiguration, inspectCapabilityPlans, inspectSessionCatalog, commands, rerender: () => view.rerender(element()) }
 }
-
-test('capability filters reconcile source and type while advanced filters open only on request', async () => {
-  const { view, ids } = await capabilityWorkbenchFixture({ catalog: [
-    { id: 'tools.read', name: 'Read', category: 'tool', source: { kind: 'host' } },
-    { id: 'skills.research', name: 'Research', category: 'skill', source: { kind: 'skill', bucket: 'user-agents', provider: 'filesystem' } },
-    { id: 'tools.mcp__docs__search', name: 'Search', category: 'tool', source: { kind: 'mcp', server: 'docs' } },
-  ] })
-  expect(view.container.querySelector('.ptcPlusCapabilityTypes')).not.toBeNull()
-  expect(view.queryByRole('dialog', { name: 'Filter' })).toBeNull()
-  fireEvent.click(view.getByRole('button', { name: 'Filter', exact: true }))
-  expect(view.getByRole('dialog', { name: 'Filter' }).querySelector('.ptcPlusCapabilityFilterFields')).not.toBeNull()
-  const source = view.getByLabelText('Capability source')
-  await chooseCapabilityOption(view, 'Capability source', 'User skill (.agents) · filesystem')
-  expect(ids()).toEqual(['skills.research'])
-  await chooseCapabilityOption(view, 'Capability types', 'Tools')
-  expect(source.textContent).toContain('All sources')
-  expect(ids()).toEqual(['tools.read'])
-  await chooseCapabilityOption(view, 'Capability types', 'MCP')
-  expect(ids()).toEqual(['tools.mcp__docs__search'])
-  view.unmount()
-})
 
 test('capability usage and budget panes observe selected workspace evidence and discard obsolete projections', async () => {
   const stale = deferred()
@@ -3592,7 +3581,12 @@ test('switching a saved capability configuration uses one public settings mutati
   settings.mutate.mockImplementation(async operations => {
     await pending.promise
     const next = { ...settings.scope.getSnapshot().value }
-    for (const operation of operations) next[operation.path[0]] = operation.value
+    // The host's own mutate removes a field for `unset`; a plain assignment would leave an
+    // explicit `undefined` key the resolver never sees from the real service.
+    for (const operation of operations) {
+      if (operation.op === 'unset') delete next[operation.path[0]]
+      else next[operation.path[0]] = operation.value
+    }
     settings.publish({ value: next })
   })
   const view = runtime.renderRoot()
@@ -3604,7 +3598,14 @@ test('switching a saved capability configuration uses one public settings mutati
   const apply = view.getByRole('button', { name: 'Apply to saved settings' })
   fireEvent.click(apply)
   await runtime.flush()
-  expect(settings.mutate).toHaveBeenCalledExactlyOnceWith(CAPABILITY_CONFIGURATION_KEYS.map(key => ({ op: 'set', path: [key], value: configuration[key] })))
+  // Applying a configuration writes every field it carries, and a policy that the rest of the
+  // configuration would synthesize belongs to no record (capability-surface §8.1c): the write
+  // removes any policy an earlier apply left behind with the service's own unset op.
+  expect(settings.mutate).toHaveBeenCalledExactlyOnceWith([
+    ...CAPABILITY_CONFIGURATION_KEYS.filter(key => key !== 'capabilityPolicy')
+      .map(key => ({ op: 'set', path: [key], value: configuration[key] })),
+    { op: 'unset', path: ['capabilityPolicy'] },
+  ])
   expect(settings.set).not.toHaveBeenCalled()
   expect(apply.disabled).toBe(true)
   expect(settings.scope.getSnapshot().value.capabilityBudgetBytes).toBe(initial.capabilityBudgetBytes)
@@ -3615,15 +3616,86 @@ test('switching a saved capability configuration uses one public settings mutati
   settings.mutate.mockImplementation(async () => {})
   settings.publish({ value: initial })
   await runtime.flush()
-  fireEvent.click(apply)
+  // The surface re-renders on the publish, so the click targets the button it renders now.
+  fireEvent.click(view.getByRole('button', { name: 'Apply to saved settings' }))
   await runtime.flush()
-  expect(view.getByText('Capability configuration was not applied')).not.toBeNull()
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
+  expect(view.getByText('Capability configuration was not applied')).not.toBeNull()
   fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
   await runtime.flush()
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
   expect(settings.scope.getSnapshot().value.capabilityBudgetBytes).toBe(initial.capabilityBudgetBytes)
+})
+
+test('applying a configuration removes a policy the record still holds', async () => {
+  // A record that already saved a policy keeps it through a plain field write, so the apply must
+  // state its removal: the applied configuration's policy is the one the rest of it synthesizes,
+  // which belongs to no record (capability-surface §8.1c/§8.7).
+  const { capabilityProfileConfiguration } = await import('../internal/runtime-config.js')
+  const { CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
+  const configuration = capabilityProfileConfiguration({ capabilityBudgetBytes: 512 })
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items['tools.kept'] = { availability: 'closed' }
+  const { runtime, settings, value } = await fixture({ bindings: false })
+  settings.publish({ value: { ...value, capabilityPolicy: JSON.stringify(policy),
+    capabilityProfiles: JSON.stringify({ schema: 'ptc-capability-profiles/v1',
+      profiles: [{ id: 'saved', name: 'Saved', configuration }] }) } })
+  settings.mutate.mockImplementation(async operations => {
+    const next = { ...settings.scope.getSnapshot().value }
+    for (const operation of operations) {
+      if (operation.op === 'unset') delete next[operation.path[0]]
+      else next[operation.path[0]] = operation.value
+    }
+    settings.publish({ value: next })
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.plans'] }))
+  await chooseCapabilityOption(view, 'Saved configurations', 'Saved')
+  fireEvent.click(view.getByRole('button', { name: 'Apply to saved settings' }))
+  await runtime.flush()
+  expect(settings.scope.getSnapshot().value.capabilityPolicy).toBeUndefined()
+})
+
+test('applying a configuration whose policy its own fields would not synthesize writes that policy', async () => {
+  // §8.7's other direction: a policy that differs from what the same configuration would
+  // synthesize is a record somebody wrote, so the apply states it instead of removing it. This is
+  // the only case that executes the writer's `set` branch — an applied configuration whose policy
+  // is its own synthesis takes the `unset` branch — so a writer that always removed the policy
+  // would delete this record with every other case still green.
+  const { capabilityProfileConfiguration } = await import('../internal/runtime-config.js')
+  const { CAPABILITY_POLICY_DEFAULT } = await import('../internal/capability-policy.js')
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.categories = { tool: { disclosure: 'on-demand' } }
+  const configuration = capabilityProfileConfiguration({ capabilityPolicy: JSON.stringify(policy),
+    capabilityBudgetBytes: 512 })
+  const { runtime, settings, value } = await fixture({ bindings: false })
+  settings.publish({ value: { ...value, capabilityProfiles: JSON.stringify({ schema: 'ptc-capability-profiles/v1',
+    profiles: [{ id: 'saved', name: 'Saved', configuration }] }) } })
+  settings.mutate.mockImplementation(async operations => {
+    const next = { ...settings.scope.getSnapshot().value }
+    for (const operation of operations) {
+      if (operation.op === 'unset') delete next[operation.path[0]]
+      else next[operation.path[0]] = operation.value
+    }
+    settings.publish({ value: next })
+  })
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  fireEvent.click(view.getByRole('tab', { name: SETTINGS_COPY.en['capabilities.tab.plans'] }))
+  await chooseCapabilityOption(view, 'Saved configurations', 'Saved')
+  fireEvent.click(view.getByRole('button', { name: 'Apply to saved settings' }))
+  await runtime.flush()
+  expect(settings.mutate).toHaveBeenCalledOnce()
+  const operations = settings.mutate.mock.calls[0][0]
+  expect(operations.filter(operation => operation.path[0] === 'capabilityPolicy'))
+    .toEqual([{ op: 'set', path: ['capabilityPolicy'], value: configuration.capabilityPolicy }])
+  expect(settings.scope.getSnapshot().value.capabilityPolicy).toBe(configuration.capabilityPolicy)
 })
 
 test('capability configuration file import merges named settings and refuses malformed or stale reads', async () => {
@@ -3693,253 +3765,6 @@ test.each(['readonly', 'plugin'])('capability configuration import remains retir
   expect(updateSetting).not.toHaveBeenCalled()
   expect(JSON.parse(snapshot.value.capabilityProfiles ?? '{"profiles":[]}').profiles).toHaveLength(0)
   expect(view.getByRole('button', { name: 'Import' }).disabled).toBe(false)
-  view.unmount()
-})
-
-test('capability workbench combines type, source, manual strategy and common filters with stable sorting', async () => {
-  const { view, ids, updateSetting } = await capabilityWorkbenchFixture({ baseline: ['skills.zebra'], overrides: { 'skills.zebra': 'full', 'tools.absent': 'closed' },
-    catalog: [
-      { id: 'tools.beta', name: 'Beta', category: 'tool', source: { kind: 'host' } },
-      { id: 'skills.zebra', name: 'Zebra', category: 'skill', description: 'Generate images', source: { kind: 'skill', bucket: 'user-dsh', provider: 'filesystem' } },
-      { id: 'skills.alpha', name: 'Alpha', category: 'skill', source: { kind: 'skill', bucket: 'project-dsh', provider: 'filesystem' } },
-      { id: 'mcp.docs', name: 'Docs', category: 'resource', source: { kind: 'mcp', server: 'docs' } },
-      { id: 'tools.extension', name: 'Extension', category: 'tool', source: { kind: 'mcp', server: 'github' } },
-    ] })
-  expect(ids()).toEqual(['tools.beta', 'mcp.docs', 'tools.extension', 'skills.alpha', 'skills.zebra', 'tools.absent'])
-  expect(view.queryByText('Core execution environment')).toBeNull()
-  expect(view.queryByLabelText('Disclosure for run_code')).toBeNull()
-  await chooseCapabilityOption(view, 'Capability types', 'Skills')
-  expect(ids()).toEqual(['skills.alpha', 'skills.zebra'])
-  await chooseCapabilityOption(view, 'Capability source', 'User skill (.dsh) · filesystem')
-  await chooseCapabilityOption(view, 'Saved disclosure', 'Full contract')
-  fireEvent.click(view.getByLabelText('Common only'))
-  expect(ids()).toEqual(['skills.zebra'])
-  fireEvent.click(view.getAllByRole('button', { name: 'Clear filters' })[0])
-  await chooseCapabilityOption(view, 'Capability types', 'Skills')
-  const nameSort = within(view.getByRole('columnheader', { name: 'Capability' })).getByRole('button')
-  fireEvent.click(nameSort)
-  expect(ids()).toEqual(['skills.alpha', 'skills.zebra'])
-  fireEvent.click(nameSort)
-  expect(ids()).toEqual(['skills.zebra', 'skills.alpha'])
-  fireEvent.change(view.getByRole('searchbox'), { target: { value: 'generate images' } })
-  expect(ids()).toEqual(['skills.zebra'])
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.zebra' }))
-  expect(view.getByRole('dialog', { name: 'Zebra' }).textContent).toContain('body loads only when used')
-  expect(updateSetting).not.toHaveBeenCalled()
-  view.unmount()
-})
-
-test('capability sorting preserves default tie order, does not mutate entries and resets when columns change', () => {
-  const entries = [{ id: 'z', name: 'same' }, { id: 'a', name: 'SAME' }, { id: 'b', name: 'after' }]
-  const ascending = cycleCapabilitySort(null, 'name')
-  const descending = cycleCapabilitySort(ascending, 'name')
-  const value = entry => entry.name
-  expect(sortCapabilityEntries(entries, ascending, value).map(entry => entry.id)).toEqual(['b', 'z', 'a'])
-  expect(sortCapabilityEntries(entries, descending, value).map(entry => entry.id)).toEqual(['z', 'a', 'b'])
-  expect(cycleCapabilitySort(descending, 'name')).toBeNull()
-  expect(sortCapabilityEntries(entries, null, value)).toEqual(entries)
-  expect(sortCapabilityEntries(entries, null, value)).not.toBe(entries)
-  expect(entries.map(entry => entry.id)).toEqual(['z', 'a', 'b'])
-  expect(cycleCapabilitySort(descending, 'source')).toEqual({ column: 'source', direction: 'ascending' })
-})
-
-const sortableCapabilityCatalog = [
-  { id: 'tools.z', name: 'Zeta', category: 'tool', source: { kind: 'host' } },
-  { id: 'tools.a', name: 'Alpha', category: 'tool', source: { kind: 'host' } },
-  { id: 'mcp.z', name: 'Same', category: 'resource', mcpServer: 'Zeta', source: { kind: 'mcp', server: 'Zeta' } },
-  { id: 'mcp.a', name: 'Same', category: 'resource', mcpServer: 'Able', source: { kind: 'mcp', server: 'Able' } },
-  { id: 'skills.b', name: 'Beta', category: 'skill', source: { kind: 'skill', bucket: 'bundled', provider: 'shipped' } },
-]
-const sortableCapabilityPolicy = JSON.stringify({ ...JSON.parse(CAPABILITY_POLICY_DEFAULT),
-  mcpServers: { Zeta: { availability: 'closed' } }, items: {
-    'tools.z': { availability: 'closed', disclosure: 'full' },
-    'mcp.a': { disclosure: 'adaptive' }, 'mcp.z': { availability: 'enabled', disclosure: 'on-demand' },
-    'skills.b': { disclosure: 'on-demand' }, 'tools.missing': { disclosure: 'full' },
-  } })
-const sortableCapabilityDefaultIds = ['tools.a', 'tools.z', 'mcp.a', 'mcp.z', 'skills.b', 'tools.missing']
-
-test.each([
-  ['Capability', ['tools.a', 'skills.b', 'mcp.a', 'mcp.z', 'tools.missing', 'tools.z'], ['tools.z', 'tools.missing', 'mcp.a', 'mcp.z', 'skills.b', 'tools.a']],
-  ['Type', ['mcp.a', 'mcp.z', 'tools.missing', 'skills.b', 'tools.a', 'tools.z'], ['tools.a', 'tools.z', 'skills.b', 'tools.missing', 'mcp.a', 'mcp.z']],
-  ['Source', ['mcp.a', 'skills.b', 'tools.a', 'tools.z', 'tools.missing', 'mcp.z'], ['mcp.z', 'tools.a', 'tools.z', 'tools.missing', 'skills.b', 'mcp.a']],
-  ['Enabled', ['tools.z', 'tools.a', 'mcp.a', 'skills.b', 'tools.missing', 'mcp.z'], ['mcp.z', 'tools.a', 'mcp.a', 'skills.b', 'tools.missing', 'tools.z']],
-  ['Context', ['mcp.a', 'tools.z', 'tools.missing', 'tools.a', 'mcp.z', 'skills.b'], ['mcp.z', 'skills.b', 'tools.a', 'tools.z', 'tools.missing', 'mcp.a']],
-])('capability %s header cycles all visible rows through ascending descending and default', async (label, ascendingIds, descendingIds) => {
-  const { view, ids, updateSetting } = await capabilityWorkbenchFixture({ catalog: sortableCapabilityCatalog,
-    configuration: { capabilityPolicy: sortableCapabilityPolicy } })
-  expect(ids()).toEqual(sortableCapabilityDefaultIds)
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.z' }))
-  const header = view.getByRole('columnheader', { name: label })
-  const button = within(header).getByRole('button', { name: label })
-  expect(header.getAttribute('aria-sort')).toBe('none')
-  expect(button.tagName).toBe('BUTTON')
-  expect(button.type).toBe('button')
-  expect(button.tabIndex).toBe(0)
-  button.focus()
-  expect(document.activeElement).toBe(button)
-  for (const [direction, expectedIds] of [['ascending', ascendingIds], ['descending', descendingIds], ['none', sortableCapabilityDefaultIds]]) {
-    fireEvent.click(button)
-    expect(header.getAttribute('aria-sort')).toBe(direction)
-    expect(ids()).toEqual(expectedIds)
-    expect(view.container.querySelector('.ptcPlusCapabilityItem[data-selected=true] code').textContent).toBe('tools.z')
-    expect(view.getByRole('dialog', { name: 'Zeta' }).textContent).toContain('tools.z')
-    expect(view.getByRole('switch', { name: 'Availability for mcp.z' }).disabled).toBe(true)
-  }
-  expect(view.container.querySelectorAll('.ptcPlusCapabilityColumns [aria-sort=none]')).toHaveLength(5)
-  expect(updateSetting).not.toHaveBeenCalled()
-  view.unmount()
-})
-
-test('capability header sorting retains filters hidden selections and each row state after a failed catalog read', async () => {
-  let failCatalog = false
-  const { view, ids, updateSetting } = await capabilityWorkbenchFixture({
-    catalogReader: async () => { if (failCatalog) throw new Error('Disconnected sorting catalog'); return sortableCapabilityCatalog },
-    configuration: { capabilityPolicy: sortableCapabilityPolicy },
-  })
-  const header = label => view.getByRole('columnheader', { name: label })
-  const sort = label => fireEvent.click(within(header(label)).getByRole('button'))
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: mcp.a' }))
-  sort('Source')
-  await chooseCapabilityOption(view, 'Capability types', 'MCP')
-  expect(ids()).toEqual(['mcp.a', 'mcp.z'])
-  sort('Capability')
-  expect(header('Source').getAttribute('aria-sort')).toBe('none')
-  sort('Capability')
-  expect(ids()).toEqual(['mcp.a', 'mcp.z'])
-  fireEvent.change(view.getByRole('searchbox'), { target: { value: 'Zeta' } })
-  expect(ids()).toEqual(['mcp.z'])
-  expect(view.queryByRole('dialog')).toBeNull()
-  fireEvent.click(view.getAllByRole('button', { name: 'Clear filters' })[0])
-  expect(view.container.querySelector('.ptcPlusCapabilityItem[data-selected=true] code').textContent).toBe('mcp.a')
-  failCatalog = true
-  fireEvent.click(view.getByRole('button', { name: 'Reload catalog' }))
-  await act(async () => {})
-  expect(view.container.textContent).toContain('Disconnected sorting catalog')
-  sort('Enabled')
-  // Sorting compares the state each row states for itself: the explicitly closed rule
-  // first, then the enabled rows in default order, then the row its MCP source closes.
-  expect(ids()).toEqual(['tools.z', 'tools.a', 'mcp.a', 'skills.b', 'tools.missing', 'mcp.z'])
-  const states = [...view.container.querySelectorAll('.ptcPlusCapabilityAvailability')].map(row => row.dataset.state)
-  expect(states).not.toContain('unknown')
-  expect(states).not.toContain('unavailable')
-  expect(states).toContain('closed')
-  expect(states).toContain('source-closed')
-  expect(updateSetting).not.toHaveBeenCalled()
-  view.unmount()
-})
-
-test('capability workbench separates saved preferences from each selected frozen session and restores only the override', async () => {
-  const plan = (sessionId, selection, pendingRefresh) => ({ sessionId, pendingRefresh,
-    effective: { budgets: { contractBytes: 100, overageBytes: 0 }, entries: [{ id: 'skills.images', category: 'skill', selection, reason: 'manual-override' }] } })
-  const { view, snapshot, updateSetting } = await capabilityWorkbenchFixture({
-    catalog: [{ id: 'skills.images', name: 'Images', category: 'skill', description: 'A complete routing description', source: { kind: 'skill', bucket: 'bundled', provider: 'shipped' } }],
-    baseline: ['skills.images'], overrides: { 'skills.images': 'full' },
-    plans: [plan('older', 'on-demand', true), plan('newer', 'closed', false)],
-  })
-  expect(view.queryByRole('dialog')).toBeNull()
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.images' }))
-  const details = view.getByRole('dialog', { name: 'Images' })
-  expect(details.textContent).toContain('Full contract')
-  expect(view.getByLabelText('Inspect session').textContent).toContain('Choose a target session')
-  await chooseCapabilityOption(view, 'Inspect session', 'older')
-  expect(details.textContent).toContain('On demand')
-  expect(details.textContent).toContain('Saved settings await refresh')
-  await chooseCapabilityOption(view, 'Inspect session', 'newer')
-  expect(details.textContent).toContain('Closed')
-  expect(details.textContent).not.toContain('Saved settings await refresh')
-  expect(view.getByLabelText('Disclosure for skills.images').textContent).toContain('Full contract')
-  fireEvent.click(view.getByRole('button', { name: 'Restore automatic' }))
-  await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items).toEqual({})
-  expect(JSON.parse(snapshot.value.capabilityBaseline)).toEqual(['skills.images'])
-  expect(updateSetting).toHaveBeenCalledTimes(1)
-  expect(view.getByLabelText('Inspect session').textContent).toContain('newer')
-  fireEvent.click(view.getByRole('tab', { name: 'Usage statistics' }))
-  expect(view.getByRole('switch', { name: 'Usage statistics' })).not.toBeNull()
-  fireEvent.keyDown(view.getByRole('tab', { name: 'Usage statistics' }), { key: 'ArrowLeft' })
-  expect(view.getByRole('tab', { name: 'Prompt settings', exact: true }).getAttribute('aria-selected')).toBe('true')
-  expect(view.getByRole('tab', { name: 'Prompt settings' })).toBe(document.activeElement)
-  view.unmount()
-})
-
-test('Skill preferences explain user-only loading without hiding the configurable entry', async () => {
-  const { view, updateSetting } = await capabilityWorkbenchFixture({
-    catalog: [{ id: 'skills.images', name: 'images', category: 'skill', description: 'Image design',
-      invocation: { modelInvocable: false, userInvocable: true }, source: { kind: 'skill', bucket: 'bundled', provider: 'shipped' } }],
-    overrides: { 'skills.images': 'full' },
-  })
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: skills.images' }))
-  expect(view.getByRole('dialog', { name: 'images' }).textContent).toContain('Only users can invoke /images')
-  expect(view.getByRole('dialog', { name: 'images' }).textContent).toContain('model cannot load it with tools.skill')
-  expect(view.getByLabelText('Disclosure for skills.images').textContent).toContain('Full contract')
-  expect(updateSetting).not.toHaveBeenCalled()
-  view.unmount()
-})
-
-test('capability workbench retains last observed descriptions on catalog failure and permits saved preferences of an undeclared identity to be removed', async () => {
-  let fails = false
-  const { view, ids, snapshot, updateSetting } = await capabilityWorkbenchFixture({ baseline: ['tools.absent'], overrides: { 'tools.absent': 'full' },
-    catalogReader: async () => { if (fails) throw new Error('Disconnected catalog'); return [{ id: 'tools.live', name: 'Live', category: 'tool', description: 'Retained owner description' }] },
-  })
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.absent' }))
-  fireEvent.click(view.getByRole('button', { name: 'Remove saved preferences' }))
-  await act(async () => {})
-  expect(snapshot.value.capabilityBaseline).toBe('[]')
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items).toEqual({})
-  expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityPolicy', 'capabilityBaseline'])
-  fails = true
-  fireEvent.click(view.getByRole('button', { name: 'Reload catalog' }))
-  await act(async () => {})
-  expect(view.container.textContent).toContain('Disconnected catalog')
-  expect(ids()).toEqual(['tools.live'])
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.live' }))
-  expect(view.getByText('Capability description')).not.toBeNull()
-  expect(view.getByText('Retained owner description')).not.toBeNull()
-  view.unmount()
-})
-
-test('capability rows select their own item from any cell while the availability switch keeps its own meaning', async () => {
-  const { view, snapshot, updateSetting } = await capabilityWorkbenchFixture({ catalog: [
-    { id: 'tools.row', name: 'Row', category: 'tool', description: 'Row description', source: { kind: 'host' } },
-  ] })
-  try {
-    const row = view.container.querySelector('.ptcPlusCapabilityItem')
-    for (const selector of ['.ptcPlusCapabilityIdentity', '.ptcPlusCapabilityBadge', '.ptcPlusCapabilitySource',
-      '.ptcPlusCapabilityAvailability', '.ptcPlusCapabilityContextCell']) {
-      const cell = row.querySelector(selector)
-      expect(cell).not.toBeNull()
-      fireEvent.click(cell)
-      expect(view.getByRole('dialog', { name: 'Row' })).not.toBeNull()
-      fireEvent.click(view.getByRole('button', { name: 'Close details' }))
-      expect(view.queryByRole('dialog')).toBeNull()
-    }
-    fireEvent.click(row.querySelector('.ptcPlusCapabilityAvailability label'))
-    await act(async () => {})
-    expect(view.queryByRole('dialog')).toBeNull()
-    expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.row']).toEqual({ availability: 'closed' })
-    fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.row' }))
-    await act(async () => {})
-    expect(view.queryByRole('dialog')).toBeNull()
-    expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.row']).toEqual({ availability: 'enabled' })
-    expect(updateSetting.mock.calls.every(([key]) => key === 'capabilityPolicy')).toBe(true)
-  } finally { view.unmount() }
-})
-
-test('capability workbench keeps browsing available while write controls follow read-only and plugin disable', async () => {
-  const { view, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.one', category: 'tool' }] })
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.one' }))
-  snapshot.writable = false
-  rerender()
-  expect(view.getByLabelText('Disclosure for tools.one').disabled).toBe(true)
-  expect(view.getByLabelText('Include tools.one in common baseline').disabled).toBe(true)
-  expect(view.container.querySelector('.ptcPlusCapabilityChoices [type=search]').disabled).toBe(false)
-  snapshot.writable = true
-  snapshot.value.enabled = false
-  rerender()
-  await act(async () => {})
-  expect(view.queryByLabelText('Inspect session')).toBeNull()
-  expect(view.getByRole('switch', { name: 'Enable PTC Plus' }).disabled).toBe(false)
-  expect(updateSetting).not.toHaveBeenCalled()
   view.unmount()
 })
 
@@ -5216,7 +5041,6 @@ test('missing dock retains compact requests and read-only history without a phan
   expect(view.queryByRole('button', { name: 'Save and enable' })).toBeNull()
   expect(rpcCalls.every(call => call.endpoint === 'list')).toBe(true)
 })
-
 
 test('Client Remote owns cancellation, unwraps Gateway failures and revokes calls on disposal', async () => {
   const ctx = new Context()
@@ -7112,7 +6936,6 @@ test.each(['native', 'fallback'].flatMap(kind => ['unchanged', 'clone', 'collaps
   } else expect(document.activeElement === panel && panel !== null).toBe(false)
 })
 
-
 test.each(['native', 'fallback'].flatMap(kind => [false, true].map(resizeHidden => [kind, resizeHidden])))('unfittable %s preview preserves manual enlarged access and return focus after hidden resize=%s', async (kind, resizeHidden) => {
   let top = resizeHidden ? 500 : 40
   let nextFrameId = 0
@@ -7164,7 +6987,6 @@ test.each(['native', 'fallback'].flatMap(kind => [false, true].map(resizeHidden 
   expect(layer().hasAttribute('inert')).toBe(false)
   expect(view.queryByRole('dialog')).toBeNull()
 })
-
 
 test.each(['configForms', 'settingsScope'])('tool hover setting applies live through %s without losing expansion', async settingsTransport => {
   vi.useFakeTimers()
@@ -7384,150 +7206,21 @@ test('tool hover cancels pending dwell on Escape and releases scroll observers o
   expect(remove.mock.calls.some(([name, , capture]) => name === 'scroll' && capture === true)).toBe(true)
 })
 
-
-test('MCP source rules preserve independent child preferences and direct source-disabled switches', async () => {
-  const { view, ids, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({
-    overrides: { 'tools.mcp__docs__search': 'full', 'tools.mcp__docs__edit': 'closed' },
-    catalog: [
-      { id: 'tools.read', category: 'tool', source: { kind: 'host' } },
-      { id: 'tools.mcp__docs__search', category: 'tool', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } },
-      { id: 'tools.mcp__docs__edit', category: 'tool', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } },
-      { id: 'mcp.docs', category: 'resource', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } },
-    ],
-  })
-  await chooseCapabilityOption(view, 'Capability types', 'MCP')
-  expect(ids()).not.toContain('tools.read')
-  expect(ids()).toContain('tools.mcp__docs__search')
-  fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
-  fireEvent.click(view.getByText('Source rules', { selector: 'summary' }))
-  await chooseCapabilityOption(view, 'docs · Availability', 'Closed')
-  rerender(); await act(async () => {})
-  const policy = JSON.parse(snapshot.value.capabilityPolicy)
-  expect(policy.mcpServers.docs).toEqual({ availability: 'closed' })
-  expect(policy.items['tools.mcp__docs__search']).toEqual({ disclosure: 'full' })
-  expect(policy.items['tools.mcp__docs__edit']).toEqual({ availability: 'closed' })
-  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(true)
-  expect(view.container.querySelector('[data-state=source-closed]').textContent).toContain('Source disabled')
-  fireEvent.click(view.getByRole('switch', { name: SETTINGS_COPY.en['capabilities.management'], exact: true }))
-  rerender(); await act(async () => {})
-  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
-  expect(view.container.querySelector('[data-state=unapplied]').textContent).toContain('Not applied')
-  expect(JSON.parse(snapshot.value.capabilityPolicy)).toEqual(policy)
-  fireEvent.click(view.getByRole('switch', { name: SETTINGS_COPY.en['capabilities.management'], exact: true }))
-  rerender(); await act(async () => {})
-  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(true)
-  snapshot.value = { ...snapshot.value, capabilityContextEnabled: false }
-  rerender(); await act(async () => {})
-  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
-  expect(view.container.querySelector('[data-state=unapplied]').textContent).toContain('Not applied')
-  expect(JSON.parse(snapshot.value.capabilityPolicy)).toEqual(policy)
-  snapshot.value = { ...snapshot.value, capabilityContextEnabled: true }
-  rerender(); await act(async () => {})
-  await chooseCapabilityOption(view, 'docs · Availability', 'Not set here')
-  rerender(); await act(async () => {})
-  expect(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }).disabled).toBe(false)
-  fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }))
-  rerender(); await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.mcp__docs__search']).toEqual({ availability: 'closed', disclosure: 'full' })
-  fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.mcp__docs__search' }))
-  rerender(); await act(async () => {})
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.mcp__docs__search']).toEqual({ availability: 'enabled', disclosure: 'full' })
-  expect(updateSetting.mock.calls.every(([key]) => ['capabilityPolicy', 'capabilityManagementEnabled'].includes(key))).toBe(true)
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.mcp__docs__search' }))
-  snapshot.writable = false; rerender()
-  const editor = view.getByRole('dialog', { name: 'tools.mcp__docs__search' })
-  for (const dimension of ['Availability', 'Disclosure']) {
-    expect(within(editor).getByRole('combobox', { name: `docs · ${dimension}` }).disabled).toBe(true)
-  }
-  view.unmount()
-})
-
-test.each([false, true])('MCP saved source rules remain editable without claiming catalog facts when failure is %s', async failed => {
-  const { view, snapshot, ids } = await capabilityWorkbenchFixture({
-    overrides: { 'mcpServers.docs': 'closed', 'mcpServers.missing': 'closed', 'tools.saved': 'full' },
-    catalogReader: async () => {
-      if (failed) throw new Error('Catalog unavailable')
-      return [{ id: 'tools.saved', category: 'tool', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } }]
-    },
-  })
-  fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
-  fireEvent.click(view.getByText('Source rules', { selector: 'summary' }))
-  expect(view.getByRole('combobox', { name: 'missing · Availability' }).textContent).toContain('Closed')
-  await chooseCapabilityOption(view, 'missing · Availability', 'Not set here')
-  expect(JSON.parse(snapshot.value.capabilityPolicy).mcpServers).toEqual({ docs: { availability: 'closed' } })
-  expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.saved']).toEqual({ disclosure: 'full' })
-  expect(ids()).toEqual(['tools.saved'])
-  view.unmount()
-})
-
-test('MCP catalog failure keeps retained source members listed with their type without inventing source identity', async () => {
-  let fails = false
-  const { view, ids } = await capabilityWorkbenchFixture({ overrides: { 'mcpServers.missing': 'closed' },
-    catalogReader: async () => {
-      if (fails) throw new Error('Disconnected MCP catalog')
-      return [{ id: 'tools.mcp__docs__search', category: 'tool', source: { kind: 'host' } }]
-    },
-  })
-  await chooseCapabilityOption(view, 'Capability types', 'MCP')
-  expect(ids()).toEqual([])
-  await chooseCapabilityOption(view, 'Capability types', 'Tools')
-  fails = true
-  fireEvent.click(view.getByRole('button', { name: 'Reload catalog' }))
-  await act(async () => {})
-  // A failed read is reported as the read failure it is; the row keeps its own type
-  // and its own rule instead of taking a state named after the failure.
-  expect(view.container.textContent).toContain('Disconnected MCP catalog')
-  expect(ids()).toEqual(['tools.mcp__docs__search'])
-  expect(view.container.querySelector('.ptcPlusCapabilityBadge').textContent).toBe('Tools')
-  expect(view.queryByLabelText('Availability')).toBeNull()
-  view.unmount()
-})
-
-test('composed category controls match integrated inventory and retain legacy category rules in both locales', async () => {
-  for (const locale of ['zh', 'en']) {
-    const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
-    policy.categories = {
-      'resource-template': { availability: 'closed', disclosure: 'on-demand' },
-      task: { availability: 'enabled', disclosure: 'full' },
-      skill: { disclosure: 'full' },
-    }
-    const { view, snapshot, rerender } = await capabilityWorkbenchFixture({ catalog: [], locale,
-      configuration: { capabilityPolicy: JSON.stringify(policy) } })
-    const copy = SETTINGS_COPY[locale]
-    fireEvent.click(view.getByRole('button', { name: copy['capabilities.inheritedRules'] }))
-    const categories = view.getByText(copy['capabilities.policy.categories'], { selector: 'summary' }).parentElement
-    fireEvent.click(categories.querySelector('summary'))
-    expect([...categories.querySelectorAll('strong')].map(item => item.textContent)).toEqual(
-      locale === 'zh' ? ['Tools', 'Skills', 'MCP 资源与模板'] : ['Tools', 'Skills', 'MCP resources and templates'])
-    expect(categories.querySelectorAll('[role="combobox"]').length).toBe(6)
-    await chooseCapabilityOption(view, `${copy['capabilities.policy.category.resource']} · ${copy['capabilities.policy.availability']}`,
-      copy['capabilities.closed'])
-    rerender(); await act(async () => {})
-    fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.budgets'] }))
-    expect(view.getByRole('region', { name: copy['capabilities.allocationTitle'] }).tagName).toBe('SECTION')
-    fireEvent.click(view.getByRole('switch', { name: copy['capabilities.policy.allocate.statistics'] }))
-    await act(async () => {})
-    const saved = JSON.parse(snapshot.value.capabilityPolicy)
-    expect(saved.categories).toEqual({ ...policy.categories, resource: { availability: 'closed' } })
-    expect(saved.defaults).toEqual(policy.defaults)
-    expect(saved.allocation.statistics).toBe(true)
-    view.unmount()
-  }
-})
-
 test('composed capability settings independently edit availability disclosure allocation recovery and preview', async () => {
   const { view, snapshot, rerender, updateSetting } = await capabilityWorkbenchFixture({
     catalog: [{ id: 'tools.probe', name: 'Probe', category: 'tool', source: { kind: 'host' } }],
     configuration: { capabilityPolicy: CAPABILITY_POLICY_DEFAULT, capabilityRecoveryEnabled: false, modelPreviewEnabled: false },
   })
-  fireEvent.click(view.getByRole('button', { name: 'Edit context settings: tools.probe' }))
-  expect(view.getByLabelText('Disclosure for tools.probe').textContent).toContain('Not set here')
-  await chooseCapabilityOption(view, 'Disclosure for tools.probe', 'Full contract')
+  // The page's saved cells state the object's own written entry: this row has none, so both
+  // dimensions read automatic and the control writes the object's own rule.
+  const savedDisclosure = () => view.getByRole('combobox', { name: 'Saved · disclosure: tools.probe' })
+  expect(savedDisclosure().textContent).toContain('Automatic')
+  await chooseCapabilityOption(view, 'Saved · disclosure: tools.probe', 'both·full·turn1')
   rerender(); await act(async () => {})
-  await chooseCapabilityOption(view, 'Availability for tools.probe', 'Closed')
+  await chooseCapabilityOption(view, 'Saved · on: tools.probe', 'Off')
   rerender(); await act(async () => {})
   expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.probe']).toEqual({ availability: 'closed', disclosure: 'full' })
-  await chooseCapabilityOption(view, 'Availability for tools.probe', 'Enabled')
+  await chooseCapabilityOption(view, 'Saved · on: tools.probe', 'On')
   rerender(); await act(async () => {})
   expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.probe']).toEqual({ availability: 'enabled', disclosure: 'full' })
   fireEvent.click(view.getByRole('tab', { name: 'Prompt settings', exact: true }))
@@ -7559,10 +7252,13 @@ test('capability task navigation keeps fixed context features and their independ
       capabilityRecoveryBytes: 7654, modelPreviewTokens: 4321 },
     catalog: [{ id: 'tools.ask_user_question', name: 'ask_user_question', category: 'tool', description: 'A provider description', source: { kind: 'host' } }],
   })
-  const row = view.container.querySelector('.ptcPlusCapabilityItem')
+  const row = view.container.querySelector('[data-capability-id="tools.ask_user_question"]')
   expect(row.querySelector('code').textContent).toBe('tools.ask_user_question')
   expect(row.textContent).not.toContain('A provider description')
-  expect(row.querySelector('[data-state=unapplied]').textContent).toBe('Not applied')
+  // A configuration that saved no policy wrote no value for this dimension, so the saved
+  // cell says so instead of borrowing a synthesized default from a switch.
+  expect(row.querySelector('.ptcPlusSessionCapabilitySaved').textContent).toBe('Automatic')
+  expect(view.container.textContent).not.toContain('Not applied')
   expect(view.queryByRole('dialog')).toBeNull()
   fireEvent.click(view.getByRole('tab', { name: 'Prompt settings', exact: true }))
   const navigation = view.container.querySelector('.ptcPlusContextNavigation')
@@ -7615,21 +7311,23 @@ test.each(['zh', 'en'])('context feature status follows independent saved settin
 })
 
 test('capability save feedback reflects its own pending or conflicting writes', async () => {
-  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.probe', category: 'tool' }] })
+  const { view, updateSetting, updateCapabilityConfiguration } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.probe', category: 'tool' }] })
   updateSetting.mockResolvedValue('status.conflict')
   fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
   await act(async () => {})
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Saved · used by new sessions')
+  // The saved cell writes through the settings writer, so its pending and conflicting
+  // answers are what the workbench's own save state reports.
   const pending = deferred()
   updateSetting.mockImplementationOnce(() => pending.promise)
-  fireEvent.click(view.getByRole('switch', { name: 'Availability for tools.probe' }))
+  await chooseCapabilityOption(view, 'Saved · on: tools.probe', 'Off')
   await act(async () => {})
   expect(feedback()).toBe(SETTINGS_COPY.en['state.syncing'])
-  await act(async () => pending.resolve('status.conflict'))
-  expect(feedback()).toBe(SETTINGS_COPY.en['status.conflict'])
-  updateSetting.mockResolvedValue('status.applied')
-  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
+  await act(async () => pending.resolve('status.applied'))
+  expect(feedback()).toBe('Saved · used by new sessions')
+  updateSetting.mockResolvedValue('status.conflict')
+  await chooseCapabilityOption(view, 'Saved · disclosure: tools.probe', SETTINGS_COPY.en['capabilities.word.full'])
   await act(async () => {})
   expect(feedback()).toBe(SETTINGS_COPY.en['status.conflict'])
   view.unmount()
@@ -7644,7 +7342,7 @@ test('a global capability switch in the response changes no row, cell or control
   const shape = view => ({
     rows: [...view.baseElement.querySelectorAll('[data-capability-id]')].map(row => row.dataset.capabilityId),
     decisions: [...view.baseElement.querySelectorAll('[data-capability-id]')].map(row => row.querySelectorAll(
-      '[aria-label^="Availability for "], [aria-label^="Disclosure for "], .ptcPlusBindingToggle').length),
+      '[aria-label^="This session · on: "], [aria-label^="This session · disclosure: "], .ptcPlusBindingToggle').length),
     text: view.baseElement.querySelector('.ptcPlusSessionCapabilityList').textContent,
   })
   const enabled = await sessionControlsFixture({ read: async () => sessionCatalog(rows()) })
@@ -7657,32 +7355,39 @@ test('a global capability switch in the response changes no row, cell or control
   expect(enabledShape.decisions).toEqual([2, 1])
 })
 
-test('composed rules retain source disclosure on availability inheritance and filter saved dimensions independently', async () => {
+test('composed rules retain source disclosure on availability inheritance and the saved cells state each row\'s own entry', async () => {
   const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
   policy.defaults.availability = 'closed'
   policy.mcpServers.docs = { availability: 'enabled', disclosure: 'full' }
   policy.items = { 'tools.host': { availability: 'closed', disclosure: 'host' }, 'tools.adaptive': { disclosure: 'adaptive' } }
-  const { view, ids, snapshot, rerender } = await capabilityWorkbenchFixture({ configuration: { capabilityPolicy: JSON.stringify(policy) }, catalog: [
+  const { view, snapshot, rerender } = await capabilityWorkbenchFixture({ configuration: { capabilityPolicy: JSON.stringify(policy) }, catalog: [
     { id: 'tools.host', category: 'tool', source: { kind: 'host' } },
     { id: 'tools.adaptive', category: 'tool', source: { kind: 'host' } },
     { id: 'tools.docs', category: 'tool', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } },
   ] })
   fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
   fireEvent.click(view.getByText('Source rules', { selector: 'summary' }))
-  await chooseCapabilityOption(view, 'docs · Availability', 'Not set here')
+  // A rule layer left unstated names the layer above it rather than a missing value.
+  await chooseCapabilityOption(view, 'docs · Availability', SETTINGS_COPY.en['capabilities.policy.layerAbove'])
   rerender(); await act(async () => {})
   expect(JSON.parse(snapshot.value.capabilityPolicy).mcpServers.docs).toEqual({ disclosure: 'full' })
-  await chooseCapabilityOption(view, 'Saved disclosure', 'Host defaults')
-  expect(ids()).toEqual(['tools.host'])
-  await chooseCapabilityOption(view, 'Saved availability', 'Closed')
-  expect(ids()).toEqual(['tools.host'])
-  await chooseCapabilityOption(view, 'Saved disclosure', 'Allocate from evidence')
-  expect(ids()).toEqual([])
-  await chooseCapabilityOption(view, 'Saved availability', 'All strategies')
-  expect(ids()).toEqual(['tools.adaptive'])
+  // The page states each row's own written entry: these two rows have none for the dimensions
+  // shown, so the saved cells read `Automatic` even though a default or server rule answers them
+  // at runtime (capability-surface §8.1c).
+  const savedOf = id => ({
+    availability: view.container.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilitySaved`).textContent,
+    disclosure: view.container.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilitySavedDisclosure`).textContent,
+  })
+  expect(savedOf('tools.docs')).toEqual({
+    availability: SETTINGS_COPY.en['capabilities.word.automatic'],
+    disclosure: SETTINGS_COPY.en['capabilities.word.automatic'],
+  })
+  expect(savedOf('tools.adaptive')).toEqual({
+    availability: SETTINGS_COPY.en['capabilities.word.automatic'],
+    disclosure: SETTINGS_COPY.en['capabilities.word.adaptive'],
+  })
   view.unmount()
 })
-
 
 test.each(['zh', 'en'])('capability context master switch retains child choices and distinguishes paused state in %s', async locale => {
   const copy = SETTINGS_COPY[locale]
@@ -7707,7 +7412,6 @@ test.each(['zh', 'en'])('capability context master switch retains child choices 
   expect(snapshot.value.capabilityRecoveryEnabled).toBe(false)
   view.unmount()
 })
-
 
 test.each(['zh', 'en'])('combination summary navigates independent choices and retains them through pause in %s', async locale => {
   const copy = SETTINGS_COPY[locale]
@@ -7902,152 +7606,16 @@ test('combination conditions keep collection separate from adaptive allocation a
     expect(view.getByRole('region', { name: 'Allocation criteria' }).tagName).toBe('SECTION')
     expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.allocationRetained'])).toBeTruthy()
     expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.historicalStatistics'])).toBeTruthy()
-    await chooseCapabilityOption(view, 'Default disclosure', SETTINGS_COPY.en['capabilities.adaptive'])
+    await chooseCapabilityOption(view, 'Default disclosure', SETTINGS_COPY.en['capabilities.word.adaptive'])
     rerender(); await act(async () => {})
     expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.allocationActive'])).toBeTruthy()
     expect(snapshot.value.capabilityStatistics).toBeUndefined()
-    await chooseCapabilityOption(view, 'Default disclosure', 'Full contract')
+    await chooseCapabilityOption(view, 'Default disclosure', SETTINGS_COPY.en['capabilities.word.full'])
     rerender(); await act(async () => {})
     expect(view.getByText(SETTINGS_COPY.en['capabilities.effect.disclosure.full'])).toBeTruthy()
     expect(JSON.parse(snapshot.value.capabilityPolicy).allocation.statistics).toBe(true)
   } finally { view.unmount() }
 })
-
-
-test.each(['zh', 'en'])('capability batch dialog edits the explicit selection once and preserves other dimensions in %s', async locale => {
-  const copy = SETTINGS_COPY[locale]
-  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
-  policy.categories = { tool: { disclosure: 'on-demand' } }
-  policy.mcpServers = { docs: { availability: 'closed', disclosure: 'full' } }
-  policy.items = { 'tools.targetOne': { availability: 'closed', disclosure: 'on-demand' },
-    'tools.targetTwo': { disclosure: 'host' }, 'tools.targetMissing': { disclosure: 'full' }, 'tools.other': { availability: 'enabled' } }
-  const { view, snapshot, updateSetting, rerender } = await capabilityWorkbenchFixture({ locale,
-    configuration: { capabilityPolicy: JSON.stringify(policy), capabilityContextEnabled: false },
-    catalog: [{ id: 'tools.targetOne', name: 'Target one', category: 'tool' },
-      { id: 'tools.targetTwo', name: 'Target two', category: 'tool' }, { id: 'tools.other', name: 'Other', category: 'tool' }] })
-  try {
-    fireEvent.change(view.getByRole('searchbox', { name: copy['capabilities.search'] }), { target: { value: 'target' } })
-    // Targets come from the explicit selection, not from the active filter.
-    fireEvent.click(view.getByLabelText(copy['capabilities.selectAllVisible']))
-    expect(view.getByRole('button', { name: copy['capabilities.batchSettings'] }).textContent).toContain('3')
-    fireEvent.click(view.getByRole('button', { name: copy['capabilities.batchSettings'] }))
-    const dialog = view.getByRole('dialog', { name: copy['capabilities.batchSettings'] })
-    expect(dialog.textContent).toContain(copy['capabilities.batch.targets'].replace('{count}', '3'))
-    // A target the last complete catalog read did not declare is reported as a changed
-    // target; the selection is never silently reduced to the rows the read declares.
-    expect(dialog.textContent).toContain(copy['capabilities.batch.changedTargets'].replace('{count}', '1'))
-    expect(dialog.querySelectorAll('.ptcPlusCapabilityBatchTargets li')).toHaveLength(3)
-    await chooseCapabilityOption(view, copy['capabilities.batch.availability'], copy['capabilities.action.close'])
-    expect(dialog.querySelector('.ptcPlusCapabilityBatchFooter button[data-kind=primary]').disabled).toBe(true)
-    expect(updateSetting).not.toHaveBeenCalled()
-    fireEvent.click(dialog.querySelector('.ptcPlusCapabilityBatchFooter button'))
-    expect(view.queryByRole('dialog', { name: copy['capabilities.batchSettings'] })).toBeNull()
-    expect(snapshot.value.capabilityPolicy).toBe(JSON.stringify(policy))
-    // With the undeclared identity removed from the selection the same choice writes once.
-    fireEvent.click(view.getByLabelText(copy['capabilities.selectForBatch'].replace('{name}', 'tools.targetMissing')))
-    fireEvent.click(view.getByRole('button', { name: copy['capabilities.batchSettings'] }))
-    expect(view.getByLabelText(copy['capabilities.batch.availability']).textContent).toContain(copy['capabilities.batch.keep'])
-    await chooseCapabilityOption(view, copy['capabilities.batch.disclosure'], copy['capabilities.full'])
-    const latest = structuredClone(policy)
-    latest.items['tools.other'].disclosure = 'adaptive'
-    snapshot.value.capabilityPolicy = JSON.stringify(latest)
-    rerender(); await act(async () => {})
-    fireEvent.change(view.getByRole('searchbox', { name: copy['capabilities.search'] }), { target: { value: 'other' } })
-    fireEvent.click(view.getByRole('button', { name: copy['capabilities.batch.confirm'].replace('{count}', '2') }))
-    await act(async () => {})
-    expect(updateSetting).toHaveBeenCalledTimes(1)
-    const saved = JSON.parse(snapshot.value.capabilityPolicy)
-    expect(saved).toEqual({ ...latest, items: { ...latest.items,
-      'tools.targetOne': { availability: 'closed', disclosure: 'full' }, 'tools.targetTwo': { disclosure: 'full' } } })
-    expect(snapshot.value.capabilityContextEnabled).toBe(false)
-    expect(view.queryByRole('dialog', { name: copy['capabilities.batchSettings'] })).toBeNull()
-    fireEvent.click(view.getByRole('button', { name: copy['capabilities.inheritedRules'] }))
-    expect(view.getByRole('dialog', { name: copy['capabilities.inheritedRules'] }).textContent)
-      .toContain(copy['capabilities.inheritedRulesHelp'])
-    expect(updateSetting).toHaveBeenCalledTimes(1)
-  } finally { view.unmount() }
-})
-
-test('capability batch dialog preserves failed choices for retry and prevents duplicate pending saves', async () => {
-  const copy = SETTINGS_COPY.en
-  const { view, snapshot, updateSetting } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.one', category: 'tool' }] })
-  try {
-    const failure = deferred()
-    updateSetting.mockImplementationOnce(() => failure.promise)
-    fireEvent.click(view.getByLabelText('Select tools.one'))
-    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
-    await chooseCapabilityOption(view, 'Batch disclosure', 'Full contract')
-    const confirm = view.getByRole('button', { name: 'Confirm 1 changes' })
-    fireEvent.click(confirm)
-    fireEvent.click(confirm)
-    await act(async () => {})
-    expect(updateSetting).toHaveBeenCalledTimes(1)
-    expect(view.getByLabelText('Batch disclosure').disabled).toBe(true)
-    fireEvent.keyDown(document, { key: 'Escape' })
-    expect(view.getByRole('dialog', { name: 'Batch settings' })).not.toBeNull()
-    await act(async () => failure.reject(new Error('Settings write failed')))
-    expect(view.getByRole('alert').textContent).toBe(copy['capabilities.batch.failed'])
-    expect(view.getByLabelText('Batch disclosure').textContent).toContain('Full contract')
-    expect(snapshot.value.capabilityPolicy).toBeUndefined()
-    fireEvent.click(view.getByRole('button', { name: 'Confirm 1 changes' }))
-    await act(async () => {})
-    expect(updateSetting).toHaveBeenCalledTimes(2)
-    expect(JSON.parse(snapshot.value.capabilityPolicy).items).toEqual({ 'tools.one': { disclosure: 'full' } })
-    expect(view.queryByRole('dialog', { name: 'Batch settings' })).toBeNull()
-  } finally { view.unmount() }
-})
-
-test.each(['empty', 'unknown'])('capability batch reports %s catalog targets instead of writing them', async mode => {
-  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog: [], overrides: { 'tools.absent': 'full' },
-    catalogReader: mode === 'unknown' ? async () => { throw new Error('Incomplete catalog') } : undefined })
-  try {
-    expect(view.getByRole('button', { name: 'Batch settings' }).disabled).toBe(true)
-    fireEvent.click(view.getByLabelText('Select tools.absent'))
-    // The explicit selection is the target list. A target the last complete catalog read
-    // did not declare is reported and blocks the write instead of being dropped from it.
-    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
-    const dialog = view.getByRole('dialog', { name: 'Batch settings' })
-    expect(dialog.textContent).toContain(SETTINGS_COPY.en['capabilities.batch.changedTargets'].replace('{count}', '1'))
-    await chooseCapabilityOption(view, 'Batch disclosure', 'Full contract')
-    expect(dialog.querySelector('.ptcPlusCapabilityBatchFooter button[data-kind=primary]').disabled).toBe(true)
-    expect(updateSetting).not.toHaveBeenCalled()
-  } finally { view.unmount() }
-})
-
-test('capability batch dialog rechecks frozen targets against the latest catalog and preserves source closure', async () => {
-  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
-  policy.mcpServers.docs = { availability: 'closed' }
-  policy.items['tools.one'] = { availability: 'closed', disclosure: 'full' }
-  const catalog = [{ id: 'tools.one', category: 'tool', mcpServer: 'docs', source: { kind: 'mcp', server: 'docs' } }]
-  const { view, snapshot, updateSetting, inspectCapabilityCatalog } = await capabilityWorkbenchFixture({ catalog,
-    configuration: { capabilityPolicy: JSON.stringify(policy) } })
-  try {
-    fireEvent.click(view.getByLabelText('Select tools.one'))
-    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
-    await chooseCapabilityOption(view, 'Batch availability', 'Enable')
-    inspectCapabilityCatalog.mockResolvedValueOnce([])
-    fireEvent.click(view.getByRole('button', { name: 'Reload catalog' }))
-    await act(async () => {})
-    expect(view.getByRole('alert').textContent).toContain('1 targets are absent from the latest complete catalog')
-    expect(view.getByRole('button', { name: 'Confirm 1 changes' }).disabled).toBe(true)
-    fireEvent.click(view.getByRole('button', { name: 'Confirm 1 changes' }))
-    expect(updateSetting).not.toHaveBeenCalled()
-    fireEvent.click(view.getByRole('button', { name: 'Reload catalog' }))
-    await act(async () => {})
-    fireEvent.click(view.getByRole('button', { name: 'Confirm 1 changes' }))
-    await act(async () => {})
-    const saved = JSON.parse(snapshot.value.capabilityPolicy)
-    expect(saved.items['tools.one']).toEqual({ availability: 'enabled', disclosure: 'full' })
-    expect(saved.mcpServers).toEqual(policy.mcpServers)
-    expect(view.getByRole('switch', { name: 'Availability for tools.one' }).disabled).toBe(true)
-    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
-    await chooseCapabilityOption(view, 'Batch availability', SETTINGS_COPY.en['capabilities.policy.inheritRule'])
-    fireEvent.click(view.getByRole('button', { name: 'Confirm 1 changes' }))
-    await act(async () => {})
-    expect(JSON.parse(snapshot.value.capabilityPolicy).items['tools.one']).toEqual({ disclosure: 'full' })
-  } finally { view.unmount() }
-})
-
 
 // Prompt setting navigation describes retained choices; it does not establish a session plan.
 test.each(['zh', 'en'])('prompt setting navigation summarizes every disclosure and independent retained limits in %s', async locale => {
@@ -8063,9 +7631,9 @@ test.each(['zh', 'en'])('prompt setting navigation summarizes every disclosure a
     const summary = key => view.getByRole('tab', { name: copy[`capabilities.context.${key}`], exact: true })
       .querySelector('.ptcPlusContextSummary').textContent
     for (const [disclosure, expected] of Object.entries(locale === 'zh'
-      ? { host: '默认：沿用 DSH', full: '默认：完整提供', 'on-demand': '默认：按需提供', adaptive: '默认：按依据分配 · 常用集' }
-      : { host: 'Default: Host defaults', full: 'Default: Full contract', 'on-demand': 'Default: On demand', adaptive: 'Default: Allocate from evidence · Common set' })) {
-      await chooseCapabilityOption(view, copy['capabilities.defaultDisclosure'], copy[`capabilities.${disclosure}`])
+      ? { host: '默认：人机·原文·首轮', full: '默认：人机·全文·首轮', 'on-demand': '默认：仅模型·目录·首轮', adaptive: '默认：仅模型·分配·不重读 · 常用集' }
+      : { host: 'Default: both·source·turn1', full: 'Default: both·full·turn1', 'on-demand': 'Default: model·listing·turn1', adaptive: 'Default: model·share·no-reread · Common set' })) {
+      await chooseCapabilityOption(view, copy['capabilities.defaultDisclosure'], copy[`capabilities.word.${disclosure}`])
       rerender(); await act(async () => {})
       expect(summary('description')).toBe(expected)
     }
@@ -8150,7 +7718,6 @@ test.each(['zh', 'en'])('prompt setting summaries and application effects stay u
   } finally { view.unmount() }
 })
 
-
 test.each(['zh', 'en'])('statistics parameters stay visible beside read-only observation guidance in %s', async locale => {
   const copy = SETTINGS_COPY[locale]
   const allocationReader = vi.fn(async payload => ({ sessionId: payload.sessionId, workspace: '/observed-workspace',
@@ -8205,7 +7772,6 @@ test.each(['zh', 'en'])('statistics parameters stay visible beside read-only obs
   } finally { view.unmount() }
 })
 
-
 test('session capability rows keep the supplied order, expose no sort control and narrow by search', async () => {
   const rows = [
     capabilityRow('tools.zulu', { name: 'Zulu' }),
@@ -8220,7 +7786,8 @@ test('session capability rows keep the supplied order, expose no sort control an
   expect(order()).toEqual(['tools.zulu', 'tools.bravo', 'skills.alpha', 'mcpServers.docs'])
   // Every header states its column and offers no sorting control.
   const headers = [...table.querySelector('.ptcPlusSessionCapabilityColumns').children]
-  expect(headers.map(header => header.textContent)).toEqual(['Name', 'Type', 'Source', 'Saved', 'Availability', 'Disclosure', 'Evidence'])
+  expect(headers.map(header => header.textContent)).toEqual(['Object', 'Type', 'Source', 'Saved · on',
+    'Saved · disclosure', 'This session · on', 'This session · disclosure', 'Receipt'])
   for (const header of headers) {
     expect(header.querySelector('button')).toBeNull()
     expect(header.getAttribute('aria-sort')).toBeNull()
@@ -8236,7 +7803,6 @@ test('session capability rows keep the supplied order, expose no sort control an
   // Reading, filtering and arranging are not writes.
   expect(commands.run).not.toHaveBeenCalled()
 })
-
 
 test('prompt text panel accounts for every owner, keeps unwired channels honest and edits nothing read-only', async () => {
   const copy = SETTINGS_COPY.en
@@ -8568,4 +8134,564 @@ test('prompt text pane previews an already saved difference and can restore it',
   // lingering with a stale delta.
   await act(async () => { fireEvent.click(reset) })
   expect(view.container.querySelector('[data-diff-slot="runCode.description"]')).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// §6 structure: the page has one renderer, one column table and one word table.
+// A second export that states the page's columns is the defect these tests exist to
+// catch: adding one turns them red instead of quietly shipping a second page.
+// ---------------------------------------------------------------------------
+
+const SURFACE_COLUMN_KEYS = ['capabilities.column.object', 'capabilities.typesColumn', 'capabilities.sourceColumn',
+  'capabilities.column.savedEnabled', 'capabilities.column.savedDisclosure',
+  'capabilities.column.sessionEnabled', 'capabilities.column.sessionDisclosure',
+  'capabilities.column.receipt']
+
+const srcSource = name => readFileSync(join(process.cwd(), 'src', name), 'utf8')
+const srcFiles = () => readdirSync(join(process.cwd(), 'src')).filter(name => name.endsWith('.js'))
+
+test('the capability page states its columns in exactly one renderer export', () => {
+  const view = srcSource('client-capabilities-view.js')
+  // The module's exported surface, pinned: a new factory is a second page until this
+  // list and the contract's §6 are changed together.
+  expect([...view.matchAll(/^export (?:async )?function ([A-Za-z0-9_]+)/gm)].map(match => match[1]).sort())
+    .toEqual(['capabilityCommandText', 'capabilityPlanReason', 'capabilityReceiptNotice', 'capabilityReceiptVisible',
+      'createCapabilityCommandCard', 'createCapabilityRefreshView', 'createCapabilitySettingsViews',
+      'createCapabilitySurfaceView', 'firstHumanMessageSeq'])
+  // One column table, in one file, once.
+  for (const key of SURFACE_COLUMN_KEYS) {
+    // The renderer states the column and the copy module holds its word: no third file
+    // may name it, and the renderer names it once.
+    const owners = srcFiles().filter(name => srcSource(name).includes(`'${key}'`)).sort()
+    expect(owners).toEqual(['client-capabilities-view.js', 'client-copy.js'])
+    expect(view.split(`'${key}'`).length - 1).toBe(1)
+  }
+  // One row-structure class, owned by the renderer and the stylesheet that shapes it.
+  expect(srcFiles().filter(name => srcSource(name).includes('ptcPlusSessionCapabilityColumns'))
+    .sort()).toEqual(['client-capabilities-view.js', 'client-styles.js'])
+})
+
+test('both entrances mount that renderer and bring no columns, words or receipts of their own', () => {
+  const authoring = srcSource('client-authoring-view.js')
+  const settings = srcSource('client-settings-view.js')
+  expect(authoring).toContain('SessionCapabilityControls')
+  expect(settings).toContain('CapabilitySurface')
+  for (const text of [authoring, settings]) {
+    for (const key of ['capabilities.column.', 'capabilities.control.', 'capabilities.surface.']) {
+      expect(text).not.toContain(key)
+    }
+  }
+  // The settings entrance fixes the new-session default and nothing else, so its page
+  // states no session address at all.
+  expect(settings).not.toContain('sessionEnabled')
+  expect(settings).not.toContain('sessionDisclosure')
+})
+
+test('the page declares one word table and the retired names are gone from both locales', () => {
+  // §4's columns, literally, in both shipped locales.
+  expect(SURFACE_COLUMN_KEYS.map(key => SETTINGS_COPY.zh[key]))
+    .toEqual(['对象', '类型', '来源', '保存·启用', '保存·披露', '本会话·启用', '本会话·披露', '回执'])
+  expect(SURFACE_COLUMN_KEYS.map(key => SETTINGS_COPY.en[key]))
+    .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure',
+      'This session · on', 'This session · disclosure', 'Receipt'])
+  // The page's own vocabulary, in both locales, carries none of the retired names.
+  const pageKeys = Object.keys(SETTINGS_COPY.en).filter(key => /^capabilities\.(column\.|word\.|control\.|surface\.|batch\.)/.test(key)
+    || ['capabilities.typesColumn', 'capabilities.sourceColumn', 'capabilities.policy.availability',
+      'capabilities.policy.disclosure'].includes(key))
+  expect(pageKeys.length).toBeGreaterThan(20)
+  const retired = ['是否启用', '上下文', '不单独设置', '按依据分配', '自适应', '规则结果', '未应用', '未记录', '未观察', '未证明']
+  for (const locale of ['zh', 'en']) {
+    for (const key of pageKeys) for (const word of retired) expect(SETTINGS_COPY[locale][key]).not.toContain(word)
+    // A retired name's own key is gone: it has no producer left to reach it.
+    for (const key of ['capabilities.enabledColumn', 'capabilities.contextColumn',
+      'capabilities.rowState.unapplied', 'capabilities.rowState.source-closed',
+      'capabilities.policy.inheritRule', 'capabilities.policy.resolved',
+      'capabilities.adaptive', 'capabilities.automatic', 'capabilities.host', 'capabilities.full',
+      'capabilities.on-demand', 'capabilities.closed', 'capabilities.word.proven',
+      'capabilities.column.name', 'capabilities.column.saved', 'capabilities.column.availability',
+      'capabilities.column.disclosure', 'capabilities.column.evidence']) {
+      expect(SETTINGS_COPY[locale][key]).toBeUndefined()
+    }
+  }
+  // Every disclosure value answers the question its two columns ask — who reads it, and
+  // from which moment — so the header holds for each of them.
+  const readers = { zh: /人机|仅模型/, en: /both|model/ }
+  const moments = { zh: /首轮|不重读/, en: /turn1|no-reread/ }
+  for (const value of CAPABILITY_DISCLOSURES) {
+    for (const locale of ['zh', 'en']) {
+      const word = SETTINGS_COPY[locale][`capabilities.word.${value}`]
+      expect(typeof word).toBe('string')
+      expect(word).toMatch(readers[locale])
+      expect(word).toMatch(moments[locale])
+    }
+  }
+})
+
+test('a record that wrote automatic states that word in both columns and still accepts another', async () => {
+  // Both columns state the record's own words, so a record that wrote `automatic` reads
+  // `automatic` in the cell and in the receipt; no resolved value is put on screen. The
+  // control still writes, because the chosen word differs from the one recorded.
+  const rows = [capabilityRow('tools.probe', { saved: { availability: 'closed', disclosure: 'on-demand' },
+    session: { availability: 'automatic', disclosure: 'on-demand' },
+    record: { availability: 'automatic', disclosure: 'on-demand', layers: { availability: null, disclosure: null } } })]
+  const run = vi.fn(async () => ({ text: 'record replaced' }))
+  const { view, commands } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run })
+  const cell = id => view.baseElement.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilityReceipt`)
+  expect(cell('tools.probe').textContent).toBe("This session's record · availability automatic · disclosure on-demand")
+  expect(view.getByRole('combobox', { name: 'This session · on: tools.probe' }).textContent).toContain('Automatic')
+  // The cell shows the recorded word, so a different word is a real write rather than a
+  // replacement of a value no record holds.
+  await chooseCapabilityOption(view, 'This session · on: tools.probe', 'Off')
+  expect(commands.run.mock.calls.map(([, line]) => line)).toEqual(['set session tools.probe availability closed'])
+})
+
+test('a record written by the server layer names that layer in the receipt and keeps its controls', async () => {
+  // §4: the session column states this object's own record — `inherit` when it wrote nothing — and
+  // the receipt names the layer that answers the dimension at runtime and states the word that
+  // layer wrote. Because the cell states its own record, writing it always changes what it says, so
+  // both dimensions keep their control.
+  const rows = [capabilityRow('mcpServers.docs', { kind: 'server', name: 'docs',
+      session: { availability: 'closed', disclosure: 'inherit' },
+      record: { availability: 'closed', layers: { availability: null, disclosure: null } } }),
+    capabilityRow('tools.mcp__docs__search', { name: 'docs search',
+      session: { availability: 'inherit', disclosure: 'inherit' },
+      record: { layers: { availability: 'mcpServers.docs', disclosure: null } } })]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
+  const row = view.baseElement.querySelector('[data-capability-id="tools.mcp__docs__search"]')
+  expect(row.querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe("This session's record · via mcpServers.docs · availability closed")
+  expect(within(row).getByRole('combobox', { name: 'This session · on: tools.mcp__docs__search' })).not.toBeNull()
+  expect(within(row).getByRole('combobox', { name: 'This session · disclosure: tools.mcp__docs__search' })).not.toBeNull()
+  expect(row.querySelector('.ptcPlusSessionCapabilityAvailability').textContent).toContain('Inherit')
+})
+
+test('a server row states every word its rule holds and delegates disclosure in its cells', async () => {
+  // §8.1a/§8.3: a server rule can itself hold a disclosure word — the inheritance-rules window, a
+  // dimension command and an imported profile can all write it — and that word answers the members
+  // that wrote none of their own (a member's own word is higher, §8.1b). The cells state where that
+  // decision lives (`各成员自定`), while the receipt states what the record holds: a receipt that
+  // said `未写下` for a rule that wrote only a disclosure word would deny a word this same read
+  // carries. Members' receipts name the layer with its word.
+  const rows = [capabilityRow('mcpServers.docs', { kind: 'server', name: 'docs',
+      session: { availability: 'closed', disclosure: 'inherit' },
+      record: { availability: 'closed', disclosure: 'full', layers: { availability: null, disclosure: null } } }),
+    capabilityRow('mcpServers.other', { kind: 'server', name: 'other',
+      session: { availability: 'inherit', disclosure: 'inherit' },
+      record: { disclosure: 'on-demand', layers: { availability: null, disclosure: null } } }),
+    capabilityRow('tools.mcp__docs__search', { name: 'docs search',
+      session: { availability: 'inherit', disclosure: 'inherit' },
+      record: { layers: { availability: 'mcpServers.docs', disclosure: 'mcpServers.docs' } } })]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
+  const receipt = id => view.baseElement.querySelector(`[data-capability-id="${id}"] .ptcPlusSessionCapabilityReceipt`).textContent
+  expect(receipt('mcpServers.docs')).toBe("This session's record · availability closed · disclosure full")
+  // The disclosure-only rule is the state the receipt must not call unwritten.
+  expect(receipt('mcpServers.other')).toBe("This session's record · disclosure on-demand")
+  expect(view.baseElement.querySelector('[data-capability-id="mcpServers.docs"] .ptcPlusSessionCapabilityDisclosure').textContent)
+    .toContain('Per member')
+  expect(receipt('tools.mcp__docs__search'))
+    .toBe("This session's record · via mcpServers.docs · availability closed · disclosure full")
+})
+
+test('the settings entrance batch writes the saved policy and issues no session command', async () => {
+  // §4: a control exists because the entrance fixes the address it states. The settings entrance
+  // fixes the new-session default, so its batch writes `capabilityPolicy` and never a session
+  // record, even for a row whose observation target recorded a decision.
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'tools.second', category: 'tool' }]
+  const { view, updateSetting, commands } = await capabilityWorkbenchFixture({ catalog })
+  fireEvent.click(view.getByLabelText('Select tools.first'))
+  fireEvent.click(view.getByLabelText('Select tools.second'))
+  fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+  const dialog = view.getByRole('dialog', { name: 'Batch settings' })
+  await chooseCapabilityOption(view, 'Saved · On', 'Off')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Record 2 entries' }))
+  await act(async () => {})
+  // One write per selected row, each of them the saved policy: a session record would reach the
+  // command channel instead and leave these calls empty.
+  expect(commands.run).not.toHaveBeenCalled()
+  expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityPolicy', 'capabilityPolicy'])
+  expect(JSON.parse(updateSetting.mock.calls.at(-1)[1]).items)
+    .toEqual({ 'tools.first': { availability: 'closed' }, 'tools.second': { availability: 'closed' } })
+})
+
+test('a batch writes one record per selected row and dimension after closing the dialog', async () => {
+  // The dialog states an independent draft for each dimension; confirmation closes it first and then
+  // writes one settings write per selected row and dimension, in the order the rows are listed.
+  const copy = SETTINGS_COPY.en
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'tools.second', category: 'tool' }]
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog })
+  let release
+  const held = new Promise(resolve => { release = resolve })
+  const written = []
+  updateSetting.mockImplementation(async (key, value) => { written.push(JSON.parse(value)); await held; return 'status.applied' })
+  try {
+    fireEvent.click(view.getByLabelText('Select tools.first'))
+    fireEvent.click(view.getByLabelText('Select tools.second'))
+    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+    const dialog = view.getByRole('dialog', { name: 'Batch settings' })
+    await chooseCapabilityOption(view, 'Saved · On', 'Off')
+    await chooseCapabilityOption(view, 'Saved · Disclosure', copy['capabilities.word.full'])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Record 4 entries' }))
+    await act(async () => {})
+    // The dialog is gone while the first write is still in flight.
+    expect(view.queryByRole('dialog', { name: 'Batch settings' })).toBeNull()
+    expect(written).toHaveLength(1)
+    release()
+    await act(async () => {})
+    // One write per row and dimension: availability then disclosure for each row, in list order.
+    expect(written.map(policy => policy.items)).toEqual([
+      { 'tools.first': { availability: 'closed' } },
+      { 'tools.first': { availability: 'closed', disclosure: 'full' } },
+      { 'tools.first': { availability: 'closed', disclosure: 'full' }, 'tools.second': { availability: 'closed' } },
+      { 'tools.first': { availability: 'closed', disclosure: 'full' },
+        'tools.second': { availability: 'closed', disclosure: 'full' } },
+    ])
+  } finally { view.unmount() }
+})
+
+test('a session batch drafts both dimensions and records each of them', async () => {
+  // §4/§8.1b: the session entrance writes this session's record, so its batch drafts both dimensions
+  // and records one command per picked row and dimension — the settings-entrance case pins the same
+  // rule for the other address, and neither can stand in for the other.
+  const rows = [capabilityRow('tools.first'), capabilityRow('tools.second')]
+  const { view, commands } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
+  try {
+    fireEvent.click(view.getByLabelText('Select tools.first'))
+    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+    const dialog = view.getByRole('dialog', { name: 'Batch settings' })
+    await chooseCapabilityOption(view, 'This session · On', 'Off')
+    await chooseCapabilityOption(view, 'This session · Disclosure', SETTINGS_COPY.en['capabilities.word.full'])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Record 2 entries' }))
+    await act(async () => {})
+    expect(commands.run.mock.calls.map(([, line]) => line))
+      .toEqual(['set session tools.first availability closed', 'set session tools.first disclosure full'])
+  } finally { view.unmount() }
+})
+
+test('a batch whose first write refuses states that refusal after the remaining rows', async () => {
+  // A refusal does not stop the remaining rows, and the footer states the first refusal instead of
+  // the last row's success sentence.
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'tools.second', category: 'tool' }]
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog })
+  let calls = 0
+  updateSetting.mockImplementation(async () => { calls += 1; if (calls === 1) throw new Error('save refused'); return 'status.applied' })
+  try {
+    fireEvent.click(view.getByLabelText('Select tools.first'))
+    fireEvent.click(view.getByLabelText('Select tools.second'))
+    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+    const dialog = view.getByRole('dialog', { name: 'Batch settings' })
+    await chooseCapabilityOption(view, 'Saved · On', 'Off')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Record 2 entries' }))
+    await act(async () => {})
+    // Both rows were attempted, and the refusal is what the footer states.
+    expect(updateSetting).toHaveBeenCalledTimes(2)
+    const status = view.container.querySelector('.ptcPlusSessionCapabilityFooter [role=status]')
+    expect(status.textContent).toContain('save refused')
+  } finally { view.unmount() }
+})
+
+test('the settings entrance states a server row with its own rule control and no batch pick', async () => {
+  // §4: a control exists exactly when this entrance fixes the address the cell writes. The server
+  // row's saved cell edits the scope's `mcpServers.<server>` rule, so it carries that one control;
+  // it has no disclosure cell of its own and no batch pick, because a batch writes object entries.
+  const catalog = [{ id: 'tools.probe', category: 'tool' }, { id: 'mcpServers.docs', kind: 'server' }]
+  const { view } = await capabilityWorkbenchFixture({ catalog })
+  const row = view.container.querySelector('[data-capability-id="mcpServers.docs"]')
+  expect(row).not.toBeNull()
+  expect(within(row).getAllByRole('combobox')).toHaveLength(1)
+  expect(within(row).getByRole('combobox', { name: 'Saved · on: mcpServers.docs' })).not.toBeNull()
+  expect(within(row).queryByRole('combobox', { name: 'Saved · disclosure: mcpServers.docs' })).toBeNull()
+  expect(row.querySelector('.ptcPlusSessionCapabilitySavedDisclosure').textContent)
+    .toContain('Per member')
+  expect(within(row).queryByRole('checkbox')).toBeNull()
+  // The capability row beside it keeps both controls and the pick.
+  const probe = view.container.querySelector('[data-capability-id="tools.probe"]')
+  expect(within(probe).getAllByRole('combobox')).toHaveLength(2)
+  expect(within(probe).getByRole('checkbox')).not.toBeNull()
+})
+
+test('capability tabs move with the arrow keys and Home and End', async () => {
+  // The workbench is plugin-owned settings, so its tab strip owns keyboard movement: an arrow moves
+  // focus to the next tab and selects it, Home and End go to the ends. Nothing else pins this since
+  // the old browser case and its editor went away.
+  const copy = SETTINGS_COPY.en
+  const { view } = await capabilityWorkbenchFixture({ catalog: [] })
+  try {
+    const tab = name => view.getByRole('tab', { name: copy[`capabilities.tab.${name}`] })
+    tab('manual').focus()
+    fireEvent.keyDown(tab('manual'), { key: 'ArrowRight' })
+    expect(document.activeElement).toBe(tab('budgets'))
+    expect(tab('budgets').getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(tab('budgets'), { key: 'End' })
+    expect(document.activeElement).toBe(tab('plans'))
+    expect(tab('plans').getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(tab('plans'), { key: 'Home' })
+    expect(document.activeElement).toBe(tab('manual'))
+    expect(tab('manual').getAttribute('aria-selected')).toBe('true')
+    fireEvent.keyDown(tab('manual'), { key: 'ArrowLeft' })
+    expect(document.activeElement).toBe(tab('plans'))
+    expect(tab('plans').getAttribute('aria-selected')).toBe('true')
+  } finally { view.unmount() }
+})
+
+test('the inheritance-rules window writes a server rule disclosure word', async () => {
+  // §8.3: the window is the address where a server rule's disclosure word is written — the server row
+  // itself has no disclosure control. The record it writes is what the server row's receipt states.
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.mcpServers.docs = { availability: 'closed' }
+  const { view, snapshot } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.read', category: 'tool' }],
+    configuration: { capabilityPolicySaved: true, capabilityPolicy: JSON.stringify(policy) } })
+  try {
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
+    fireEvent.click(view.getByText(SETTINGS_COPY.en['capabilities.sourceRules'], { selector: 'summary' }))
+    await chooseCapabilityOption(view, `docs · ${SETTINGS_COPY.en['capabilities.policy.disclosure']}`,
+      SETTINGS_COPY.en['capabilities.word.full'])
+    await act(async () => {})
+    expect(JSON.parse(snapshot.value.capabilityPolicy).mcpServers.docs)
+      .toEqual({ availability: 'closed', disclosure: 'full' })
+  } finally { view.unmount() }
+})
+
+test('a capability read keeps the filter and the picks it still supplies', async () => {
+  // The surface re-reads after every accepted write. That read must keep what the reader typed and
+  // picked; the one thing it drops is a pick whose row it no longer supplies.
+  const copy = SETTINGS_COPY.en
+  let rows = [capabilityRow('tools.first', { name: 'first' }), capabilityRow('tools.second', { name: 'second' })]
+  const run = vi.fn(async (id, line) => ({ text: line }))
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows), run })
+  try {
+    const search = view.getByRole('searchbox', { name: copy['capabilities.search'] })
+    fireEvent.click(view.getByLabelText(copy['capabilities.selectForBatch'].replace('{name}', 'first')))
+    fireEvent.click(view.getByLabelText(copy['capabilities.selectForBatch'].replace('{name}', 'second')))
+    fireEvent.change(search, { target: { value: 'first' } })
+    // An accepted write re-reads the catalogue.
+    await chooseCapabilityOption(view, 'This session · on: tools.first', copy['capabilities.word.closed'])
+    await act(async () => {})
+    expect(run).toHaveBeenCalled()
+    expect(search.value).toBe('first')
+    expect(view.getByRole('button', { name: copy['capabilities.batchSettings'] }).textContent).toContain('2')
+    // The next read no longer supplies `tools.second`, so that pick is the one thing that drops.
+    rows = [capabilityRow('tools.first', { name: 'first' })]
+    await chooseCapabilityOption(view, 'This session · disclosure: tools.first', copy['capabilities.word.full'])
+    await act(async () => {})
+    expect(search.value).toBe('first')
+    expect(view.getByRole('button', { name: copy['capabilities.batchSettings'] }).textContent).toContain('1')
+  } finally { view.unmount() }
+})
+
+test('the inheritance-rules window starts from the record own layers when the document saved no policy', async () => {
+  // §8.1c: a configuration that saved no policy has only the document the plugin synthesized, whose
+  // bottom layer the management switch shaped. The window states the record's own layers there, so
+  // its first write does not freeze `adaptive` into the record. This arm is separate from the
+  // prompt-settings pane §8.8 already declares.
+  const copy = SETTINGS_COPY.en
+  const { view, snapshot } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.read', category: 'tool' }],
+    configuration: { capabilityManagementEnabled: true } })
+  try {
+    fireEvent.click(view.getByRole('button', { name: copy['capabilities.inheritedRules'] }))
+    const defaults = view.getByRole('combobox', { name: `Default rule · ${copy['capabilities.policy.disclosure']}` })
+    // The declared default, not the synthesized `adaptive`.
+    expect(defaults.textContent).toContain(copy['capabilities.word.host'])
+    await chooseCapabilityOption(view, `Default rule · ${copy['capabilities.policy.availability']}`,
+      copy['capabilities.word.closed'])
+    await act(async () => {})
+    const written = JSON.parse(snapshot.value.capabilityPolicy)
+    expect(written.defaults).toEqual({ availability: 'closed', disclosure: 'host' })
+  } finally { view.unmount() }
+})
+
+test('a read-only settings entrance disables the saved controls and withdraws none of them', async () => {
+  // §1: a control exists because the entrance fixes the address it states; read-only scope or a
+  // disabled plugin only disables it. The row set, the words and every cell stay, so the switch
+  // cannot decide whether a control exists.
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'mcpServers.docs', kind: 'server' }]
+  const { view } = await capabilityWorkbenchFixture({ catalog, writable: false })
+  try {
+    const cells = [...view.container.querySelectorAll('.ptcPlusSessionCapabilitySaved [role=combobox], .ptcPlusSessionCapabilitySavedDisclosure [role=combobox]')]
+    // One saved availability cell per row plus one saved disclosure cell per capability row; the
+    // server row has no disclosure control (§8.1a).
+    expect(cells).toHaveLength(3)
+    expect(cells.every(cell => cell.disabled === true || cell.getAttribute('aria-disabled') === 'true'
+      || cell.hasAttribute('data-disabled'))).toBe(true)
+    expect(view.container.querySelectorAll('[data-capability-id]')).toHaveLength(2)
+  } finally { view.unmount() }
+})
+
+test('a batch dialog that is dismissed writes nothing', async () => {
+  // §4/§8.1c: a batch stages its decisions in the dialog, so nothing reaches the document before
+  // the reader confirms. Dismissing it leaves the record exactly as it was — the case the browser
+  // fixture used to assert before this entrance's pick controls moved to per-row checkboxes.
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'tools.second', category: 'tool' }]
+  const { view, updateSetting, commands } = await capabilityWorkbenchFixture({ catalog })
+  try {
+    fireEvent.click(view.getByLabelText('Select tools.first'))
+    fireEvent.click(view.getByLabelText('Select tools.second'))
+    fireEvent.click(view.getByRole('button', { name: 'Batch settings' }))
+    const dialog = view.getByRole('dialog', { name: 'Batch settings' })
+    await chooseCapabilityOption(view, 'Saved · On', 'Off')
+    // A staged dimension is a draft: no field write and no command while the dialog is open.
+    expect(updateSetting).not.toHaveBeenCalled()
+    expect(commands.run).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByText('Cancel', { selector: 'button' }))
+    await act(async () => {})
+    expect(view.queryByRole('dialog', { name: 'Batch settings' })).toBeNull()
+    expect(updateSetting).not.toHaveBeenCalled()
+    expect(commands.run).not.toHaveBeenCalled()
+  } finally { view.unmount() }
+})
+
+test('an invalid statistics tuple never reaches the document and its draft keeps the saved tuple', async () => {
+  // semantic-obligations: numeric statistics input is validated while an unfinished draft stays in
+  // the field. The client path has no other validator, so an invalid tuple that reached the
+  // document would be persisted and then reported by this same page as unusable. An empty field is
+  // a draft rather than a write, and flipping the independent switch from an invalid draft
+  // restores the last saved tuple instead of saving the numbers nobody could commit.
+  const copy = SETTINGS_COPY.en
+  const configuration = { capabilityStatistics: JSON.stringify({ enabled: true, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 }) }
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog: [], locale: 'en', configuration })
+  try {
+    fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.statistics'] }))
+    const pane = view.getByRole('tabpanel', { name: copy['capabilities.tab.statistics'] })
+    const parameters = within(pane).getByRole('region', { name: copy['capabilities.statisticsSettings'] })
+    const minimum = within(parameters).getByRole('spinbutton', { name: copy['capabilities.minimumSamples'] })
+    fireEvent.change(minimum, { target: { value: '20' } })
+    fireEvent.blur(minimum)
+    await act(async () => {})
+    expect(updateSetting).not.toHaveBeenCalled()
+    expect(within(pane).getByText(copy['capabilities.invalidStatistics'])).not.toBeNull()
+    // The unfinished field stays a draft: it is not replaced by the saved number.
+    fireEvent.change(minimum, { target: { value: '' } })
+    fireEvent.blur(minimum)
+    await act(async () => {})
+    expect(updateSetting).not.toHaveBeenCalled()
+    expect(minimum.value).toBe('')
+    // The switch states its own decision: from an invalid draft it restores the saved tuple and
+    // writes only the flag.
+    fireEvent.click(within(pane).getByRole('switch', { name: copy['capabilities.statisticsEnabled'] }))
+    await act(async () => {})
+    expect(updateSetting).toHaveBeenCalledExactlyOnceWith('capabilityStatistics',
+      JSON.stringify({ enabled: false, windowSize: 10, minimumSamples: 10, fullThreshold: 0.5 }))
+  } finally { view.unmount() }
+})
+
+test('the inheritance-rules window keeps a saved rule whose object the read does not supply', async () => {
+  // semantic-obligations: a saved rule for an object the supply no longer declares is preserved.
+  // The page states rows from the read (§1/§8.9), so such a rule surfaces only in this window;
+  // editing another rule must compose onto the same document instead of dropping it.
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.mcpServers.github = { availability: 'closed' }
+  const { view, snapshot } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.read', category: 'tool' }],
+    configuration: { capabilityPolicySaved: true, capabilityPolicy: JSON.stringify(policy) } })
+  try {
+    fireEvent.click(view.getByRole('button', { name: SETTINGS_COPY.en['capabilities.inheritedRules'] }))
+    fireEvent.click(view.getByText(SETTINGS_COPY.en['capabilities.sourceRules'], { selector: 'summary' }))
+    const unavailable = view.getByRole('combobox', { name: `github · ${SETTINGS_COPY.en['capabilities.policy.availability']}` })
+    expect(unavailable.textContent).toContain(SETTINGS_COPY.en['capabilities.word.closed'])
+    await chooseCapabilityOption(view, `Default rule · ${SETTINGS_COPY.en['capabilities.policy.disclosure']}`,
+      SETTINGS_COPY.en['capabilities.word.full'])
+    await act(async () => {})
+    expect(JSON.parse(snapshot.value.capabilityPolicy).mcpServers.github).toEqual({ availability: 'closed' })
+  } finally { view.unmount() }
+})
+
+test('the observation guidance keeps its tertiary tint and wrapping declarations', () => {
+  // The rendered-layout case that measured this hint went with the old capability table, so the
+  // declarations it measured are pinned here: recolouring the hint, clipping it, or giving it a
+  // fixed width fails this case instead of passing silently.
+  const rule = CLIENT_CSS.match(/\.ptcPlusStatisticsObservationHint\{([^}]*)\}/)?.[1] ?? ''
+  expect(rule).toContain('color:var(--dsw-alias-label-tertiary)')
+  expect(rule).toContain('white-space:normal')
+  expect(rule).toContain('overflow-wrap:anywhere')
+  expect(rule).toContain('min-width:0')
+  // The heading places the word and the guidance on one wrapping line instead of stacking them.
+  const heading = CLIENT_CSS.match(/\.ptcPlusStatisticsObservationHeading\{([^}]*)\}/)?.[1] ?? ''
+  expect(heading).toContain('display:flex')
+  expect(heading).toContain('flex-wrap:wrap')
+  // The word and the guidance sit on the same baseline, which is what the removed layout case
+  // measured as alignment.
+  expect(heading).toContain('align-items:baseline')
+})
+
+test('a stored statistics document this build cannot use is stated and a repair replaces it', async () => {
+  // The client holds no other validator for `capabilityStatistics`, so a stored tuple this page
+  // cannot use would otherwise be reported as an unusable document with no way out. The pane states
+  // its own message and the first valid edit writes a usable document back.
+  const copy = SETTINGS_COPY.en
+  const configuration = { capabilityStatistics: JSON.stringify({ enabled: true, windowSize: 5, minimumSamples: 10, fullThreshold: 0.5 }) }
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog: [], locale: 'en', configuration })
+  try {
+    fireEvent.click(view.getByRole('tab', { name: copy['capabilities.tab.statistics'] }))
+    const pane = view.getByRole('tabpanel', { name: copy['capabilities.tab.statistics'] })
+    expect(within(pane).getByText(copy['capabilities.savedStatisticsInvalid'])).not.toBeNull()
+    const parameters = within(pane).getByRole('region', { name: copy['capabilities.statisticsSettings'] })
+    const minimum = within(parameters).getByRole('spinbutton', { name: copy['capabilities.minimumSamples'] })
+    fireEvent.change(minimum, { target: { value: '3' } })
+    fireEvent.blur(minimum)
+    await act(async () => {})
+    expect(updateSetting).toHaveBeenCalledOnce()
+    // The repair states the page's own values, not the tuple it could not use.
+    expect(JSON.parse(updateSetting.mock.calls[0][1]))
+      .toEqual({ enabled: false, windowSize: 100, minimumSamples: 3, fullThreshold: 0.5 })
+  } finally { view.unmount() }
+})
+
+test('two saved cells changed before the snapshot republishes compose into one policy', async () => {
+  // The writer merges into the policy the document holds when it runs; a page that
+  // rebuilt the policy from its last render would drop the first decision here.
+  const catalog = [{ id: 'tools.first', category: 'tool' }, { id: 'tools.second', category: 'tool' }]
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog, configuration: { capabilityPolicy: CAPABILITY_POLICY_DEFAULT } })
+  const pending = []
+  updateSetting.mockImplementation((key, value) => new Promise(resolve => pending.push({ key, value, resolve })))
+  await chooseCapabilityOption(view, 'Saved · on: tools.first', 'Off')
+  await chooseCapabilityOption(view, 'Saved · on: tools.second', 'Off')
+  // The queue runs one write at a time, so the second decision is still waiting.
+  expect(pending).toHaveLength(1)
+  pending[0].resolve('status.applied')
+  await act(async () => {})
+  expect(pending).toHaveLength(2)
+  pending[1].resolve('status.applied')
+  await act(async () => {})
+  const written = JSON.parse(pending[1].value)
+  expect(written.items['tools.first']).toEqual({ availability: 'closed' })
+  expect(written.items['tools.second']).toEqual({ availability: 'closed' })
+})
+
+test('a saved write keeps every rule the saved policy already holds', async () => {
+  // A settings snapshot that saved a policy is the record, so one saved-cell write composes into
+  // that document: the other rules it holds survive, and no synthesized bottom layer appears.
+  const policy = JSON.parse(CAPABILITY_POLICY_DEFAULT)
+  policy.items['tools.other'] = { availability: 'closed' }
+  const catalog = [{ id: 'tools.probe', category: 'tool' }, { id: 'tools.other', category: 'tool' }]
+  const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog,
+    configuration: { capabilityPolicy: JSON.stringify(policy) } })
+  await chooseCapabilityOption(view, 'Saved · on: tools.probe', 'Off')
+  expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityPolicy'])
+  const written = JSON.parse(updateSetting.mock.calls[0][1])
+  expect(written.items['tools.other']).toEqual({ availability: 'closed' })
+  expect(written.items['tools.probe']).toEqual({ availability: 'closed' })
+  expect(written.defaults).toEqual(policy.defaults)
+})
+
+test('a first saved write starts from the declared defaults, so no switch reaches the record', async () => {
+  // §8.1c: a configuration that saved no policy has only a synthesized document, whose bottom
+  // layer the capability-management switch shapes. The first saved write must not freeze that
+  // layer, so the policy it writes is byte-identical whichever way the switch points, and the
+  // dimensions the write did not name keep the document's declared defaults.
+  const catalog = [{ id: 'tools.probe', category: 'tool' }, { id: 'tools.other', category: 'tool' }]
+  const writeFor = async capabilityManagementEnabled => {
+    const { view, updateSetting } = await capabilityWorkbenchFixture({ catalog,
+      configuration: { capabilityManagementEnabled } })
+    await chooseCapabilityOption(view, 'Saved · on: tools.probe', 'Off')
+    expect(updateSetting.mock.calls.map(([key]) => key)).toEqual(['capabilityPolicy'])
+    const written = updateSetting.mock.calls[0][1]
+    // One entrance at a time: both fixtures render the same labels into one document.
+    view.unmount()
+    return written
+  }
+  const enabled = await writeFor(true)
+  const disabled = await writeFor(false)
+  expect(enabled).toBe(disabled)
+  const written = JSON.parse(enabled)
+  expect(written.items).toEqual({ 'tools.probe': { availability: 'closed' } })
+  expect(written.defaults).toEqual({ availability: 'enabled', disclosure: 'host' })
+  expect(written.allocation).toEqual({ baseline: true, statistics: false, budget: true })
 })

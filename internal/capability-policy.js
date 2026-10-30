@@ -82,6 +82,19 @@ export function capabilityRule(policy, capability) {
   return { availability, disclosure, availabilitySource, disclosureSource }
 }
 
+/** The policy document a record's own words make.
+ *
+ * A configuration that saved no policy has only a synthesized document, whose bottom layer is
+ * shaped by switches that belong to no record. Editing a rule, or writing one saved cell, must
+ * start from the record's own layers instead: the declared defaults plus the layers the record
+ * wrote (the legacy override record and the usage-statistics switch `capabilityPolicyForConfig`
+ * folds into the allocation).
+ */
+export function capabilityPolicyFromRecord(config) {
+  return capabilityPolicyForConfig({ ...config, capabilityPolicy: undefined,
+    capabilityManagementEnabled: false })
+}
+
 /** Change one reusable dimension, removing only that dimension for automatic. */
 export function changeCapabilityRule(policy, id, dimension, choice) {
   const next = structuredClone(policy)

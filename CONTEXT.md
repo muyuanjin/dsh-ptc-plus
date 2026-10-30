@@ -36,7 +36,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 
 **能力统计窗口**：同一统计范围内，某项能力最近 N 个实际可用会话家族组成的样本集合，N 可配置。新样本逐步替换最旧样本，项目停用期间不因自然时间流逝降低历史样本权重。
 
-**初始常用集**：一份可编辑的常用能力基线，仅供选用该依据的 adaptive 披露消费；在没有可用统计依据且没有单项显式选择时，完整披露其中当前实际可用且符合说明预算的能力，其余按需披露。初始推荐不计作真实使用记录，统计有效且充分后可参与新会话的自动分配，单项显式选择始终优先。
+**初始常用集**：一份由配置文档陈述的常用能力基线（页面上只读，没有编辑器），仅供选用该依据的 adaptive 披露消费；在没有可用统计依据且没有单项显式选择时，完整披露其中当前实际可用且符合说明预算的能力，其余按需披露。初始推荐不计作真实使用记录，统计有效且充分后可参与新会话的自动分配，单项显式选择始终优先。
 
 **能力说明预算**：用于约束选用预算的 adaptive 披露总量；分配按所选常用集、统计依据和说明长度决定。用户显式指定完整披露时仍优先，超预算需明确显示，不擅自降级或截断调用契约。
 
@@ -44,7 +44,7 @@ PTC Plus 是个人维护的社区实验插件。它把 DSH PTC 模式的顶层 `
 
 **能力方案刷新**：用户通过 `/capabilities refresh`、星光菜单或设置中明确选定会话的刷新按钮同步最新能力方案的操作。刷新同步更新模型可见的能力说明、发现入口与 REPL 环境，并向模型提供与实际生效方案一致的变更通知；首个宿主接受步骤之前只替换初始方案，不发送或排队发送中间变更说明。
 
-**会话能力工作台**：星光菜单打开的会话级管理界面，使用只读目录观察当前会话的能力来源、已保存、临时与生效状态。仅本会话和全局保存分属明确范围；待应用选择逐项通过 DSH 正式人类命令执行，并以重新读取的状态确认结果，部分失败时保留未确认草稿。目录观察不生成命令卡片；正式命令保留实际名称、参数和结果回执，且不覆盖输入框中未发送的草稿。
+**会话能力工作台**：星光菜单打开的会话级管理界面，用一个只读目录陈述三层事实——产品声明了什么、这份配置为每个对象写下了什么、本会话记录了什么，另有一列回执点名写出那些字的那份记录（以及替这一维作答的上层记录）。仅本会话和全局保存分属明确范围；每个控件直接写它自己那一份记录并通过命令通道执行，被拒绝时拒绝原文就是回执，页面不保留草稿。目录观察不生成命令卡片；正式命令保留实际名称、参数和结果回执，且不覆盖输入框中未发送的草稿。
 
 **能力说明恢复**：独立选用的压缩后说明恢复，在预算内补回近期实际使用、已经展开且当前仍有效的 API 说明，不重新分配会话方案。不重复仍可见说明，不补回 Skill 正文。关闭此项不关闭必要的导航、契约撤销和环境通知。
 
@@ -125,7 +125,7 @@ DSH 原生 tool guidance 与 typed SDK 保持 owner 提供的内容。PTC Plus �
 PTC Plus 注册 `ptc-plus` settings namespace，字段来源于 `internal/config-spec.js`。Client half 在侧栏 **插件 → 已安装 → dsh-ptc-plus** 的插件行配置页呈现全部设置，通过 `plugins.row.config`（keyed，键 `<包名>#<行 id>`）注册；旧宿主的插件设置使用 `settings.plugin.item`（keyed，按 namespace）。`src/client-host-compat.js` 等待对应页面声明槽位，并按 `summary`/`page` 分别渲染一句描述与完整表单，不向通用设置注册。星光菜单在应用内弹窗复用完整表单与写入 owner；包元数据的 `icon` 指向随包发布的 SVG，由宿主显示在插件列表与详情页（[ADR 0019](docs/adr/0019-plugin-settings-and-kill-switch.md)）。`toolHoverPreviewEnabled` 默认开启，控制增强执行卡片的悬停与键盘聚焦预览，关闭时即时取消预览并保留点击展开。预览优先位于鼠标右侧，当前空间不足时回退到行的上下方。
 `enhancedToolView` 默认开启且只影响 Client 展示：开启时通过公共 keyed tool-view surface 组合可用的 DSH primitive，缺少某项 primitive 时使用插件自有的等价降级；关闭时注销 keyed view 并交还 DSH 原生 generic row。两种路径都不改变工具、prompt、runtime 或 session 语义。
 `autoDescribeRunCode` 默认开启且只控制本地执行宽容度：开启时，缺少外层 `description` 的 `run_code` 使用派生参数通过本地 DSH 校验，备用摘要仅进入 presentation metadata；关闭时由 DSH 校验原始参数。两种状态的模型请求保持字节稳定并包含 required `description`，原始调用参数、代码、native 工具参数、权限、journal 和 session 语义保持不变。
-设置按核心工作区（REPL 语法、状态与恢复）、扩展与容错（工具扩展、调用容错）、界面与资源（界面显示、资源限制）、实验性（能力与上下文）分组；配置页与弹窗将唯一总开关与导航顶部的 PTC Plus 标题合成一行，不显示重复的已启用标签；静态模块标题与带图标、箭头及选中标记的导航项分层，正文从 REPL 语法开始，旧折叠卡片仍将总开关置顶；宽屏设置工作台使用左侧导航和右侧内容的双列布局，小屏使用横向导航与独立正文；导航和正文分别滚动，滚动正文或选取分区不移动导航。能力与上下文包含手动配置、使用统计、上下文预算与会话方案页签；类型、来源、保存策略和冻结会话结果保持独立，列表提供组合筛选与稳定排序，Skill 正文不因查看设置而加载。任一能力或上下文功能选用时可读取冻结会话来源，手动配置与目录读取仍独立可用。恢复提示及其间隔、阈值集中在状态与恢复区，全局绑定管理入口紧随工具扩展区的全局绑定开关；功能模块与分组由 `CONFIG_MODULES`、`CONFIG_GROUPS` 拥有，与 Host schema 字段顺序独立，不改变默认值或执行语义。
+设置按核心工作区（REPL 语法、状态与恢复）、扩展与容错（工具扩展、调用容错）、界面与资源（界面显示、资源限制）、实验性（能力与上下文）分组；配置页与弹窗将唯一总开关与导航顶部的 PTC Plus 标题合成一行，不显示重复的已启用标签；静态模块标题与带图标、箭头及选中标记的导航项分层，正文从 REPL 语法开始，旧折叠卡片仍将总开关置顶；宽屏设置工作台使用左侧导航和右侧内容的双列布局，小屏使用横向导航与独立正文；导航和正文分别滚动，滚动正文或选取分区不移动导航。能力与上下文包含能力配置、提示设置、使用统计、提示文本与配置方案五个页签；类型、来源、保存策略和冻结会话结果保持独立，列表提供组合筛选并按供给顺序陈述（不提供排序），Skill 正文不因查看设置而加载。任一能力或上下文功能选用时可读取冻结会话来源，手动配置与目录读取仍独立可用。恢复提示及其间隔、阈值集中在状态与恢复区，全局绑定管理入口紧随工具扩展区的全局绑定开关；功能模块与分组由 `CONFIG_MODULES`、`CONFIG_GROUPS` 拥有，与 Host schema 字段顺序独立，不改变默认值或执行语义。
 `enabled` 是 kill switch：关闭时宿主保留 settings 注册、设置卡片，以及仅用于在下一允许步骤撤销旧 PTC 声明的被动消息清理；不安装 runtime、执行 hook、tool surface 或 prompt section，不读取 binding 存储；
 关闭状态不产生 `run_code`/`edit_run_code` 模型表面，设置卡片只允许操作 `enabled`。配置保存后由 settings watch 更新 owner；能力与上下文的职责输入用于新会话，已有会话保持冻结方案并通过 `/capabilities refresh` 同步。其他可重配置字段即时生效，运行时 owner 更新配置时保留已有 session-bound REPL、binding、journal 和 native DSH authority，失败则回滚到上一个已应用配置。已提交的 cell 的预算与策略在完整生命周期内绑定提交时的同一份配置，更新后的限额和策略用于随后提交的 cell，不能让一次执行混用两个配置代际；worker 生命周期上界（`maxOldGenerationSizeMb`、`workerReclaimMs`、`startupProbeMs`）在 worker 创建或关闭时从当前配置读取。Node worker 的 V8 old-generation 上限在创建时固定，因此活动 worker 存在时修改该字段会明确失败并回滚，而不会静默报告为已应用。
 `cordisToolsEnabled` 默认关闭且即时生效。开启时，官方 `@deepseek-ai/dsh-tool-cordis` 与 shipped `cordis` preset 的 `cordis-plugin-development` Skill 作为同一个 agent-scoped mount 进入同时暴露 `run_code`、`skill` 工具与 `agentPresets`/`skills` service 的 agent；Skill 根先通过公共 `agentPresets.resolve()` 取得可用的绝对 composition path，pathless generation 则从该宿主安装的官方 `@deepseek-ai/dsh-agent-preset` 或 `@deepseek-ai/dsh-agent-presets` 包资源定位，并要求准确存在 `cordis-plugin-development/SKILL.md`。官方 filesystem provider 将该 Skill 根作为不可变的 bundled Host resource，继续拥有解析、资源基址、不完整观测与加载；打包目录不启用 watch。PTC Plus 只在公共 provider 注册边界精确保留 companion Skill，不能让同目录 sibling 自动扩展 PTC surface，也不复制内容或切换 preset。普通 agent 不继承，code-only direct-tool projection 仍为 `[run_code]`。agent scope 缺少其中任一 surface 不是错误：owner 保持 pending、不在该 scope 发布任何内容，并在工具 surface 变化或下一次 prompt assembly 时重试（[ADR 0029](docs/adr/0029-keep-plugin-unavailability-out-of-the-host-agent-lifecycle.md)）。已暴露的 preset、精确 Skill、所需服务或任一 child fiber 与 DSH 契约矛盾时才是配置错误：安装时枚举到的 scope 使启用失败并完整回滚；由宿主自身调用（`agent/created` 串行分发、prepended `system-prompt/assemble` waterfall）触达的不可用 scope 只从该 scope 撤出并记一条 warning，不使创建该 scope 的宿主操作失败。Cordis 工具名、数量、schema 和 guidance 只由官方 tool fiber 的 live surface 拥有，PTC Plus 不复制或枚举。官方 fiber 的 Host inspect provider 注册属于进程级资源：PTC Plus 在自己的 runtime owner 内合并同一 manifest 的 agent-fiber lease，并在最后一份 lease 释放时注销，避免多 agent 或关闭后重开重复占用 provider ID；查询实现始终委托给仍存活的官方 fiber。

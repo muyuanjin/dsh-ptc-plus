@@ -129,13 +129,17 @@ function runCodeDefinitionFor(tools, scope) {
  * The command states the panel's two columns, so an entry carries the same
  * statement the panel's column carries: exactly the dimensions that row decides,
  * each naming the answer its own source gave. A dimension this session recorded
- * no choice for stays stated as `inherit`, and one the saved configuration states
- * no rule for stays stated as `automatic`. Compressing a row into one word would
+ * no choice for stays stated as `inherit`. The saved column states the words the
+ * configuration wrote for that object: its own entry, or `automatic` when it wrote
+ * none — a category, server or bottom layer that would answer at runtime is
+ * behaviour, so it reaches no cell (capability-surface §8.1c). A server row states
+ * `automatic` unless its own `mcpServers.<server>` rule writes availability. Compressing a
+ * row into one word would
  * answer for the dimension it dropped — a record that decided disclosure but not
  * availability would read as if the session had decided nothing. No column
- * reports the composition: the panel states supply, record and evidence, and this
- * listing is the same read rather than a second one that could answer for what a
- * runtime built.
+ * reports the composition: the panel states supply, record and the receipt, and
+ * this listing is the same read rather than a second one that could answer for
+ * what a runtime built.
  */
 function capabilityListingEntry(row) {
   // A server decides availability only: its members carry disclosure, so the panel
@@ -525,7 +529,7 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
               }, signal, settingsForCommand?.())
               // A receipt states what this command wrote — which entry, which choice
               // and which session or global configuration now records it. What a cell
-              // later obtained is the panel's evidence column, not a sentence here.
+              // later obtained is that row's own `evidence` field, not a sentence here.
               const state = !changed.sessionApplied ? 'saved-only'
                 : changed.publication === 'pending' ? 'pending' : 'recorded'
               return { kind: changed.sessionApplied ? 'success' : 'error',
@@ -1031,11 +1035,28 @@ function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatil
     try {
       if (settingsWriter?.update === undefined) return
       const previousConfig = controller.committedConfig()
+      // A policy this process synthesized is not a record the settings document holds: write it
+      // back and the next resolution reports it as saved, so the rollback removes the field with
+      // the service's own `unset` op when it offers one. The two switches derived beside it are
+      // restated to the committed values; a service without `unset` keeps the previous, narrower
+      // behaviour and the residual is stated in capability-surface §8.7.
+      const keepDerived = previousConfig?.capabilityPolicySaved === true
+      // Only a committed configuration that reports it saved no policy lets the rollback remove
+      // one: with no committed record this process does not know what the document holds, and
+      // deleting a policy it never wrote would erase rules the user saved.
+      const removable = previousConfig !== undefined && previousConfig.capabilityPolicySaved === false
+        && typeof settingsWriter.mutate === 'function'
       const patch = previousConfig === undefined
         ? { enabled: false }
-        : Object.fromEntries(CONFIG_FIELDS.map(field => [field.key, previousConfig[field.key]]))
+        : Object.fromEntries(CONFIG_FIELDS
+          // Only the policy is synthesized with the two switches; a writer without `mutate` cannot
+          // remove it, so it omits that one field and still restates everything else it derived.
+          .filter(field => keepDerived || field.key !== 'capabilityPolicy')
+          .map(field => [field.key, previousConfig[field.key]]))
       try {
-        await settingsWriter.update(patch)
+        if (removable && Object.keys(patch).length > 0) await settingsWriter.update(patch)
+        if (removable) await settingsWriter.mutate([{ op: 'unset', path: ['capabilityPolicy'] }])
+        else await settingsWriter.update(patch)
       } catch (rollbackError) {
         reportActivationFailure(new Error(
           `ptc-plus: failed to roll back runtime configuration: ${rollbackError.message}`,

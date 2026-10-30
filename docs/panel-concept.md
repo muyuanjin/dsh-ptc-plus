@@ -1,8 +1,9 @@
-# 能力面板：施工契约
+# 能力面板：施工契约（已被取代）
 
 ## 0. 权威
 
-本文决定面板的形状。代码与本文不一致处，代码是缺陷。本文与 §1 不一致处，本文是缺陷。两者都不由「谁先写下」决定。
+**本文的页面形状已被 [能力面：概念契约](capability-surface.md) 取代。** 现行列集、取值、回执、入口与唯一渲染器由那份契约决定；本文继续生效的部分是 §1 的红线、§5 的写通道（行上的决定走的仍是同一条命令）与 §9 的落地位置，以及读路径的一致性要求。下文出现的七列、证据列、设置页清单投影都随该契约失效，保留在这里作为历史来源，不再是缺陷判据。
+
 
 非目标：不跨会话检索能力；不改冻结语义与 `/capabilities refresh` 的同步含义；不展示 prompt 原文、恢复快照或 worker 内部；不改 REPL 控制台与工作台的分工；**本面板不陈述物化**——方案由运行时在执行前构建，面板只陈述供给、记录与证据；不新增写入器、RPC 写操作或第二写通道。
 
@@ -43,14 +44,15 @@
 - **绑定行**：全局绑定文档里 `enabled` 的条目一条。未被供给的条目不进本面板——把它画成一行只会得到一个按不动的按钮。
 - 行集只由供给决定；配置、记录、证据都不增减行。
 
-列固定为 `名称 | 类型 | 来源 | 保存 | 可用性 | 披露 | 证据`。
+现行列集是 `对象 | 类型 | 来源 | 保存·启用 | 保存·披露 | 本会话·启用 | 本会话·披露` 加 `回执`（会话入口），由 [能力面：概念契约](capability-surface.md) §4 决定。下面这段是历史形状，不是缺陷判据：
 
-- **保存**：当前配置里的值，只读文字。能力行两维并写（`自动 · 自动`）；服务行只写它那一个维度；绑定行这一格为空——全局绑定文档不陈述可用性与披露，绑定行陈述的是取用。
-- **可用性**：本会话记录的值，**控件就在这一格**，一格一个控件。能力行与服务行是可用性下拉；绑定行的取用是同一个问题的另一种问法（这个会话能不能用它），二态控件也在这同一格。
-- **披露**：本会话记录的披露方式，**控件就在这一格**，一格一个控件，只有能力行有；服务行与绑定行这一格为空——服务不陈述自己的披露，绑定不陈述披露。空不是否定的词。
-- **证据**：能承载证据的行在有执行报告时出现标记，否则为空；不能承载证据的行（服务行、绑定行）这一格恒为空。空不等于否定的词。
+- **保存**：当前配置里的值。能力行曾两维并写（`自动 · 自动`）——「自动」不是取值，这正是契约把它换掉的原因。
+- **可用性／披露**：本会话记录的值，控件就在各自那一格，一格一个控件。
+- **证据**：有执行报告时出现标记。这一列已随裁决四移出决定页，换成点名记录的回执列。
 
 ## 4. 词表
+
+下面这张表是历史词表，不是缺陷判据：现行列名、取值与回执由 [能力面：概念契约](capability-surface.md) §4 与 §6 决定，本文的 `可用性`／`证据` 列名与 `开启`／`宿主`／`完整`／`按需`／`自适应`／`已证明` 已随该契约退场。
 
 没有否定词。每个词陈述一件存在的事实。
 
@@ -64,7 +66,7 @@
 | 可用性·取用 | `使用`｜`不使用` |
 | 证据 | `已证明` |
 
-`自动` 是「由宿主推导」，`继承` 是「跟随保存列」，两者不互答。没有记录时可用性列与披露列写 `继承`，不写空、不写「未记录」。日志没有任何选择记录、而最后一条已投递方案带着 `sessionOverrides` 时，这两列陈述的是那条方案折算出的同一条记录（`decided`，标记 `legacy`）；那条方案没有带任何选择时仍是 `继承`。方案的选择表读不出来时这条读是 `unreadable`：能力行没有表达它的词，这两列照常写 `继承`，`记录损坏` 只属于绑定组那条记录（见 §9 的未交付项）。
+`自动` 是「这份记录没有为这个对象写下这一维」，`继承` 是「跟随保存列」，两者不互答。没有记录时可用性列与披露列写 `继承`，不写空、不写「未记录」。日志没有任何选择记录、而最后一条已投递方案带着 `sessionOverrides` 时，这两列陈述的是那条方案折算出的同一条记录（`decided`，标记 `legacy`）；那条方案没有带任何选择时仍是 `继承`。方案的选择表读不出来时这条读是 `unreadable`：能力行没有表达它的词，这两列照常写 `继承`，`记录损坏` 只属于绑定组那条记录（见 §9 的未交付项）。
 
 唯一的例外，且必须同时满足三条：**只由 `classifyBindingAdoption` 返回 `unreadable` 触发**（记录存在但无法解析；记录不存在返回 `none`，不产生这个词）；**陈述的是那条记录，不是面板的状态**；**同一行的控件仍然可点，写一条新记录即取代它**——`记录损坏`。它存在的理由只有一个：另一种做法是替会话报告一个它从未做过的决定。这个词只在面板的行上出现：模型可见的绑定目录没有位置表达「记录不可读」，它对同一条记录发布整份供给，所以 `记录损坏` 不能被读成模型目录的陈述（见 §9 的未交付项）。
 
@@ -83,7 +85,7 @@
 - 记录的物化在运行时：`preStep` 发现记录摘要与现有方案摘要不同时重建方案；`reconcilePendingChoice`、`pendingCommand`／`pendingPrevious` 失去依据，删除。
 - **控件没有失败分支。** 没有禁用、没有预检、没有「先启用某开关」。凡是「这一行现在不能改」的情形，都说明该行不该存在。
 
-一个必然的推论：会话记录了选择，这个会话就是被管理的。全局开关只决定**没有记录时**的默认，不决定有记录时是否生效；否则它就成了 §1 禁止的那个来源。
+一个必然的推论：会话记录了选择，这个会话就是被管理的。全局开关决定这份记录**是否被应用**，不改变页面的任何一格：关掉时记录照旧保留、两列照常陈述，新的决定要到重新启用后才改变运行结果（`src/client-capabilities-view.js` 的格子不读这个开关；它决定的是方案的 `enabled`，以及只由管理开关决定的那种配置是否被发布）。要它成为 §1 禁止的那个来源，除非它开始改变某一格的值——那正是这条推论禁止的。
 
 ## 6. 面板形状（出稿依据）
 
@@ -116,7 +118,7 @@
 
 来源在实现里各自读，便于定位错误；但**任何一步失败就是整次读失败**：不做部分成功的响应。少了几行而屏幕不说，就是谎。
 
-这条读只有一个入口：`describeSessionCatalog`。设置页的 `catalog` 是它的第二个投影：调用方指名会话时读同一条日志与同一份供给（同一个 scope，或同一份冻结方案），只把供给行摊成设置条目；未指名时只读 `hostSupply({})`，即宿主自己的声明——那是保存配置的对象，不是任何会话的陈述，因此不充作会话的供给。读路径不得调用 `change`／`prepare`／`refresh` 的运行时分支、不得写（`session.append`）、不得 reconcile 待处理提案，也不得用 `canRefresh`／`run_code`／worker 判断这个会话能不能读：读不产生写，不改变进程态。
+这条读只有一个入口：`describeSessionCatalog`，两个入口都读它。请求指名会话时读该会话自己的日志与供给（同一个 scope，或同一份冻结方案）；不指名会话时读 `hostSupply({})`，即宿主自己的进程级声明（不含 preset 在 agent 作用域注册的条目），不是任何会话的陈述，因此不充作会话的供给，且这样一次读不列出任何绑定行（绑定采纳没有保存地址）。读路径不得调用 `change`／`prepare`／`refresh` 的运行时分支、不得写（`session.append`）、不得 reconcile 待处理提案，也不得用 `canRefresh`／`run_code`／worker 判断这个会话能不能读：读不产生写，不改变进程态。
 
 读要么给出完整行集，要么整次失败。不存在部分成功的响应：少了几行而屏幕不说，就是谎。失败不是状态，是缺陷——面板给出原始错误、出错的文件或来源，以及重试；空表只表示「宿主真的没有声明」。
 
@@ -126,8 +128,9 @@
 { schema: 'ptc-capability-session-catalog/v2', sessionId,
   rows: [ { id, kind: 'capability'|'server'|'binding',
             name, category, source,
-            saved,        // 能力/服务行
-            session,      // 本会话记录的值
+            saved,        // 每行都有：能力/服务行取自己的规则，绑定行取绑定文档
+            session,      // 本会话记录的值；绑定行另带 recorded 标明这条采纳是否被写下
+            record,       // 能力/服务行：记录自己的字，layers 标明每一维由哪一层写下
             evidence } ],  // 能力行：boolean
   config: { bindingsEnabled } }
 ```
@@ -154,15 +157,15 @@
 
 本节只陈述已交付的落点；未交付的部分单列在末尾，读到它们不算读到授权。
 
-- `internal/capability-selection.js`：`ptc-capability-selection/v1` 的正文与词表、`CAPABILITY_ENTRY_ID`（条目 id 的唯一词表）、`normalizeCapabilitySelection`；`capabilitySelectionText` 是一份记录的唯一正文字面；`capabilityRuleOfSelection` 是一个整选择与它陈述的维度规则相遇的唯一位置；`classifyCapabilitySelection` 与 `capabilitySelectionOf` 是可用性与披露两列和组合入口共用的三态读（`none`／`decided`／`unreadable`）；`capabilitySelectionOf` 在日志没有任何选择记录时把最新一条已投递方案的 `sessionOverrides` 折算成同一形态的 `decided`（带 `legacy` 标记）：整选择词与维度规则写的同一个决定读成同一条记录，`prepare` 因此原地恢复那条方案而不是重建；有记录时以记录为准；该方案没有带任何选择时仍是 `none`（这两列照常写 `继承`），方案的选择表读不出来时是 `unreadable`，方案的 `source.sessionId` 不是本会话时不作为本会话的陈述。
-- `internal/capability-environment.js`：`change()` 是唯一写者，按词表判断后 append 一条记录，不比较方案、不查运行时、不跑预检；`recordSelection` 写完后把这条记录并进本次观察的切面，紧接着的读不会回到被取代的那条；`prepare()` 在记录与已交付组合的 choices 不一致时重建（比较的是两者陈述的决定，不是拼写），重建沿用该组合的 `sourceSettings`（普通刷新仍以冻结来源为准，只有 `refresh` 读当前保存配置）；`describeSessionCatalog` 按 §7 三源读：`sessionCatalogSupply` 决定读哪处声明（`liveAgentFor` 找到 agent 时由 `hostSupply` 以该 agent 为作用域取供给，否则读 `frozenSupply` 重放的冻结面），并在记录没有冻结过面时失败（没有方案、方案损坏、组合时没有要求库存——最后一种由记录自己的 `settings` 经 `requiresCapabilityInventory` 判定，与组合时的判据同一个 owner），`inventory` 接受 `access` 提供的注册表视图与 Skill 观察结果；server 行在 `capabilityRows` 合成且没有自己的披露；`bindingRows` 用 `bindingAdoptionOf` 的三态写绑定行的可用性列（取用）。
+- `internal/capability-selection.js`：`ptc-capability-selection/v1` 的正文与词表、`CAPABILITY_ENTRY_ID`（条目 id 的唯一词表）、`normalizeCapabilitySelection`；`capabilitySelectionText` 是一份记录的唯一正文字面；`capabilityRuleOfSelection` 是一个整选择与它陈述的维度规则相遇的唯一位置；`classifyCapabilitySelection` 与 `capabilitySelectionOf` 是启用与披露两列和组合入口共用的三态读（`none`／`decided`／`unreadable`）；`capabilitySelectionOf` 在日志没有任何选择记录时把最新一条已投递方案的 `sessionOverrides` 折算成同一形态的 `decided`（带 `legacy` 标记）：整选择词与维度规则写的同一个决定读成同一条记录，`prepare` 因此原地恢复那条方案而不是重建；有记录时以记录为准；该方案没有带任何选择时仍是 `none`（这两列照常写 `继承`），方案的选择表读不出来时是 `unreadable`，方案的 `source.sessionId` 不是本会话时不作为本会话的陈述。
+- `internal/capability-environment.js`：`change()` 是唯一写者，按词表判断后 append 一条记录，不比较方案、不查运行时、不跑预检；`recordSelection` 写完后把这条记录并进本次观察的切面，紧接着的读不会回到被取代的那条；`prepare()` 在记录与已交付组合的 choices 不一致时重建（比较的是两者陈述的决定，不是拼写），重建沿用该组合的 `sourceSettings`（普通刷新仍以冻结来源为准，只有 `refresh` 读当前保存配置）；`describeSessionCatalog` 按 §7 三源读：`sessionCatalogSupply` 决定读哪处声明（`liveAgentFor` 找到 agent 时由 `hostSupply` 以该 agent 为作用域取供给，否则读 `frozenSupply` 重放的冻结面），并在记录没有冻结过面时失败（没有方案、方案损坏、组合时没有要求库存——最后一种由记录自己的 `settings` 经 `requiresCapabilityInventory` 判定，与组合时的判据同一个 owner），`inventory` 接受 `access` 提供的注册表视图与 Skill 观察结果；server 行在 `capabilityRows` 合成且没有自己的披露；`bindingRows` 用 `bindingAdoptionOf` 的三态写绑定行的启用列（取用）。
 - `internal/capability-command-receipt.js`：回执只校验它自己那句话需要的形式（无空白、有界长度）。条目 id 的词表由记录 owner 决定，回执不再保留第二个更窄的词表——更窄的那一个会拒掉会话已经写下的记录，于是写成功而回执成文为失败。
-- `src/client-capabilities-view.js`：七列行模型、常驻绑定组、行内控件直接走命令通道、底栏与聊天卡片共用 `capabilityReceiptNotice`；`src/client-copy.js` 只保留 §4 的词与 §6 的区域标题；`client.cjs` 是 `src/` 的构建产物，与 `scripts/client-fallback-smoke.mjs` 的断言在同一次改动里一起走。
+- `src/client-capabilities-view.js`：八列行模型、常驻绑定组、行内控件直接走命令通道、底栏与聊天卡片共用 `capabilityReceiptNotice`；`src/client-copy.js` 拥有页面自己的标签、区域标题与唯一一份取值词表（`capabilities.word.*`，两种语言各一份），词表的形状与退场词由 [能力面：概念契约](capability-surface.md) §4/§6 决定，接线与本地化由它自己的结构用例校对；`client.cjs` 是 `src/` 的构建产物，与 `scripts/client-fallback-smoke.mjs` 的断言在同一次改动里一起走。
 
 未交付，不得读成已交付：
 
 - **模型可见的绑定目录没有「记录不可读」的表达。** 不可读的最新取用记录只在面板的行上读作 `记录损坏`；同一条记录交给模型目录时按「没有否决」处理，因此整份供给仍然发布给模型。要让模型也知道这条记录不可读，需要一个新增的模型可见陈述，本文没有授权它，也就没有它的词。
-- **能力选择读不可读时面板没有词。** 一条无法解析的能力选择记录（或方案里读不出的选择表）让这条读成为 `unreadable`，而 §4 的例外只授权绑定组写 `记录损坏`：能力行的可用性列与披露列没有词陈述它，仍按「没有记录」写 `继承`。要让能力行也陈述这条记录，需要一个本文没有授权的词，因此这里只把它记作未交付。
+- **能力选择读不可读时面板没有词。** 一条无法解析的能力选择记录（或方案里读不出的选择表）让这条读成为 `unreadable`，而 §4 的例外只授权绑定组写 `记录损坏`：能力行的启用列与披露列没有词陈述它，仍按「没有记录」写 `继承`。要让能力行也陈述这条记录，需要一个本文没有授权的词，因此这里只把它记作未交付。
 - **旧形态只覆盖以 `user/message` 投递的方案。** 一条只存在于命令回执提案里的方案由环境的恢复路径读（`recordedPlan`），不由这条陈述读覆盖：它不是会话的陈述，`prepare` 只把记录读到的选择与那条方案的选择逐项比较，相等时原地恢复那条方案，否则按该组合自己的 `sourceSettings` 与记录重算，那条提案自己的会话选择因此不被恢复（`docs/capability-planning-components.md` 记录了这一边界）。
 - **冷会话的 Skill 来源桶没有记录。** 冻结方案里的 Skill 能力带 id、name、description 与调用资格，不带 provider／source 桶（它们不进入冻结能力快照），因此冷会话的 Skill 行来源列只写「技能」，不写活读能写出的桶名。要让冻结面也陈述桶，需要一个新增的冻结字段，本文没有授权它。这是两个面唯一按设计不同的列，`test/capability-environment.test.js` 的「the replayed Skill row states every column the live row states except the provider bucket」把这条边界钉成断言：重放行除来源桶外每一列都必须与活读相同。
 - **绑定写所有权只有活会话这一条分支。** `internal/user-bindings-owner.js` 的 `recordAdoption` 要求活的 `session.append`；§5 的冷会话持久化写分支没有实现，冷会话写不了取用记录。

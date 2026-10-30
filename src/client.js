@@ -3,8 +3,9 @@ import { RPC_CONTRACTS } from '../internal/rpc-contract.js'
 import { CONFIG_DEFAULTS, SETTINGS_NAMESPACE } from '../internal/config-spec.js'
 import { createPtcToolView } from './client-tool-view.js'
 import { createPtcSettingsView } from './client-settings-view.js'
-import { createCapabilityCommandCard, createCapabilityRefreshView, createSessionCapabilityControlsView } from './client-capabilities-view.js'
+import { createCapabilityCommandCard, createCapabilityRefreshView, createCapabilitySurfaceView } from './client-capabilities-view.js'
 import { capabilityProfileConfiguration } from '../internal/runtime-config.js'
+import { capabilityPolicyForConfig } from '../internal/capability-policy.js'
 import { createReplView } from './client-repl-view.js'
 import { createAuthoringView } from './client-authoring-view.js'
 import { bindingToggleConversationDefinition } from './client-binding-toggle.js'
@@ -183,16 +184,23 @@ export function createClientPlugin(require) {
       const bindingCommands = createBindingCommandAvailability(ctx)
       const CapabilityCommandCard = createCapabilityCommandCard(React)
       const CapabilityRefreshButton = createCapabilityRefreshView(React, capabilityCommands)
-      const SessionCapabilityControls = createSessionCapabilityControlsView(React, {
-        commands: capabilityCommands, bindingCommands, Modal, Select,
-        async inspectSessionCatalog(sessionId, signal) {
-          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'session-catalog', { sessionId }, signal)
-          if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Session capability catalog unavailable')
-          return result.value
-        },
+      // One read serves both entrances. A request that names a session states that
+      // session's declared face; a request that names none states the Host's own
+      // declaration, which is the process-scope object set this entrance can state — a
+      // preset's agent-scope entries exist only in a session's declared face.
+      async function inspectSessionCatalog(sessionId, signal) {
+        const result = await rpc.call(RPC_CONTRACTS.capabilities, 'session-catalog',
+          typeof sessionId === 'string' && sessionId ? { sessionId } : {}, signal)
+        if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Session capability catalog unavailable')
+        return result.value
+      }
+      // The capability page has one renderer. The session entry and the settings entry
+      // both mount it; neither adds a column, a word, a control or a receipt of its own.
+      const CapabilitySurface = createCapabilitySurfaceView(React, {
+        commands: capabilityCommands, bindingCommands, Modal, Select, inspectSessionCatalog,
       })
       const { PTCPlusSettingsCard, PTCPlusSettingsDialog } = createPtcSettingsView(React, {
-        ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, CapabilityRefreshButton,
+        ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, CapabilityRefreshButton, CapabilitySurface,
         async inspectCapabilityTargets(signal) {
           const result = await rpc.call(RPC_CONTRACTS.capabilities, 'targets', {}, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability refresh targets unavailable')
@@ -203,22 +211,14 @@ export function createClientPlugin(require) {
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability plans unavailable')
           return result.value
         },
-        async inspectCapabilityCatalog(sessionId, signal) {
-          // The list is the supply for one session's workspace directory, so the
-          // request names the session the settings page observes. Naming none asks
-          // for the Host's own declaration, which is what a page with no observed
-          // session can still state.
-          const result = await rpc.call(RPC_CONTRACTS.capabilities, 'catalog',
-            typeof sessionId === 'string' && sessionId ? { sessionId } : {}, signal)
-          if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability catalog unavailable')
-          return result.value
-        },
         async inspectCapabilityAllocation(payload, signal) {
           const result = await rpc.call(RPC_CONTRACTS.capabilities, 'allocation', payload, signal)
           if (result?.ok !== true) throw new Error(result?.error?.message ?? 'Capability allocation unavailable')
           return result.value
         },
-        icons: { search: IconSearchOutline16, chevron: IconChevronDownOutline14 },
+        // The settings page reads one icon: its navigation chevron. The search icon belonged to
+        // the second renderer's toolbar row, which this page no longer has.
+        icons: { chevron: IconChevronDownOutline14 },
       })
       const { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory } = createReplView(React, {
         CodeBlock, Select, featureEnabled, normalizeReplMemorySnapshot, normalizeReplMemoryView,
@@ -249,9 +249,24 @@ export function createClientPlugin(require) {
         const before = preferenceScope.getSnapshot()
         if (before.status !== 'ready' || before.writable !== true || !featureEnabled(before, 'plugin')) throw new Error('Capability settings are not writable')
         const validated = capabilityProfileConfiguration(configuration)
-        await preferenceScope.mutate(Object.entries(validated).map(([key, value]) => ({ op: 'set', path: [key], value })))
+        const synthesized = JSON.stringify(capabilityPolicyForConfig({ ...validated, capabilityPolicy: undefined }))
+        const ops = Object.entries(validated)
+          .filter(([key]) => key !== 'capabilityPolicy')
+          .map(([key, value]) => ({ op: 'set', path: [key], value }))
+        // A policy the rest of this configuration would synthesize belongs to no record: writing it
+        // would freeze a synthesized bottom layer into the record and let the management switch
+        // reach cells that must read 自动 (capability-surface §8.1c). The record may still hold one
+        // from an earlier apply, so remove it with the service's own unset op instead of leaving it.
+        const policyWritten = validated.capabilityPolicy !== undefined && validated.capabilityPolicy !== synthesized
+        ops.push(policyWritten
+          ? { op: 'set', path: ['capabilityPolicy'], value: validated.capabilityPolicy }
+          : { op: 'unset', path: ['capabilityPolicy'] })
+        await preferenceScope.mutate(ops)
         const after = preferenceScope.getSnapshot()
-        if (after.status !== 'ready' || Object.entries(validated).some(([key, value]) => after.value?.[key] !== value)) throw new Error('Capability configuration was not applied')
+        const unchanged = Object.entries(validated).every(([key, value]) => key === 'capabilityPolicy'
+          ? (policyWritten ? after.value?.capabilityPolicy === value : after.value?.capabilityPolicy === undefined)
+          : after.value?.[key] === value)
+        if (after.status !== 'ready' || !unchanged) throw new Error('Capability configuration was not applied')
         return 'status.applied'
       }
       // One gated-registration shape for every settings-driven contribution.
@@ -338,7 +353,7 @@ export function createClientPlugin(require) {
       const { BindingAuthorButton, BindingReviewDock, BindingCommandCard } = createAuthoringView(React, {
         ActionButton, IconButton, Menu, MenuFallback, Toast, Tooltip, CodeBlock, Modal, createPortal, BindingsDialog, PTCPlusSettingsDialog,
         useWorkbenchController, useBindingReview, catalogOwner, callUserBindings, subscribeReset,
-        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, SessionCapabilityControls,
+        settingsCardSeat: settingsCard.seat, updateSetting, updateCapabilityConfiguration, menuChildren, SessionCapabilityControls: CapabilitySurface,
         icons: {
           sparkle: IconSparkle16, chevron: IconChevronDownOutline14,
           close: IconCloseOutline16, check: IconCheckOutline14,

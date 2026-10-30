@@ -1,9 +1,8 @@
-import { capabilityPolicyForConfig, capabilityRule, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from '../internal/capability-policy.js'
+import { capabilityPolicyForConfig, capabilityPolicyFromRecord, changeCapabilityRule, effectiveCapabilitySettings, CAPABILITY_DISCLOSURES, CAPABILITY_INVENTORY_CATEGORIES } from '../internal/capability-policy.js'
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 import { createFallbackModal } from './client-primitives.js'
-import { CAPABILITY_SORT_COLUMNS, capabilitySortDirection, cycleCapabilitySort, sortCapabilityEntries } from './client-capability-sort.js'
 import {
   PROMPT_ASSETS, PROMPT_TEXT_MAX_SLOT_BYTES, PROMPT_TEXT_SCHEMA,
   accountPromptText, parsePromptTextDocument, resolvePromptText,
@@ -28,7 +27,7 @@ const receiptCopyKey = (surface, state) => `capabilities.${surface}.${RECEIPT_ST
 /** The record one write named, in the §4 vocabulary the panel's columns use. */
 function capabilityRecordText(t, record) {
   if (record === null || typeof record !== 'object' || typeof record.id !== 'string') return undefined
-  return `${record.id} · ${record.dimension === undefined ? '' : `${t(`capabilities.policy.${record.dimension}`)} `}`
+  return `${record.id} · ${record.dimension === undefined ? '' : `${t(`capabilities.dimension.${record.dimension}`)} `}`
     + t(`capabilities.word.${record.selection}`)
 }
 
@@ -37,8 +36,9 @@ function capabilityRecordText(t, record) {
  *
  * A receipt states the write this command performed: which entry, which choice,
  * and which session or global configuration now records it. Whether a cell later
- * reached that entry is the panel's evidence column — a marker means an accepted
- * execution obtained it — so no receipt states it. The chat card and the composer
+ * reached that entry is a catalogue row's `evidence` field — a marker means an
+ * accepted execution obtained it, and this page states no such column — so no
+ * receipt states it. The chat card and the composer
  * toast read this one function; the `surface` argument picks which outcome
  * sentence describes the command, and a write that named a record reads the same
  * on both.
@@ -75,13 +75,13 @@ const PROMPT_TABLE_COLUMNS = PROMPT_TABLE_COLUMN_KEYS.length
 function capabilityChoiceLabel(t, value) {
   return t(value === 'inherit' ? 'capabilities.quick.noOverride'
     : ['enabled', 'pending', 'unknown'].includes(value) ? `capabilities.quick.${value}`
-      : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.${value}` : 'capabilities.quick.unknown')
+      : [...selections, ...CAPABILITY_DISCLOSURES].includes(value) ? `capabilities.word.${value}` : 'capabilities.quick.unknown')
 }
 
-function capabilityRuleLabel(t, rule, empty = 'capabilities.policy.inheritRule') {
+function capabilityRuleLabel(t, rule, empty = 'capabilities.policy.layerAbove') {
   const dimensions = ['availability', 'disclosure'].filter(dimension => rule?.[dimension] !== undefined)
   return dimensions.length ? dimensions.map(dimension => `${t(`capabilities.policy.${dimension}`)}: ${rule[dimension] === 'automatic'
-    ? t('capabilities.policy.inheritRule') : capabilityChoiceLabel(t, rule[dimension])}`).join(' · ') : t(empty)
+    ? t('capabilities.policy.layerAbove') : capabilityChoiceLabel(t, rule[dimension])}`).join(' · ') : t(empty)
 }
 
 function validCatalogRule(rule, temporary = false) {
@@ -279,7 +279,7 @@ export function createCapabilityCommandCard(React) {
       if (typeof entry[key] === 'object') return catalogStatementLabel(t, entry[key])
       const rule = entry[key === 'saved' ? 'savedRule' : 'temporaryRule']
       return rule === undefined ? capabilityChoiceLabel(t, entry[key])
-        : capabilityRuleLabel(t, rule, key === 'temporary' ? 'capabilities.quick.noOverride' : 'capabilities.policy.inheritRule')
+        : capabilityRuleLabel(t, rule, key === 'temporary' ? 'capabilities.quick.noOverride' : 'capabilities.policy.layerAbove')
     }
     return h('section', { className: 'ptcPlusCapabilityReceipt', 'aria-label': t('capabilities.receipt.title') },
       h('div', { className: 'ptcPlusCapabilityReceiptHead' },
@@ -305,38 +305,8 @@ export function createCapabilityCommandCard(React) {
 }
 
 const selections = ['automatic', 'full', 'on-demand', 'closed']
-const kinds = ['all', 'tool', 'skill', 'resource', 'other']
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0
 const configurationId = () => Array.from(globalThis.crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
-
-/**
- * Catalog facts and saved preferences stay separate from frozen session results.
- *
- * `inCatalog` states one fact about the last complete catalog read: that read
- * declared this identity. It is a fact about a read, not a verdict about the
- * capability, so it never becomes a row state, badge or filter; the only reader is
- * the batch write's changed-target check, which refuses a stale target identity.
- */
-export function capabilitySettingsEntries(value, catalog, plans, uncertain = false) {
-  const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline)
-  // A retained catalog after a failed reload is not an observation: nothing in it
-  // may confirm that the current catalog still declares these identities.
-  const observed = catalog !== null && uncertain !== true
-  const entries = new Map((catalog ?? []).map(entry => [entry.id, { ...entry, inCatalog: observed }]))
-  for (const plan of plans ?? []) for (const entry of plan.effective.entries) {
-    if (!entries.has(entry.id)) entries.set(entry.id, { id: entry.id, category: entry.category, inCatalog: false })
-  }
-  const policy = capabilityPolicyForConfig(value)
-  for (const id of [...baseline, ...Object.keys(policy.items)].filter(id => !id.startsWith('mcpServers.'))) if (!entries.has(id)) entries.set(id, { id, inCatalog: false })
-  return [...entries.values()].map(entry => ({ ...entry,
-    name: entry.name ?? entry.id,
-    kind: ['tool', 'skill'].includes(entry.category) ? entry.category
-      : ['resource', 'resource-template'].includes(entry.category) ? 'resource' : 'other',
-    inCatalog: entry.inCatalog === true,
-    common: baseline.includes(entry.id), rule: policy.items[entry.id] ?? {}, resolvedRule: capabilityRule(policy, entry),
-  }))
-}
-
 export function capabilityPlanReason(t, entry) {
   const known = ['manual-override', 'baseline-not-selected', 'baseline', 'coverage-below-threshold', 'statistical-coverage',
     'mcp-server-disabled', 'contract-budget', 'management-disabled', 'statistics-disabled', 'statistics-settings-invalid', 'statistics-data-invalid',
@@ -345,7 +315,7 @@ export function capabilityPlanReason(t, entry) {
     .map(reason => known.includes(reason) ? t(`capabilities.reason.${reason}`) : reason).join(' · ')
 }
 
-export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal = createFallbackModal(React) }) {
+export function createCapabilitySettingsViews(React, { Select, Modal = createFallbackModal(React) }) {
   const h = React.createElement
   const field = key => CONFIG_FIELDS.find(item => item.key === key)
   // Each group owns one settings tab; the prompt text switch lives in the same
@@ -434,8 +404,13 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     )
   }
 
-  function PolicyRules({ value, catalog, disabled, onChange, t }) {
-    const policy = capabilityPolicyForConfig(value)
+  function PolicyRules({ value, disabled, onChange, t }) {
+    // This window edits the record's own document. A configuration that saved no policy has only
+    // a synthesized document, whose bottom layer the capability-management switch shaped, so the
+    // editor starts from the record's written layers instead of freezing that layer into the
+    // record on the first edit (capability-surface §8.1c).
+    const policy = value.capabilityPolicySaved === true
+      ? capabilityPolicyForConfig(value) : capabilityPolicyFromRecord(value)
     const write = next => onChange(field('capabilityPolicy'), JSON.stringify(next))
     const ruleControls = (rule, update, label, defaults = false) => h('div', { className: 'ptcPlusPolicyRule', key: label },
       h('strong', null, label), ...['availability', 'disclosure'].map(dimension => h('div', { className: 'ptcPlusCapabilityFilter', key: dimension },
@@ -444,7 +419,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           value: rule[dimension] ?? 'automatic', onChange: choice => {
             const next = { ...rule }; if (choice === 'automatic') delete next[dimension]; else next[dimension] = choice; update(next)
           }, options: [...(defaults ? [] : ['automatic']), ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
-            .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice === 'enabled' ? 'quick.enabled' : choice}`) })) }))))
+            .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.layerAbove' : `capabilities.word.${choice}`) })) }))))
     return h('section', { className: 'ptcPlusPolicyRules', 'aria-label': t('capabilities.policy.rules') },
       h('h4', null, t('capabilities.inheritedRules')), h('p', { className: 'ptcPlusDetail' }, t('capabilities.inheritedRulesHelp')),
       h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.precedence')),
@@ -453,7 +428,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
         ...Object.values(CAPABILITY_INVENTORY_CATEGORIES).map(category => ruleControls(policy.categories[category] ?? {}, rule =>
           write({ ...policy, categories: { ...policy.categories, [category]: rule } }), t(`capabilities.policy.category.${category}`)))),
       h('details', null, h('summary', { tabIndex: 0 }, t('capabilities.sourceRules')),
-        ...[...new Set([...Object.keys(policy.mcpServers), ...(catalog ?? []).map(item => item.mcpServer).filter(Boolean)])].sort(compare)
+        ...[...new Set(Object.keys(policy.mcpServers))].sort(compare)
           .map(server => ruleControls(policy.mcpServers[server] ?? {}, rule =>
             write(changeCapabilityRule(changeCapabilityRule(policy, `mcpServers.${server}`, 'availability', rule.availability ?? 'automatic'),
               `mcpServers.${server}`, 'disclosure', rule.disclosure ?? 'automatic')), server))))
@@ -469,333 +444,6 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           onClick: onClose }, '\u00d7')),
       h('div', { className: 'ptcPlusCapabilityDialogBody' }, children),
       footer ? h('div', { className: 'ptcPlusCapabilityDialogFooter' }, footer) : null)
-  }
-
-  function CapabilityBatchDialog({ operation, value, entries, disabled, onChange, onClose, t }) {
-    const [choices, setChoices] = React.useState({ availability: 'keep', disclosure: 'keep' })
-    const [pending, setPending] = React.useState(false)
-    const [failed, setFailed] = React.useState(false)
-    const saving = React.useRef(false)
-    const mounted = React.useRef(true)
-    React.useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
-    // The dialog's targets are exactly the explicit selection. A target the last
-    // complete catalog read did not declare is reported as a changed target, so a
-    // stale selection cannot be written; nothing is dropped before it is reported.
-    const targetIds = new Set(entries.filter(entry => entry.inCatalog === true).map(entry => entry.id))
-    const missing = operation.targets.filter(entry => !targetIds.has(entry.id)).length
-    const blocked = disabled('capabilityPolicy') || pending
-    const changed = Object.values(choices).some(choice => choice !== 'keep')
-    const close = () => { if (!saving.current) onClose() }
-    const confirm = async () => {
-      if (saving.current || blocked || missing || !changed || !operation.targets.length) return
-      let next = capabilityPolicyForConfig(value)
-      for (const target of operation.targets) for (const dimension of ['availability', 'disclosure']) {
-        if (choices[dimension] !== 'keep') next = changeCapabilityRule(next, target.id, dimension, choices[dimension])
-      }
-      saving.current = true; setPending(true); setFailed(false)
-      try {
-        const saved = await onChange(field('capabilityPolicy'), JSON.stringify(next))
-        if (!mounted.current) return
-        if (saved === true) onClose()
-        else setFailed(true)
-      } catch {
-        if (mounted.current) setFailed(true)
-      } finally {
-        saving.current = false
-        if (mounted.current) setPending(false)
-      }
-    }
-    return h(Modal, { open: true, onClose: close, title: t('capabilities.batchSettings'),
-      closeLabel: t('capabilities.batch.cancel'), headless: true, className: 'ptcPlusCapabilityBatchModal' },
-      h('div', { className: 'ptcPlusCapabilityBatchHead' }, h('h2', null, t('capabilities.batchSettings')),
-        h('button', { type: 'button', className: 'ptcPlusDialogClose', disabled: pending,
-          'aria-label': t('capabilities.batch.cancel'), onClick: close }, '×')),
-      h('div', { className: 'ptcPlusCapabilityBatchBody' },
-        h('p', { className: 'ptcPlusDetail', role: 'status' }, t('capabilities.batch.targets', { count: operation.targets.length })),
-        operation.targets.length ? h('ul', { className: 'ptcPlusCapabilityBatchTargets', 'aria-label': t('capabilities.batch.targetList') },
-          ...operation.targets.map(target => h('li', { key: target.id }, h('span', null, target.name), h('code', null, target.id))))
-          : h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.empty')),
-        h('div', { className: 'ptcPlusCapabilityBatchFields' }, ...['availability', 'disclosure'].map(dimension =>
-          h('div', { key: dimension, className: 'ptcPlusCapabilityFilter' }, h('span', null, t(`capabilities.policy.${dimension}`)),
-            h(Select, { value: choices[dimension], disabled: blocked || !operation.targets.length,
-              label: t(`capabilities.batch.${dimension}`), onChange: choice => setChoices(current => ({ ...current, [dimension]: choice })),
-              options: ['keep', 'automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)]
-                .map(choice => ({ value: choice, label: t(choice === 'keep' ? 'capabilities.batch.keep'
-                  : choice === 'automatic' ? 'capabilities.policy.inheritRule'
-                    : choice === 'enabled' ? 'capabilities.action.enable'
-                      : choice === 'closed' ? 'capabilities.action.close' : `capabilities.${choice}`) })) })))),
-        h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.effect')),
-        h('p', { className: 'ptcPlusDetail' }, t('capabilities.batch.sourceClosure')),
-        missing ? h('p', { className: 'ptcPlusMessage', role: 'alert' }, t('capabilities.batch.changedTargets', { count: missing })) : null,
-        failed ? h('p', { className: 'ptcPlusMessage', role: 'alert' }, t('capabilities.batch.failed')) : null),
-      h('div', { className: 'ptcPlusCapabilityBatchFooter' },
-        h('button', { type: 'button', className: 'ptcPlusButton', disabled: pending, onClick: close }, t('capabilities.batch.cancel')),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
-          disabled: blocked || Boolean(missing) || !changed || !operation.targets.length, onClick: confirm },
-        t(pending ? 'state.syncing' : 'capabilities.batch.confirm', { count: operation.targets.length }))))
-  }
-
-  function CapabilityChoices({ value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect }) {
-    const root = React.useRef(null)
-    const [query, setQuery] = React.useState('')
-    const [kind, setKind] = React.useState('all')
-    const [source, setSource] = React.useState('all')
-    const [strategy, setStrategy] = React.useState('all')
-    const [availabilityRule, setAvailabilityRule] = React.useState('all')
-    const [onlyCommon, setOnlyCommon] = React.useState(false)
-    const [sort, setSort] = React.useState(null)
-    const [selected, setSelected] = React.useState(null)
-    const [picked, setPicked] = React.useState([])
-    const [filtersOpen, setFiltersOpen] = React.useState(false)
-    const [batchOperation, setBatchOperation] = React.useState(null)
-    const [inheritedRulesOpen, setInheritedRulesOpen] = React.useState(false)
-    const [localSessionId, setLocalSessionId] = React.useState('')
-    const sessionId = onSessionSelect ? selectedSessionId : localSessionId
-    const setSessionId = next => { setLocalSessionId(next); onSessionSelect?.(next) }
-    const baseline = JSON.parse(value.capabilityBaseline ?? CONFIG_DEFAULTS.capabilityBaseline)
-    const policy = capabilityPolicyForConfig(value)
-    const entries = capabilitySettingsEntries(value, catalog, plans, Boolean(catalogError))
-    // Two entries share one source group exactly when they state the same source; an
-    // entry that states none is grouped by the namespace it belongs to.
-    const sourceKey = entry => JSON.stringify(entry.source ?? namespaceSource(entry))
-    const sourceLabel = entry => {
-      if (entry.source?.kind === 'skill') {
-        const bucket = entry.source.bucket
-        const label = SKILL_SOURCE_BUCKETS.includes(bucket) ? t(`capabilities.source.${bucket}`)
-          : bucket ? `${t('capabilities.source.other-skill')} · ${bucket}` : t('capabilities.source.skill')
-        return `${label}${entry.source.provider ? ` · ${entry.source.provider}` : ''}`
-      }
-      if (entry.source?.kind === 'mcp') {
-        const servers = mcpServersOf(entry.source)
-        return servers.length > 0 ? `MCP · ${servers.join(t('capabilities.source.separator'))}` : t('capabilities.source.mcp')
-      }
-      return capabilitySourceText(t, entry)
-    }
-    const matchesKind = (entry, type) => type === 'all' || (type === 'resource' ? entry.source?.kind === 'mcp'
-      : type === 'tool' ? entry.kind === 'tool' && entry.source?.kind !== 'mcp' : type === entry.kind)
-    const sources = new Map(entries.filter(entry => matchesKind(entry, kind)).map(entry => [sourceKey(entry), sourceLabel(entry)]))
-    const setType = next => { setKind(next); if (!entries.some(entry => matchesKind(entry, next) && sourceKey(entry) === source)) setSource('all') }
-    const setCompatibleSource = next => {
-      setSource(next)
-      if (next !== 'all' && !entries.some(entry => matchesKind(entry, kind) && sourceKey(entry) === next)) setKind('all')
-    }
-    const normalizedQuery = query.trim().toLowerCase()
-    const filtered = entries.filter(entry => matchesKind(entry, kind)
-      && (source === 'all' || sourceKey(entry) === source)
-      && (strategy === 'all' || (entry.rule.disclosure ?? 'automatic') === strategy)
-      && (availabilityRule === 'all' || (entry.rule?.availability ?? 'automatic') === availabilityRule)
-      && (!onlyCommon || entry.common)
-      && `${entry.name} ${entry.id} ${entry.description ?? ''} ${sourceLabel(entry)}`.toLowerCase().includes(normalizedQuery))
-    const defaultOrder = (a, b) => compare(a.name.toLowerCase(), b.name.toLowerCase()) || compare(a.id, b.id)
-    // The cell states the rule this row resolves to. Whether the last catalog read
-    // declared the identity is a different fact and is not a state of this column.
-    const state = item => value.capabilityContextEnabled === false || value.capabilityManagementEnabled !== true ? 'unapplied'
-      : item.resolvedRule.availabilitySource.startsWith('mcp:') && item.resolvedRule.availability === 'closed' ? 'source-closed' : item.resolvedRule.availability
-    const type = item => item.source?.kind === 'mcp' ? 'resource' : item.kind
-    // The cell states the servers the supply names, and the `MCP · ` caption stays on
-    // the group and filter labels: a row's own cell answers which server, not that it
-    // is an MCP one.
-    const displayedSource = item => item.source?.kind === 'mcp'
-      ? mcpServersOf(item.source).join(t('capabilities.source.separator')) || sourceLabel(item)
-      : sourceLabel(item)
-    const groups = new Map()
-    for (const entry of filtered) {
-      const group = entry.source?.kind === 'mcp' && entry.source.server ? `mcp:${entry.source.server}` : entry.kind
-      if (!groups.has(group)) groups.set(group, [])
-      groups.get(group).push(entry)
-    }
-    const groupOrder = ['tool', ...[...groups.keys()].filter(key => key.startsWith('mcp:')).sort(compare), 'skill', 'resource', 'other']
-    const defaultEntries = groupOrder.flatMap(group => (groups.get(group) ?? []).sort(defaultOrder))
-    const visible = sortCapabilityEntries(defaultEntries, sort, (item, column) => column === 'name' ? item.name
-      : column === 'type' ? t(`capabilities.type.${type(item)}`)
-        : column === 'source' ? displayedSource(item)
-          : column === 'availability' ? t(`capabilities.rowState.${state(item)}`)
-            : t(`capabilities.${item.resolvedRule.disclosure}`))
-    const pickedIds = picked.filter(id => entries.some(item => item.id === id))
-    const pickedEntries = pickedIds.map(id => entries.find(item => item.id === id)).filter(Boolean)
-    const allVisiblePicked = visible.length > 0 && visible.every(item => pickedIds.includes(item.id))
-    const someVisiblePicked = visible.some(item => pickedIds.includes(item.id))
-    const togglePick = id => setPicked(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
-    const toggleAllVisible = () => setPicked(current => allVisiblePicked
-      ? current.filter(id => !visible.some(item => item.id === id))
-      : [...new Set([...current, ...visible.map(item => item.id)])])
-    const entry = visible.find(item => item.id === selected)
-    const plan = sessionId ? plans?.find(item => item.sessionId === sessionId) : undefined
-    const effective = plan?.effective.entries.find(item => item.id === entry?.id)
-    const change = (key, next) => onChange(field(key), JSON.stringify(next))
-    const setManual = (id, selection) => change('capabilityPolicy', changeCapabilityRule(policy, id, 'disclosure', selection))
-    const clear = () => { setQuery(''); setKind('all'); setSource('all'); setStrategy('all'); setAvailabilityRule('all'); setOnlyCommon(false) }
-    const activeFilters = Number(kind !== 'all') + Number(source !== 'all') + Number(strategy !== 'all') + Number(availabilityRule !== 'all') + Number(onlyCommon)
-    const select = (label, current, update, options, blocked = false) => h('div', { className: 'ptcPlusCapabilityFilter' },
-      h('span', null, label), h(Select, { label, value: current, disabled: blocked, onChange: update,
-        options: options.map(([key, text]) => ({ value: key, label: text })) }))
-    const editorField = (label, control) => h('div', { className: 'ptcPlusCapabilityField' }, h('span', null, label), control)
-    const manualSelect = item => h('div', { className: 'ptcPlusCapabilityEditorFields' },
-      editorField(t('capabilities.enabledColumn'), h(Select, { value: item.rule.availability ?? 'automatic', disabled: disabled('capabilityPolicy'),
-        label: t('capabilities.policy.availabilityFor', { name: item.id }),
-        onChange: next => change('capabilityPolicy', changeCapabilityRule(policy, item.id, 'availability', next)),
-        options: ['automatic', 'enabled', 'closed'].map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : choice === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${choice}`) })) })),
-      editorField(t('capabilities.contextColumn'), h(Select, { value: item.rule.disclosure ?? 'automatic', disabled: disabled('capabilityPolicy'),
-        label: t('capabilities.disclosureFor', { name: item.id }),
-        onChange: next => setManual(item.id, next), options: ['automatic', ...CAPABILITY_DISCLOSURES]
-          .map(choice => ({ value: choice, label: t(choice === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${choice}`) })) })))
-    const commonSwitch = item => h('div', { className: 'ptcPlusCapabilitySwitchRow' },
-      h('div', { className: 'ptcPlusCapabilitySwitchText' },
-        h('span', { className: 'ptcPlusCapabilitySwitchLabel' }, t('capabilities.commonBaseline')),
-        h('span', { className: 'ptcPlusCapabilitySwitchHint' }, t(item.common ? 'capabilities.inBaseline' : 'capabilities.notInBaseline'))),
-      h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: item.common,
-        disabled: disabled('capabilityBaseline'), 'aria-label': t('capabilities.baselineFor', { name: item.id }),
-        onChange: event => change('capabilityBaseline', event.target.checked
-          ? [...baseline.filter(id => id !== item.id), item.id] : baseline.filter(id => id !== item.id)) }))
-    const filterLabels = [kind !== 'all' ? t(`capabilities.type.${kind}`) : null,
-      source !== 'all' ? sources.get(source) ?? t('capabilities.previousSource') : null,
-      strategy !== 'all' ? t(strategy === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${strategy}`) : null,
-      availabilityRule !== 'all' ? t(availabilityRule === 'automatic' ? 'capabilities.policy.inheritRule'
-        : availabilityRule === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed') : null,
-      onlyCommon ? t('capabilities.onlyCommon') : null].filter(Boolean)
-    const closeEditor = () => {
-      const button = [...(root.current?.querySelectorAll('[data-capability-edit-id]') ?? [])].find(item => item.dataset.capabilityEditId === selected)
-      setSelected(null); button?.focus({ preventScroll: true })
-    }
-    return h('div', { className: 'ptcPlusCapabilityChoices', ref: root },
-      h('div', { className: 'ptcPlusCapabilityToolbar' },
-        h('label', { className: 'ptcPlusSearch' }, h(SearchIcon),
-          h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'), placeholder: t('capabilities.search'),
-            onChange: event => setQuery(event.target.value) })),
-        h('div', { className: 'ptcPlusCapabilityTypes', role: 'group', 'aria-label': t('capabilities.types') },
-          ...kinds.filter(key => key !== 'other' || entries.some(item => item.kind === 'other')).map(key => h('button', {
-            key, type: 'button', 'aria-pressed': kind === key, onClick: () => setType(key),
-          }, t(`capabilities.type.${key}`)))),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
-          onClick: () => setFiltersOpen(true) }, t('capabilities.filterAction')),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
-          'aria-label': t('capabilities.batchSettings'),
-          disabled: disabled('capabilityPolicy') || pickedEntries.length === 0,
-          onClick: () => setBatchOperation({
-            targets: pickedEntries.map(item => ({ id: item.id, name: item.name })),
-          }) }, t('capabilities.batchSettings'),
-          pickedIds.length ? h('span', { className: 'ptcPlusCapabilityBatchCount', 'aria-hidden': true,
-            title: t('capabilities.selectionCount', { count: pickedIds.length }) },
-            String(pickedIds.length)) : null),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
-          onClick: () => setInheritedRulesOpen(true) }, t('capabilities.inheritedRules'))),
-      filtersOpen ? h(CapabilityDialog, { title: t('capabilities.filterAction'), onClose: () => setFiltersOpen(false), t,
-        className: 'ptcPlusCapabilityFilterDialog', footer: h('button', { type: 'button', className: 'ptcPlusButton',
-          'data-kind': 'primary', onClick: () => setFiltersOpen(false) }, t('capabilities.dialogDone')) },
-        h('div', { className: 'ptcPlusCapabilityFilterFields' },
-          select(t('capabilities.sourceFilter'), source, setCompatibleSource, [['all', t('capabilities.allSources')], ...sources,
-            ...(source !== 'all' && !sources.has(source) ? [[source, t('capabilities.previousSource')]] : [])]),
-          select(t('capabilities.policy.disclosureFilter'), strategy, setStrategy, [['all', t('capabilities.allStrategies')],
-            ...['automatic', ...CAPABILITY_DISCLOSURES].map(key => [key, t(key === 'automatic' ? 'capabilities.policy.inheritRule' : `capabilities.${key}`)])]),
-          select(t('capabilities.policy.availabilityFilter'), availabilityRule, setAvailabilityRule, [['all', t('capabilities.allStrategies')],
-            ...['automatic', 'enabled', 'closed'].map(key => [key, t(key === 'automatic' ? 'capabilities.policy.inheritRule' : key === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed')])]),
-          h('label', { className: 'ptcPlusCapabilityOnlyCommon' }, h('input', { type: 'checkbox', checked: onlyCommon,
-            onChange: event => setOnlyCommon(event.target.checked) }), t('capabilities.onlyCommon')))) : null,
-      inheritedRulesOpen ? h(CapabilityDialog, { title: t('capabilities.inheritedRules'), onClose: () => setInheritedRulesOpen(false), t,
-        footer: h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
-          onClick: () => setInheritedRulesOpen(false) }, t('capabilities.dialogDone')) },
-        h(PolicyRules, { value, catalog, disabled, onChange, t })) : null,
-      batchOperation ? h(CapabilityBatchDialog, { operation: batchOperation, value, entries, disabled, onChange,
-        onClose: () => setBatchOperation(null), t }) : null,
-      activeFilters ? h('div', { className: 'ptcPlusActiveFilters' }, h('span', null, filterLabels.join(' · ')),
-        h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: clear }, t('capabilities.clear'))) : null,
-      h('div', { className: 'ptcPlusCapabilityResultLine' }, h('span', { role: 'status' }, t('capabilities.results', { count: visible.length, total: entries.length })),
-        h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: onReload }, t('capabilities.reloadCatalog'))),
-      catalogError ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.catalogReadFailed', { error: catalogError })) : null,
-      entries.length === 0 ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.catalogEmpty'))
-        : visible.length === 0 ? h('div', { className: 'ptcPlusCapabilityEmpty' }, h('p', null, t('capabilities.noMatches')),
-          h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: clear }, t('capabilities.clear'))) :
-          h('div', { className: 'ptcPlusCapabilityTable', role: 'table', 'aria-label': t('capabilities.management') },
-            h('div', { className: 'ptcPlusCapabilityColumns', role: 'row' },
-              ...CAPABILITY_SORT_COLUMNS.map(column => h('span', { key: column.key, role: 'columnheader',
-                'aria-sort': capabilitySortDirection(sort, column.key),
-                ...(column.key === 'name' ? { 'aria-label': t('capabilities.member'), className: 'ptcPlusCapabilityPickHead' } : {}) },
-                ...(column.key === 'name' ? [h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: allVisiblePicked,
-                  ref: node => { if (node) node.indeterminate = someVisiblePicked && !allVisiblePicked },
-                  disabled: visible.length === 0, 'aria-label': t('capabilities.selectAllVisible'),
-                  onChange: toggleAllVisible })] : []),
-                h('button', { type: 'button', className: 'ptcPlusCapabilitySort', title: t('capabilities.sortCycle'),
-                  onClick: () => setSort(current => cycleCapabilitySort(current, column.key)) },
-                t(`capabilities.${column.label}`), h('span', { 'aria-hidden': true },
-                  capabilitySortDirection(sort, column.key) === 'ascending' ? '↑' : capabilitySortDirection(sort, column.key) === 'descending' ? '↓' : '↕'))))),
-            h('div', { className: 'ptcPlusCapabilityList', role: 'rowgroup' }, ...visible.map(item => h('div', { key: item.id, className: 'ptcPlusCapabilityItem', role: 'row',
-              'data-selected': entry?.id === item.id,
-              onClick: () => setSelected(item.id) },
-              h('div', { className: 'ptcPlusCapabilityIdentity', role: 'cell' },
-                h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: pickedIds.includes(item.id),
-                  'aria-label': t('capabilities.selectForBatch', { name: item.name ?? item.id }),
-                  onClick: event => event.stopPropagation(), onChange: () => togglePick(item.id) }),
-                h('div', { className: 'ptcPlusCapabilityIdentityText' },
-                  h('span', { className: 'ptcPlusCapabilityName' }, item.name), h('code', null, item.id))),
-              h('span', { className: 'ptcPlusCapabilityBadge', role: 'cell', 'data-kind': type(item) }, t(`capabilities.type.${type(item)}`)),
-              h('span', { className: 'ptcPlusCapabilitySource', role: 'cell' }, displayedSource(item)),
-              // The cell stays a plain cell so its empty area selects the row; only the switch and
-              // its own label swallow the click, keeping a toggle from also opening the row editor.
-              h('div', { className: 'ptcPlusCapabilityAvailability', role: 'cell', 'data-state': state(item) },
-                h('input', { type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', id: `ptcPlusCapabilityAvailability-${item.id}`,
-                  checked: item.resolvedRule.availability === 'enabled',
-                  disabled: disabled('capabilityPolicy') || state(item) === 'source-closed',
-                  'aria-label': t('capabilities.policy.availabilityFor', { name: item.id }),
-                  onClick: event => event.stopPropagation(),
-                  onChange: event => change('capabilityPolicy', changeCapabilityRule(policy, item.id, 'availability', event.target.checked ? 'enabled' : 'closed')) }),
-                h('label', { htmlFor: `ptcPlusCapabilityAvailability-${item.id}`,
-                  onClick: event => event.stopPropagation() }, t(`capabilities.rowState.${state(item)}`))),
-              h('div', { role: 'cell', className: 'ptcPlusCapabilityContextCell' }, h('button', { type: 'button', className: 'ptcPlusCapabilityContext', 'data-capability-edit-id': item.id,
-                'aria-label': t('capabilities.editContextFor', { name: item.id }), 'aria-haspopup': 'dialog',
-                onClick: event => { event.stopPropagation(); setSelected(item.id) } },
-                h('span', null, t(`capabilities.${item.resolvedRule.disclosure}`)),
-                h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
-                  h('path', { d: 'm15 5 4 4M4 20l4-1L20 7l-4-4L4 15Z' })))))))),
-      entry ? h(CapabilityDialog, { title: entry.name, onClose: closeEditor, t, className: 'ptcPlusCapabilityEditorDialog',
-        footer: h('button', { type: 'button', className: 'ptcPlusButton', onClick: closeEditor }, t('capabilities.closeDetails')) },
-        h('code', null, entry.id), h('p', { className: 'ptcPlusDetail' }, t('capabilities.contextHelp')),
-        manualSelect(entry), commonSwitch(entry),
-        h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
-          : value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff'
-            : entry.resolvedRule.availabilitySource.startsWith('mcp:') && entry.resolvedRule.availability === 'closed' ? 'capabilities.effect.sourceClosed'
-              : entry.resolvedRule.availability === 'closed' ? 'capabilities.effect.closed'
-                : `capabilities.effect.disclosure.${entry.resolvedRule.disclosure}`)),
-        h('p', { className: 'ptcPlusDetail' }, t('capabilities.policy.resolved', {
-          availability: t(entry.resolvedRule.availability === 'enabled' ? 'capabilities.quick.enabled' : 'capabilities.closed'),
-          disclosure: t(`capabilities.${entry.resolvedRule.disclosure}`),
-          source: `${entry.resolvedRule.availabilitySource} · ${entry.resolvedRule.disclosureSource}` })),
-        entry.rule.disclosure !== undefined ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink', disabled: disabled('capabilityPolicy'),
-          onClick: () => setManual(entry.id, 'automatic') }, t('capabilities.restoreAutomatic')) : null,
-        entry.source?.kind === 'mcp' && entry.mcpServer ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
-          h('h5', null, t('capabilities.sourceRules')),
-          h('p', { className: 'ptcPlusDetail' }, t('capabilities.serverHint')),
-          h('div', { className: 'ptcPlusCapabilityEditorFields' },
-            ...['availability', 'disclosure'].map(dimension => editorField(t(`capabilities.policy.${dimension}`),
-              h(Select, { value: policy.mcpServers[entry.mcpServer]?.[dimension] ?? 'automatic', disabled: disabled('capabilityPolicy'),
-                label: `${entry.mcpServer} · ${t(`capabilities.policy.${dimension}`)}`,
-                onChange: next => change('capabilityPolicy', changeCapabilityRule(policy, `mcpServers.${entry.mcpServer}`, dimension, next)),
-                options: ['automatic', ...(dimension === 'availability' ? ['enabled', 'closed'] : CAPABILITY_DISCLOSURES)].map(key => ({ value: key,
-                  label: t(key === 'automatic' ? 'capabilities.policy.inheritRule' : key === 'enabled' ? 'capabilities.quick.enabled' : `capabilities.${key}`) })) }))))) : null,
-        entry.kind === 'skill' ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.skillDisclosure')) : null,
-        entry.kind === 'skill' && entry.invocation ? h('p', { className: 'ptcPlusDetail' },
-          t(entry.invocation.modelInvocable ? entry.invocation.userInvocable ? 'capabilities.invocation.both'
-            : 'capabilities.invocation.model' : 'capabilities.invocation.user', { name: entry.name })) : null,
-        entry.description ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
-          h('h5', null, t('capabilities.catalogDescription')), h('p', { className: 'ptcPlusCapabilityProse' }, entry.description)) : null,
-        // Removal is offered whenever this identity has anything saved, because that
-        // is exactly what the action removes; catalog membership is not its condition.
-        policy.items[entry.id] !== undefined || baseline.includes(entry.id)
-          ? h('button', { type: 'button', className: 'ptcPlusCapabilityLink',
-            disabled: disabled('capabilityBaseline') || disabled('capabilityPolicy'), onClick: () => {
-              const next = { ...policy, items: { ...policy.items } }; delete next.items[entry.id]; change('capabilityPolicy', next)
-              if (baseline.includes(entry.id)) change('capabilityBaseline', baseline.filter(id => id !== entry.id))
-            } }, t('capabilities.removeSaved')) : null,
-        value.capabilityContextEnabled !== false && value.capabilityManagementEnabled === true ? h('section', { className: 'ptcPlusCapabilityEditorSection' },
-          h('h5', null, t('capabilities.currentSession')),
-          editorField(t('capabilities.sessionSelector'), h(Select, { value: sessionId ?? '', label: t('capabilities.sessionSelector'), onChange: setSessionId,
-            options: [{ value: '', label: t('capabilities.chooseSession') }, ...(plans ?? []).map(item => ({ value: item.sessionId, label: item.sessionId }))] })),
-          plansError ? h('p', { role: 'status', className: 'ptcPlusDetail' }, t('capabilities.unavailable', { error: plansError }))
-            : !plan ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.selectObservation')) : h(React.Fragment, null,
-              h('p', null, effective ? t(`capabilities.${effective.selection}`) : t('capabilities.notInSession')),
-              effective ? h('p', { className: 'ptcPlusDetail' }, capabilityPlanReason(t, effective)) : null,
-              effective?.evidence ? h('p', { className: 'ptcPlusDetail' }, `${effective.evidence.used}/${effective.evidence.eligible} (${effective.evidence.scope})`) : null,
-              plan.pendingRefresh ? h('p', { className: 'ptcPlusDetail' }, t('capabilities.pending')) : null)) : null) : null)
-
   }
 
   function AllocationEvidence({ allocation, allocationError, allocationPending, selectedSessionId, statistics = false, onReload, t }) {
@@ -825,7 +473,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       !statistics ? h('p', { className: 'ptcPlusCapabilityNotice' }, t('capabilities.coldStartHint')) : null,
       !statistics ? h(React.Fragment, null,
         h('div', { className: 'ptcPlusAllocationMetrics' },
-          ...['full', 'on-demand', 'closed'].map(selection => h('div', { key: selection }, h('strong', null, count(selection)), h('span', null, t(`capabilities.${selection}`)))),
+          ...['full', 'on-demand', 'closed'].map(selection => h('div', { key: selection }, h('strong', null, count(selection)), h('span', null, t(`capabilities.word.${selection}`)))),
           h('div', null, h('strong', null, `${plan.budgets.contractBytes} / ${configuration.capabilityBudgetBytes}`), h('span', null, 'UTF-8 bytes'))),
         h('progress', { max: configuration.capabilityBudgetBytes, value: Math.min(configuration.capabilityBudgetBytes, plan.budgets.contractBytes),
           'aria-label': t('capabilities.budgetPreview') }),
@@ -844,7 +492,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
               h('td', { key: 'eligible' }, usable(evidenceFor(item)) ? evidenceFor(item).eligible : '—'),
               h('td', { key: 'coverage' }, coverageText(evidenceFor(item)), usable(evidenceFor(item)) && Number.isFinite(evidenceFor(item).coverage)
                 ? h('progress', { max: 1, value: evidenceFor(item).coverage, 'aria-label': t('capabilities.coverageFor', { name: item.id }) }) : null)]
-            : [h('td', { key: 'selection' }, t(`capabilities.${entry?.selection ?? 'host'}`)), h('td', { key: 'reason' }, entry ? capabilityPlanReason(t, entry) : '—'), h('td', { key: 'size' }, `${item.contractBytes} B`)]))
+            : [h('td', { key: 'selection' }, t(`capabilities.word.${entry?.selection ?? 'host'}`)), h('td', { key: 'reason' }, entry ? capabilityPlanReason(t, entry) : '—'), h('td', { key: 'size' }, `${item.contractBytes} B`)]))
         })))))
   }
 
@@ -1004,7 +652,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           setting('group.capabilities', enabled('capabilityContextEnabled')),
           setting('capabilities.management', enabled('capabilityManagementEnabled')),
           setting('capabilities.statisticsEnabled', t(JSON.parse(configuration.capabilityStatistics).enabled ? 'capabilities.serverOn' : 'capabilities.serverOff')),
-          setting('capabilities.defaultDisclosure', t(`capabilities.${policy.defaults.disclosure}`)),
+          setting('capabilities.defaultDisclosure', t(`capabilities.word.${policy.defaults.disclosure}`)),
           setting('capabilities.allocationTitle', ['baseline', 'statistics', 'budget'].filter(key => policy.allocation[key]).map(key => t(`capabilities.allocation.${key}`)).join(' · ') || '—'),
           setting('capabilities.recoveryEnabled', enabled('capabilityRecoveryEnabled')),
           setting('capabilities.previewEnabled', `${enabled('modelPreviewEnabled')}${configuration.modelPreviewEnabled ? ` · ${t('capabilities.estimatedTokens', { count: configuration.modelPreviewTokens })}` : ''}`),
@@ -1037,14 +685,18 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
     const saved = choicesFor(configurationReady ? value : undefined)
     const retained = flagsFor(saved)
     const applied = flagsFor(effectiveCapabilitySettings(saved))
-    const policy = capabilityPolicyForConfig(value)
+    // This pane states and writes the record's own rules: a configuration that saved no policy
+    // starts from the declared defaults plus the override record, so the synthesized bottom layer
+    // is neither shown as a saved default nor frozen into the record (§8.1c).
+    const policy = value.capabilityPolicySaved === true
+      ? capabilityPolicyForConfig(value) : capabilityPolicyFromRecord(value)
     const write = next => onChange(field('capabilityPolicy'), JSON.stringify(next))
     const adaptive = [policy.defaults, ...Object.values(policy.categories), ...Object.values(policy.mcpServers), ...Object.values(policy.items)]
       .some(rule => rule.disclosure === 'adaptive')
     const summary = key => {
       if (choiceState(retained, applied, key) === 'unknown') return t('capabilities.combination.unknownSettings')
       if (key === 'description') {
-        const description = t('capabilities.context.summary.description', { disclosure: t(`capabilities.${policy.defaults.disclosure}`) })
+        const description = t('capabilities.context.summary.description', { disclosure: t(`capabilities.word.${policy.defaults.disclosure}`) })
         if (policy.defaults.disclosure !== 'adaptive') return description
         const criteria = ['baseline', 'statistics', 'budget'].filter(key => policy.allocation[key])
           .map(key => t(`capabilities.allocation.${key}`)).join(t('capabilities.combination.separator'))
@@ -1091,7 +743,7 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
           h('p', { className: 'ptcPlusDetail' }, t('capabilities.descriptionDependency')),
           h('div', { className: 'ptcPlusCapabilityFilter' }, h('span', null, t('capabilities.defaultDisclosure')),
             h(Select, { value: policy.defaults.disclosure, disabled: disabled('capabilityPolicy'), label: t('capabilities.defaultDisclosure'),
-              options: CAPABILITY_DISCLOSURES.map(choice => ({ value: choice, label: t(`capabilities.${choice}`) })),
+              options: CAPABILITY_DISCLOSURES.map(choice => ({ value: choice, label: t(`capabilities.word.${choice}`) })),
               onChange: disclosure => write({ ...policy, defaults: { ...policy.defaults, disclosure } }) })),
           h('p', { className: 'ptcPlusDetail' }, effect(value.capabilityManagementEnabled !== true ? 'capabilities.effect.rulesOff' : `capabilities.effect.disclosure.${policy.defaults.disclosure}`)),
           criteria,
@@ -1480,10 +1132,11 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
       h('p', { className: 'ptcPlusPromptIntro' }, t('capabilities.prompt.intro')))
   }
 
-  function CapabilityWorkbench({ value, configurationReady, catalog, catalogError, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
-    allocation, allocationError, allocationPending, onApplyConfiguration, configurationWritable, saving, saveStatus }) {
+  function CapabilityWorkbench({ value, configurationReady, plans, plansError, plansPending, plansStale, disabled, onChange, onReload, t, renderField, renderPlans, renderRefresh, id, selectedSessionId, onSessionSelect,
+    allocation, allocationError, allocationPending, onApplyConfiguration, configurationWritable, saving, saveStatus, surface }) {
     const [tab, setTab] = React.useState('manual')
     const [contextSection, setContextSection] = React.useState('description')
+    const [rulesOpen, setRulesOpen] = React.useState(false)
     const tabs = ['manual', 'budgets', 'statistics', 'prompt', 'plans']
     const feedback = saving ? t('state.syncing') : saveStatus && saveStatus.key !== 'status.applied' ? t(saveStatus.key, saveStatus.params)
       : t(configurationWritable ? 'capabilities.savedForNew' : 'footer.readOnly')
@@ -1507,7 +1160,18 @@ export function createCapabilitySettingsViews(React, { SearchIcon, Select, Modal
               onChange: event => onChange(field('capabilityManagementEnabled'), event.target.checked) })) : null),
         key === 'manual' ? h(React.Fragment, null, h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
           : value.capabilityManagementEnabled === true ? 'capabilities.managementHelp' : 'capabilities.effect.rulesOff')),
-          h(CapabilityChoices, { value, catalog, catalogError, plans, plansError, disabled, onChange, onReload, t, selectedSessionId, onSessionSelect }))
+          // The capability page is one renderer mounted here with the address this
+          // entrance fixes. This entrance brings no columns, words, controls or
+          // receipts of its own; the rule chain that answers for objects the saved
+          // address has not decided one by one stays a rule editor beside it.
+          h('div', { className: 'ptcPlusCapabilityRulesEntry' },
+            h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
+              onClick: () => setRulesOpen(true) }, t('capabilities.inheritedRules'))),
+          rulesOpen ? h(CapabilityDialog, { title: t('capabilities.inheritedRules'), onClose: () => setRulesOpen(false), t,
+            footer: h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
+              onClick: () => setRulesOpen(false) }, t('capabilities.dialogDone')) },
+            h(PolicyRules, { value, disabled, onChange, t })) : null,
+          surface ?? null)
           : key === 'statistics' ? h(React.Fragment, null, renderField('capabilityStatistics'),
             h('p', { className: 'ptcPlusDetail' }, t(value.capabilityContextEnabled === false ? 'capabilities.effect.paused'
               : choicesFor(value).statistics?.enabled === true ? 'capabilities.effect.collectionOn'
@@ -1590,27 +1254,57 @@ export function createCapabilityRefreshView(React, commands) {
 }
 
 /**
- * Session capability choices write one record through the command channel.
+ * The one capability surface, mounted by every entrance.
  *
- * Three permanent facts decide what this panel may state: the Host's supply (which
- * rows exist), this session's own log (the "this session" column), and a completed
- * execution report (the evidence column). No runtime, service or global switch
- * produces any of them, so the read is not gated: a failed read is a defect
+ * A page states, for one supplied object, which value each of its two dimensions has
+ * at each address. Three permanent facts decide what it may state: the Host's supply
+ * (which rows exist), the record at each address (the saved configuration and this
+ * session's own log), and the receipt a write leaves. No runtime, service or global
+ * switch produces any of them, so the read is not gated: a failed read is a defect
  * reported beside the rows, never a state the rows are replaced with.
+ *
+ * An entrance fixes which address this page may write. §4: a control exists exactly
+ * when its cell's address is fixed by the entrance that opened the page — so the
+ * session entrance controls this session's record and the settings entrance controls
+ * the new-session default. The other address is still stated, because it is what the
+ * reader compares against, and the session entrance adds the receipt column, which
+ * names the record each decision leaves. The settings entrance has no session address
+ * at all: its two session columns are absent, not disabled and not read-only.
  */
-export function createSessionCapabilityControlsView(React, { commands, bindingCommands, Modal, Select, inspectSessionCatalog }) {
+export function createCapabilitySurfaceView(React, { commands, bindingCommands, Modal, Select, inspectSessionCatalog }) {
   const h = React.createElement
-  // The seven columns, in the order §3 fixes them. The binding group repeats them so
-  // both groups answer the same questions in the same places. Each column names one
-  // decision, so a dimension's control owns a labelled cell instead of sharing an
+  // §4's seven columns plus the receipt column, in that order. One column, one
+  // decision: a dimension's control owns a labelled cell instead of sharing an
   // unlabelled one with another dimension's control.
-  const COLUMNS = Object.freeze(['capabilities.column.name', 'capabilities.typesColumn', 'capabilities.sourceColumn',
-    'capabilities.column.saved', 'capabilities.column.availability', 'capabilities.column.disclosure',
-    'capabilities.column.evidence'])
-  // §4 vocabulary. `inherit` is the availability and disclosure columns' own word for
-  // a session that recorded nothing, so no cell has to be blank or carry a denial.
-  const AVAILABILITY_CHOICES = Object.freeze(['enabled', 'closed', 'automatic', 'inherit'])
-  const DISCLOSURE_CHOICES = Object.freeze(['host', 'full', 'on-demand', 'adaptive', 'automatic', 'inherit'])
+  const COLUMNS = Object.freeze({
+    session: Object.freeze(['object', 'type', 'source', 'savedEnabled', 'savedDisclosure',
+      'sessionEnabled', 'sessionDisclosure', 'receipt']),
+    settings: Object.freeze(['object', 'type', 'source', 'savedEnabled', 'savedDisclosure']),
+  })
+  // One word per column, declared by this page and by no other surface (§6).
+  const COLUMN_COPY = Object.freeze({
+    object: 'capabilities.column.object',
+    type: 'capabilities.typesColumn',
+    source: 'capabilities.sourceColumn',
+    savedEnabled: 'capabilities.column.savedEnabled',
+    savedDisclosure: 'capabilities.column.savedDisclosure',
+    sessionEnabled: 'capabilities.column.sessionEnabled',
+    sessionDisclosure: 'capabilities.column.sessionDisclosure',
+    receipt: 'capabilities.column.receipt',
+  })
+  // The page's one value table. `inherit` is the session columns' own word for an
+  // address that recorded nothing, so no cell is blank and none carries a denial;
+  // every other word answers "who reads it, from which moment", which is the question
+  // both disclosure columns ask.
+  // `automatic` is the saved address's own word for a dimension its configuration wrote
+  // no rule for; the bottom layer a chain would fall back to is synthesized from
+  // configuration this page does not own, so it states no value here.
+  const SAVED_AVAILABILITY = Object.freeze(['enabled', 'closed', 'automatic'])
+  const SAVED_DISCLOSURE = Object.freeze([...CAPABILITY_DISCLOSURES, 'automatic'])
+  // A session column states the record's own words, so the record's own `automatic` is one
+  // of them; `inherit` stays this column's word for an address that recorded nothing.
+  const SESSION_AVAILABILITY = Object.freeze(['enabled', 'closed', 'automatic', 'inherit'])
+  const SESSION_DISCLOSURE = Object.freeze([...CAPABILITY_DISCLOSURES, 'automatic', 'inherit'])
   const DIMENSIONS = Object.freeze(['availability', 'disclosure'])
   const ADOPTION_WORDS = Object.freeze({ use: 'capabilities.word.use', skip: 'capabilities.word.skip',
     damaged: 'capabilities.word.damaged' })
@@ -1624,7 +1318,9 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
     return text === undefined || text === null ? '' : String(text)
   }
 
-  return function SessionCapabilityControls({ sessionId, open, t, onClose }) {
+  return function CapabilitySurface({ entrance = 'session', sessionId, open, inline, writable = true, revision, savedCommands, onReload, t, onClose }) {
+    const settingsEntrance = entrance === 'settings'
+    const active = inline === true ? true : open
     const [rows, setRows] = React.useState([])
     // `loaded` is the read's own answer: an empty table means the Host declared
     // nothing only after a complete read said so.
@@ -1696,7 +1392,7 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
       }
     }, [sessionId])
     React.useEffect(() => {
-      if (!open) {
+      if (!active) {
         request.current?.abort()
         request.current = null
         return
@@ -1708,38 +1404,52 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
         controller.abort()
         if (request.current === controller) request.current = null
       }
-    }, [open, load])
+      // The saved address is read again when the configuration under this page changes,
+      // so a rule edit elsewhere cannot leave the previous value on screen.
+    }, [active, load, revision])
     const reload = () => {
       const controller = new AbortController()
       request.current?.abort()
       request.current = controller
       void load(controller.signal)
+      onReload?.()
     }
     /**
-     * One intention, one record: the row's control runs the same command a human
-     * types and the receipt it returns is what the footer shows. A command that is
-     * not listed for this session reports its own refusal; it is never pre-empted.
+     * One intention, one record. The write itself is the caller's: a cell runs the
+     * write its own address owns, the receipt that write returns is what the footer
+     * shows, and the rows are re-read from the record rather than patched from the
+     * answer. A command that is not listed for this session reports its own refusal;
+     * it is never pre-empted.
      */
-    const record = async (channel, line, id) => {
+    const perform = async (id, run) => {
       const controller = new AbortController()
       writes.current.add(controller)
       setWriting(current => current.includes(id) ? current : [...current, id])
       setReceipt(null)
       try {
-        const result = await channel.run(sessionId, line, controller.signal)
+        const answer = await run(controller.signal)
         if (!mounted.current || controller.signal.aborted) return
-        setReceipt({ text: receiptText(t, result) })
+        setReceipt({ text: receiptText(t, answer) })
         await load(controller.signal)
+        // The caller distinguishes a write that ran from a row it skipped as already matching.
+        return { ok: true }
       } catch (cause) {
-        if (mounted.current && !controller.signal.aborted) setReceipt({ error: String(cause?.message ?? cause) })
+        const error = String(cause?.message ?? cause)
+        if (mounted.current && !controller.signal.aborted) setReceipt({ error })
+        // A batch runs one write at a time, so the next row's receipt would replace this
+        // refusal; the caller gets it back to state the batch's failure after the loop.
+        return { error }
       } finally {
         writes.current.delete(controller)
         if (mounted.current) setWriting(current => current.filter(item => item !== id))
       }
     }
+    const record = (channel, line, id) => perform(id, signal => channel.run(sessionId, line, signal))
     const word = value => t(`capabilities.word.${value}`)
-    const choiceOptions = dimension => (dimension === 'availability' ? AVAILABILITY_CHOICES : DISCLOSURE_CHOICES)
-      .map(value => ({ value, label: word(value) }))
+    // A batch writes one column of one entrance, so it names that column's dimension with
+    // the page's own word instead of the layer editor's rule name.
+    const dimensionWord = dimension => t(`capabilities.dimension.${dimension}`)
+    const choiceOptions = values => values.map(value => ({ value, label: word(value) }))
     const familyOf = row => row.kind === 'binding' ? 'bindings'
       : row.kind === 'server' ? 'mcp'
         : row.category === 'skill' ? 'skills'
@@ -1750,8 +1460,7 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
         : row.category === 'skill' ? 'skill'
           : row.category === 'resource' || row.source?.kind === 'mcp' ? 'resource' : 'tool'
     // Two rows share one source filter entry exactly when they state the same source,
-    // and the entry is named by the row that states it. A server group carries the
-    // `MCP · ` caption because it also holds the tools that name it.
+    // and the entry is named by the row that states it.
     const sourceKeyOf = row => row.kind === 'binding' ? 'bindings'
       : JSON.stringify(row.source ?? namespaceSource(row))
     const sourceText = row => row.kind === 'binding' ? t('capabilities.source.bindings')
@@ -1766,68 +1475,178 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
         ? `Skill · ${sourceText(row)}${row.source.provider ? ` · ${row.source.provider}` : ''}`
         : sourceText(row)
     }
-    // The saved column is the configuration's own value, read-only: a control here
-    // would write the global settings from a session panel.
-    const savedText = row => row.kind === 'binding' ? ''
-      : row.kind === 'server' ? word(row.saved?.availability ?? 'automatic')
-        : `${word(row.saved?.availability ?? 'automatic')} · ${word(row.saved?.disclosure ?? 'automatic')}`
-    const recordedAvailability = row => row.session?.availability ?? 'inherit'
-    const recordedDisclosure = row => row.session?.disclosure ?? 'inherit'
+    // Both addresses, stated from the read: the saved column is the configuration's
+    // own value for this object and the session column is the record's answer, with
+    // `inherit` when this session recorded nothing. A server has no disclosure of its
+    // own, so both disclosure cells state where that decision lives instead of a
+    // denial or another row's answer.
+    // The saved cell states its own record's word: a dimension this record wrote nothing for reads
+    // `automatic`, never a resolved value another layer would answer (capability-surface §8.1c).
+    const savedOf = (row, dimension) => row.saved?.[dimension] ?? 'automatic'
+    const savedEnabled = row => word(savedOf(row, 'availability'))
+    const savedDisclosure = row => row.kind === 'server' ? t('capabilities.word.perMember')
+      : word(savedOf(row, 'disclosure'))
+    const recordedOf = (row, dimension) => row.session?.[dimension] ?? 'inherit'
+    const recordWord = (row, dimension) => row.record?.[dimension]
+    /** The layer whose record decided this dimension, or null when this object's own entry did. */
+    const recordLayer = (row, dimension) => row.record?.layers?.[dimension] ?? null
+    /** A recorded decision above this object: the row states the layer's word in its receipt. */
     const adoptionOf = row => ['use', 'skip', 'damaged'].includes(row.session?.use) ? row.session.use : 'use'
-    const writeChoice = (row, dimension, value) => {
-      if ((dimension === 'availability' ? recordedAvailability(row) : recordedDisclosure(row)) === value) return
-      return void record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${value}`, row.id)
+    /**
+     * The receipt column: which record this row's decision leaves, and what it states
+     * there — or that nothing has been written at that address yet. A missing record is
+     * that address's own "unwritten" receipt, not a blank: deleting this column would
+     * make "where does this decision get reconciled" unanswerable, which is why §4 asks
+     * for it and why the evidence column left the page.
+     */
+    const receiptOf = row => {
+      if (row.kind === 'binding') {
+        const record = t('capabilities.word.bindingRecord')
+        if (adoptionOf(row) === 'damaged') return `${record} · ${word('damaged')}`
+        return row.session?.recorded === true ? `${record} · ${t(ADOPTION_WORDS[adoptionOf(row)])}`
+          : `${record} · ${t('capabilities.word.unwritten')}`
+      }
+      const record = t('capabilities.word.sessionRecord')
+      // The receipt states the record's own text, not the resolution the value column
+      // shows, and names the layer when a record above this object decided it. That layer's row is
+      // part of this same read and states the word it wrote, so the receipt states that word:
+      // `inherit` is this row's word for its own entry having written nothing (§4), never a word a
+      // deciding record wrote.
+      // A server row states every word its own rule holds, including a disclosure word its rule
+      // can carry (§8.3): that word answers the members that wrote none at runtime, and a receipt
+      // that said `未写下` while the record held it would deny what this same read carries. Its
+      // disclosure cell still states the delegation, because the decision is made for the members.
+      const statedDimensions = DIMENSIONS
+      const layerWord = (layer, dimension) => rows
+        .find(candidate => candidate.id === layer)?.record?.[dimension]
+      const own = statedDimensions.filter(dimension => recordWord(row, dimension) !== undefined
+        && recordLayer(row, dimension) === null)
+      const byLayer = new Map()
+      for (const dimension of statedDimensions) {
+        const layer = recordLayer(row, dimension)
+        // A dimension this object did not write is still answered by that layer at runtime, so the
+        // receipt names it. A layer is named only for a dimension that layer's record wrote; a read
+        // that does not carry the layer's row states the layer alone instead of inventing a word.
+        if (layer === null) continue
+        const stated = layerWord(layer, dimension)
+        byLayer.set(layer, [...(byLayer.get(layer) ?? []), ...(stated === undefined ? [] : [`${dimension} ${stated}`])])
+      }
+      const parts = [
+        ...(own.length === 0 ? [] : [own.map(dimension => `${dimension} ${recordWord(row, dimension)}`).join(' · ')]),
+        ...[...byLayer].map(([layer, stated]) => stated.length === 0
+          ? t('capabilities.receipt.layer', { layer })
+          : `${t('capabilities.receipt.layer', { layer })} · ${stated.join(' · ')}`),
+      ]
+      return parts.length === 0 ? `${record} · ${t('capabilities.word.unwritten')}`
+        : `${record} · ${parts.join(' · ')}`
     }
-    // A damaged record still gets a control: the click writes the record that
-    // replaces it, which is the only way the row can leave that state.
+    // A control's own label names the address it writes, so a cell needs no neighbour
+    // to be read (§3.2). The address is the object's identity, not its display name:
+    // two rows can read alike, and only one of them is the record's key.
+    const controlLabel = (column, row) => t(`capabilities.control.${column}`, { name: row.id })
+    // The no-op test compares the record's own word, not the resolved value: a record
+    // that wrote `automatic` and one that wrote the value it resolves to are different
+    // records, and the second can only replace the first if the write is allowed.
+    const writeSession = (row, dimension, value) => {
+      if ((recordWord(row, dimension) ?? 'inherit') === value) return
+      // The promise is the write: a batch awaits it so each command composes from the record
+      // the previous one left, and nothing is fired in parallel.
+      return record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${value}`, row.id)
+    }
+    const writeSaved = (row, dimension, value) => {
+      if (savedOf(row, dimension) === value) return
+      if (typeof savedCommands?.run !== 'function') return
+      return perform(row.id, async signal => {
+        const written = await savedCommands.run({ id: row.id, dimension, selection: value }, signal)
+        return { text: capabilityReceiptNotice(t, { state: 'recorded', record: { ...written, scope: 'global' } }, 'receipt') }
+      })
+    }
+    // A damaged record still gets a control: the click writes the record that replaces
+    // it, which is the only way the row can leave that state.
     const writeAdoption = row => void record(bindingCommands,
       `${adoptionOf(row) === 'use' ? 'skip' : 'use'} ${row.id}`, row.id)
-    // One decision, one cell — and the header names it. The availability column carries
-    // the control that decides whether this session can use the row: a capability's and
-    // a service's availability, and a binding's adoption, which is the same question
-    // asked of the binding document. The disclosure column carries the control a
-    // capability row decides; a service and a binding have no disclosure of their own,
-    // so that cell states nothing rather than a denial or another row's answer.
-    const availabilityCell = row => h('div', { role: 'cell', className: 'ptcPlusSessionCapabilityAvailability' },
-      row.kind === 'binding'
-        ? h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': adoptionOf(row),
+    const sessionAvailabilityCell = row => row.kind === 'binding'
+      ? h('div', { className: 'ptcPlusSessionCapabilityAvailability' },
+        h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': adoptionOf(row),
           'aria-pressed': adoptionOf(row) === 'use' ? 'true' : 'false',
+          'aria-label': controlLabel('sessionEnabled', row),
           'aria-busy': writing.includes(row.id) ? 'true' : undefined,
-          onClick: () => writeAdoption(row) }, t(ADOPTION_WORDS[adoptionOf(row)]))
-        : h(Select, { label: t('capabilities.policy.availabilityFor', { name: row.id }),
-          value: recordedAvailability(row), options: choiceOptions('availability'),
-          onChange: value => writeChoice(row, 'availability', value) }))
-    const disclosureCell = row => row.kind === 'capability'
-      ? h('div', { role: 'cell', className: 'ptcPlusSessionCapabilityDisclosure' },
-        h(Select, { label: t('capabilities.disclosureFor', { name: row.id }),
-          value: recordedDisclosure(row), options: choiceOptions('disclosure'),
-          onChange: value => writeChoice(row, 'disclosure', value) }))
-      : h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityDisclosure' })
-    const renderRow = row => h('div', { key: row.id, role: 'row', className: 'ptcPlusSessionCapabilityRow ptcPlusCapabilityItem',
-      'data-capability-id': row.id, 'data-kind': row.kind,
-      ...(row.kind === 'binding' ? { 'data-binding-id': row.id, 'data-binding-state': adoptionOf(row) } : {}) },
-      row.kind === 'binding'
-        ? h('span', { role: 'cell', className: 'ptcPlusCapabilityIdentity' },
+          onClick: () => writeAdoption(row) }, t(ADOPTION_WORDS[adoptionOf(row)])))
+      : h('div', { className: 'ptcPlusSessionCapabilityAvailability' },
+        h(Select, { label: controlLabel('sessionEnabled', row), value: recordedOf(row, 'availability'),
+          options: choiceOptions(SESSION_AVAILABILITY),
+          onChange: value => writeSession(row, 'availability', value) }))
+    const sessionDisclosureCell = row => row.kind === 'binding'
+      // A binding's adoption record holds no disclosure decision at all, so the cell
+      // states that address's own word instead of borrowing the one a service row owns.
+      ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure' }, t('capabilities.word.inherit'))
+      : row.kind === 'server'
+        // A server carries no disclosure of its own: its members do.
+        ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure' }, t('capabilities.word.perMember'))
+      : h('div', { className: 'ptcPlusSessionCapabilityDisclosure' },
+        h(Select, { label: controlLabel('sessionDisclosure', row), value: recordedOf(row, 'disclosure'),
+          options: choiceOptions(SESSION_DISCLOSURE),
+          onChange: value => writeSession(row, 'disclosure', value) }))
+    // A control exists exactly when this entrance fixes the address the cell writes: the settings
+    // entrance writes the saved document, so every row it states gets the controls its own address
+    // holds — both dimensions for a capability, availability alone for a server, whose saved cell
+    // edits `mcpServers.<server>` in that same document. Read-only disables, never withdraws.
+    const savedControl = row => settingsEntrance
+    const savedDisabled = () => writable === false
+    const savedEnabledCell = row => savedControl(row)
+      ? h('div', { className: 'ptcPlusSessionCapabilitySaved' },
+        h(Select, { label: controlLabel('savedEnabled', row), value: savedOf(row, 'availability'),
+          disabled: savedDisabled(), options: choiceOptions(SAVED_AVAILABILITY),
+          onChange: value => writeSaved(row, 'availability', value) }))
+      : h('span', { className: 'ptcPlusSessionCapabilitySaved' }, savedEnabled(row))
+    const savedDisclosureCell = row => savedControl(row) && row.kind !== 'server'
+      // A server carries no disclosure of its own, so its saved disclosure cell is the statement
+      // that the members decide it; its availability cell is the rule edit below.
+      ? h('div', { className: 'ptcPlusSessionCapabilitySavedDisclosure' },
+        h(Select, { label: controlLabel('savedDisclosure', row), value: savedOf(row, 'disclosure'),
+          disabled: savedDisabled(), options: choiceOptions(SAVED_DISCLOSURE),
+          onChange: value => writeSaved(row, 'disclosure', value) }))
+      : h('span', { className: 'ptcPlusSessionCapabilitySavedDisclosure' }, savedDisclosure(row))
+    const identityCell = row => row.kind === 'binding'
+      ? h('span', { className: 'ptcPlusCapabilityIdentity' },
+        h('span', { className: 'ptcPlusSessionCapabilityName' }, row.name ?? row.id),
+        row.name && row.name !== row.id ? h('code', null, row.id) : null)
+      : h('div', { className: 'ptcPlusCapabilityIdentity' },
+        // Only a capability row takes part in a batch: a server row's saved cell edits the scope's
+        // `mcpServers.<server>` rule on its own, and a binding row writes the bindings document.
+        row.kind !== 'capability' ? null : h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: picked.includes(row.id),
+          'aria-label': t('capabilities.selectForBatch', { name: row.name ?? row.id }),
+          disabled: writable === false,
+          onChange: () => setPicked(current => current.includes(row.id)
+            ? current.filter(id => id !== row.id) : [...current, row.id]) }),
+        h('div', { className: 'ptcPlusCapabilityIdentityText' },
           h('span', { className: 'ptcPlusSessionCapabilityName' }, row.name ?? row.id),
-          row.name && row.name !== row.id ? h('code', null, row.id) : null)
-        : h('div', { role: 'cell', className: 'ptcPlusCapabilityIdentity' },
-          h('input', { type: 'checkbox', className: 'ptcPlusPick', checked: picked.includes(row.id),
-            'aria-label': t('capabilities.selectForBatch', { name: row.name ?? row.id }),
-            onChange: () => setPicked(current => current.includes(row.id)
-              ? current.filter(id => id !== row.id) : [...current, row.id]) }),
-          h('div', { className: 'ptcPlusCapabilityIdentityText' },
-            h('span', { className: 'ptcPlusSessionCapabilityName' }, row.name ?? row.id),
-            row.name && row.name !== row.id ? h('code', null, row.id) : null)),
-      h('span', { role: 'cell', className: 'ptcPlusCapabilityBadge', 'data-kind': badgeOf(row) },
-        t(`capabilities.type.${badgeOf(row)}`)),
-      h('span', { role: 'cell', className: 'ptcPlusCapabilitySource' }, sourceText(row)),
-      h('span', { role: 'cell', className: 'ptcPlusSessionCapabilitySaved' }, savedText(row)),
-      availabilityCell(row),
-      disclosureCell(row),
-      h('span', { role: 'cell', className: 'ptcPlusSessionCapabilityEvidence', 'data-proven': row.evidence === true ? 'true' : 'false' },
-        row.evidence === true ? t('capabilities.word.proven') : null))
-    const columnsRow = () => h('div', { className: 'ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns', role: 'row' },
-      ...COLUMNS.map(key => h('span', { key, role: 'columnheader' }, t(key))))
+          row.name && row.name !== row.id ? h('code', null, row.id) : null))
+    const cellsOf = row => {
+      const cells = {
+        object: identityCell(row),
+        type: h('span', { className: 'ptcPlusCapabilityBadge', 'data-kind': badgeOf(row) }, t(`capabilities.type.${badgeOf(row)}`)),
+        source: h('span', { className: 'ptcPlusCapabilitySource' }, sourceText(row)),
+        savedEnabled: savedEnabledCell(row),
+        savedDisclosure: savedDisclosureCell(row),
+        sessionEnabled: sessionAvailabilityCell(row),
+        sessionDisclosure: sessionDisclosureCell(row),
+        receipt: h('span', { className: 'ptcPlusSessionCapabilityReceipt', title: receiptOf(row) }, receiptOf(row)),
+      }
+      return cells
+    }
+    const columns = COLUMNS[settingsEntrance ? 'settings' : 'session']
+    const renderRow = row => {
+      const cells = cellsOf(row)
+      return h('div', { key: row.id, role: 'row',
+        className: `ptcPlusSessionCapabilityRow ptcPlusCapabilityItem ptcPlusSessionCapabilityRow-${columns.length}`,
+        'data-capability-id': row.id, 'data-kind': row.kind,
+        ...(row.kind === 'binding' ? { 'data-binding-id': row.id, 'data-binding-state': adoptionOf(row) } : {}) },
+        ...columns.map(column => h(React.Fragment, { key: column }, React.cloneElement(cells[column], { role: 'cell' }))))
+    }
+    const columnsRow = () => h('div', {
+      className: `ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns ptcPlusSessionCapabilityColumns-${columns.length}`,
+      role: 'row' }, ...columns.map(column => h('span', { key: column, role: 'columnheader' }, t(COLUMN_COPY[column]))))
     const capabilities = rows.filter(row => row.kind !== 'binding')
     const matches = row => {
       const text = [row.name, row.id, sourceText(row)].filter(Boolean).join(' ').toLocaleLowerCase()
@@ -1842,26 +1661,49 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
       const key = sourceKeyOf(row)
       if (!sources.has(key)) sources.set(key, sourceFilterLabel(row))
     }
-    const pickedRows = capabilities.filter(row => picked.includes(row.id))
-    const batchLines = () => pickedRows.flatMap(row => DIMENSIONS
-      .filter(dimension => batchChoices[dimension] !== 'keep' && (dimension === 'availability' || row.kind === 'capability'))
+    // A batch writes only a dimension this entrance shows a control for. The settings entrance
+    // fixes saved addresses and reads no session record, so what a session recorded decides
+    // nothing there; the session entrance writes the session address, and every capability row
+    // now carries both of its controls — a member's cell states its own record, so writing it
+    // always changes what the cell says.
+    const batchWritable = row => DIMENSIONS.filter(dimension => settingsEntrance
+      ? savedControl(row) && (dimension === 'availability' || row.kind === 'capability')
+      : dimension === 'availability' || row.kind === 'capability')
+    const pickedRows = capabilities.filter(row => picked.includes(row.id) && batchWritable(row).length > 0)
+    const batchLines = () => pickedRows.flatMap(row => batchWritable(row)
+      .filter(dimension => batchChoices[dimension] !== 'keep')
       .map(dimension => ({ row, dimension, choice: batchChoices[dimension] })))
-    // A batch is the same decision applied to existing rows: it writes one record
-    // per selected row through the same channel and creates no rows of its own.
+    // A batch is the same decision applied to existing rows: it writes one record per
+    // selected row through the same channel and creates no rows of its own.
     const applyBatch = async () => {
       const lines = batchLines()
       setBatchOpen(false)
       // Every dimension kept its current setting, so this batch writes nothing. The
-      // click still owes the reader one sentence (§8.8), and it is the footer's own
-      // receipt expression that states it: a zero-write batch names no record, so it
-      // states the batch's outcome instead of widening the command receipt vocabulary.
+      // click still owes the reader one sentence, and it is the footer's own receipt
+      // expression that states it: a zero-write batch names no record, so it states the
+      // batch's outcome instead of widening the command receipt vocabulary.
       if (lines.length === 0) {
         setReceipt({ text: { key: 'capabilities.batch.kept', params: {} } })
         return
       }
+      // One write at a time: each command composes the whole record from the log it reads, so
+      // overlapping commands would drop each other's decision. A refusal does not stop the
+      // remaining rows, and the batch states the first refusal after them instead of letting the
+      // next row's success sentence replace it.
+      let refusal, wrote = 0
       for (const { row, dimension, choice } of lines) {
-        await record(commands, `set session ${encodeURIComponent(row.id)} ${dimension} ${choice}`, row.id)
+        try {
+          const outcome = settingsEntrance
+            ? await writeSaved(row, dimension, choice)
+            : await writeSession(row, dimension, choice)
+          if (outcome?.error !== undefined) refusal ??= outcome.error
+          else if (outcome?.ok === true) wrote += 1
+        } catch (error) { refusal ??= String(error?.message ?? error) }
       }
+      if (refusal !== undefined) setReceipt({ error: refusal })
+      // Every picked word already matched its record, so no command ran; the click still owes the
+      // reader one sentence rather than leaving the previous row's receipt standing.
+      else if (wrote === 0) setReceipt({ text: { key: 'capabilities.batch.kept', params: {} } })
     }
     const filter = (label, value, onChange, options) => h('div', { className: 'ptcPlusCapabilityFilter' },
       h('span', null, label), h(Select, { label, value, onChange,
@@ -1881,76 +1723,100 @@ export function createSessionCapabilityControlsView(React, { commands, bindingCo
     const close = () => {
       request.current?.abort()
       request.current = null
-      onClose()
+      onClose?.()
     }
-    return h(Modal, { open, onClose: close, title: t('capabilities.quick.modalTitle'),
-      closeLabel: t('settings.close'), headless: true, className: 'ptcPlusSessionCapabilityModal' },
-    h('div', { className: 'ptcPlusSessionCapabilityHead' },
-      h('div', null, h('h2', null, t('capabilities.quick.modalTitle')),
-        h('p', null, t('capabilities.quick.sessionIdentity', { session: sessionId }))),
-      h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('settings.close'),
-        onClick: close }, '×')),
-    h('div', { className: 'ptcPlusSessionCapabilityToolbar' },
-      h('label', { className: 'ptcPlusSearch' },
-        h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true },
-          h('circle', { cx: 10, cy: 10, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }),
-          h('path', { d: 'm15 15 6 6', fill: 'none', stroke: 'currentColor', strokeWidth: 2 })),
-        h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'),
-          placeholder: t('capabilities.search'), onChange: event => setQuery(event.target.value) })),
-      filter(t('capabilities.quick.kind'), family, chooseFamily,
-        [['all', t('capabilities.quick.all')], ...FAMILIES.map(key => [key, t(`capabilities.quick.${key}`)])]),
-      filter(t('capabilities.sourceFilter'), source, chooseSource,
-        [['all', t('capabilities.allSources')], ...[...sources].sort(([a], [b]) => compare(a, b))]),
-      h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
-        'aria-label': t('capabilities.batchSettings'),
-        onClick: () => { setBatchChoices({ availability: 'keep', disclosure: 'keep' }); setBatchOpen(true) } },
-        t('capabilities.batchSettings'),
-        picked.length ? h('span', { className: 'ptcPlusCapabilityBatchCount', 'aria-hidden': true },
-          String(picked.length)) : null)),
-    // A read that failed is a defect in the panel's own source, so it names the
-    // error and offers the retry beside the rows it could not replace.
-    defect === null ? null : h('p', { className: 'ptcPlusSessionCapabilityMessage', role: 'status' },
-      t('capabilities.quick.catalogError', { error: defect }), ' ',
-      h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: reload }, t('capabilities.reloadCatalog'))),
-    h('div', { className: 'ptcPlusSessionCapabilityList' },
-      h('div', { className: 'ptcPlusSessionCapabilityTable', role: 'table', 'aria-label': t('capabilities.quick.members') },
-        columnsRow(),
-        loaded && listed.length === 0 ? h('p', { className: 'ptcPlusSessionCapabilityMessage' },
-          t(capabilities.length === 0 ? 'capabilities.quick.supplyEmpty' : 'capabilities.noMatches')) : null,
-        ...listed.map(renderRow)),
-      // The group is always present: the Host supplies the binding document whether or
-      // not this session has used any of it, and a zero-row group is an empty table.
-      h('section', { key: 'bindings', className: 'ptcPlusSessionCapabilityGroup ptcPlusBindingGroup' },
-        h('h3', null, t('bindings.title')),
-        h('div', { className: 'ptcPlusBindingTable', role: 'table', 'aria-label': t('bindings.title') },
-          columnsRow(),
-          ...bindings.map(renderRow)))),
-    batchOpen ? h(Modal, { open: true, onClose: () => setBatchOpen(false), title: t('capabilities.batchSettings'),
-      closeLabel: t('capabilities.batch.cancel'), headless: true, className: 'ptcPlusCapabilityBatchModal' },
-      h('div', { className: 'ptcPlusCapabilityBatchHead' }, h('h2', null, t('capabilities.batchSettings')),
-        h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('capabilities.batch.cancel'),
-          onClick: () => setBatchOpen(false) }, '\u00d7')),
-      h('div', { className: 'ptcPlusCapabilityBatchBody' },
-        h('p', { className: 'ptcPlusDetail', role: 'status' }, t('capabilities.batch.selected', { count: pickedRows.length })),
-        h('ul', { className: 'ptcPlusCapabilityBatchTargets', 'aria-label': t('capabilities.batch.targetList') },
-          ...pickedRows.map(row => h('li', { key: row.id }, h('span', null, row.name ?? row.id), h('code', null, row.id)))),
-        h('div', { className: 'ptcPlusCapabilityBatchFields' }, ...DIMENSIONS.map(dimension =>
-          h('div', { key: dimension, className: 'ptcPlusCapabilityFilter' },
-            h('span', null, t(`capabilities.policy.${dimension}`)),
-            h(Select, { value: batchChoices[dimension], label: t(`capabilities.policy.${dimension}`),
-              onChange: choice => setBatchChoices(current => ({ ...current, [dimension]: choice })),
-              options: [{ value: 'keep', label: t('capabilities.batch.keep') }, ...choiceOptions(dimension)] }))))),
-      h('div', { className: 'ptcPlusCapabilityBatchFooter' },
-        h('button', { type: 'button', className: 'ptcPlusButton', onClick: () => setBatchOpen(false) },
-          t('capabilities.batch.cancel')),
-        h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary', onClick: () => void applyBatch() },
-          t('capabilities.batch.record', { count: batchLines().length })))) : null,
-    h('div', { className: 'ptcPlusSessionCapabilityFooter' },
-      // The footer states the same receipt the chat card does, in the current
-      // language: which record this write named, its choice and its session. The
-      // raw payload stays in the command's own result, where history keeps it.
-      receipt === null ? null : h('span', { role: 'status' }, receipt.error === undefined
-        ? capabilityCommandText(t, receipt.text)
-        : t('capabilities.quick.writeError', { error: receipt.error }))))
+    // §3.3: a page reports its own address set, so a missing receipt is read against the
+    // record it belongs to instead of against an unnamed blank.
+    const addressSet = settingsEntrance ? t('capabilities.surface.addresses.settings')
+      : t('capabilities.surface.addresses.session', { session: sessionId })
+    const table = h('div', { role: 'table',
+      'aria-label': t(settingsEntrance ? 'capabilities.surface.settingsTitle' : 'capabilities.quick.members') },
+      columnsRow(),
+      loaded && listed.length === 0 ? h('p', { className: 'ptcPlusSessionCapabilityMessage' },
+        t(capabilities.length === 0 ? 'capabilities.quick.supplyEmpty' : 'capabilities.noMatches')) : null,
+      ...listed.map(renderRow))
+    const body = [
+      h('div', { key: 'head', className: 'ptcPlusSessionCapabilityHead' },
+        h('div', null,
+          h('h2', null, t(settingsEntrance ? 'capabilities.surface.settingsTitle' : 'capabilities.quick.modalTitle')),
+          h('p', { className: 'ptcPlusSessionCapabilityAddresses' }, addressSet)),
+        inline === true ? null : h('button', { type: 'button', className: 'ptcPlusDialogClose',
+          'aria-label': t('settings.close'), onClick: close }, '\u00d7')),
+      h('div', { key: 'toolbar', className: 'ptcPlusSessionCapabilityToolbar' },
+        h('label', { className: 'ptcPlusSearch' },
+          h('svg', { viewBox: '0 0 24 24', width: 16, height: 16, 'aria-hidden': true },
+            h('circle', { cx: 10, cy: 10, r: 6, fill: 'none', stroke: 'currentColor', strokeWidth: 2 }),
+            h('path', { d: 'm15 15 6 6', fill: 'none', stroke: 'currentColor', strokeWidth: 2 })),
+          h('input', { type: 'search', value: query, 'aria-label': t('capabilities.search'),
+            placeholder: t('capabilities.search'), onChange: event => setQuery(event.target.value) })),
+        filter(t('capabilities.quick.kind'), family, chooseFamily,
+          [['all', t('capabilities.quick.all')], ...FAMILIES.map(key => [key, t(`capabilities.quick.${key}`)])]),
+        filter(t('capabilities.sourceFilter'), source, chooseSource,
+          [['all', t('capabilities.allSources')], ...[...sources].sort(([a], [b]) => compare(a, b))]),
+        h('button', { type: 'button', className: 'ptcPlusButton', 'aria-haspopup': 'dialog',
+          'aria-label': t('capabilities.batchSettings'), disabled: writable === false,
+          onClick: () => { setBatchChoices({ availability: 'keep', disclosure: 'keep' }); setBatchOpen(true) } },
+          t('capabilities.batchSettings'),
+          picked.length ? h('span', { className: 'ptcPlusCapabilityBatchCount', 'aria-hidden': true },
+            String(picked.length)) : null)),
+      // A read that failed is a defect in the panel's own source, so it names the error
+      // and offers the retry beside the rows it could not replace.
+      defect === null ? null : h('p', { key: 'defect', className: 'ptcPlusSessionCapabilityMessage', role: 'status' },
+        t('capabilities.quick.catalogError', { error: defect }), ' ',
+        h('button', { type: 'button', className: 'ptcPlusCapabilityLink', onClick: reload }, t('capabilities.reloadCatalog'))),
+      h('div', { key: 'list', className: 'ptcPlusSessionCapabilityList' },
+        h('div', { className: 'ptcPlusSessionCapabilityTable' }, table),
+        // The group is present whenever this entrance states the binding document: the
+        // Host supplies it whether or not this session has used any of it, and a
+        // zero-row group is an empty table.
+        settingsEntrance ? null
+          : h('section', { key: 'bindings', className: 'ptcPlusSessionCapabilityGroup ptcPlusBindingGroup' },
+            h('h3', null, t('bindings.title')),
+            h('div', { className: 'ptcPlusBindingTable', role: 'table', 'aria-label': t('bindings.title') },
+              columnsRow(),
+              ...bindings.map(renderRow)))),
+      batchOpen ? h(Modal, { key: 'batch', open: true, onClose: () => setBatchOpen(false),
+        title: t('capabilities.batchSettings'), closeLabel: t('capabilities.batch.cancel'), headless: true,
+        className: 'ptcPlusCapabilityBatchModal' },
+        h('div', { className: 'ptcPlusCapabilityBatchHead' }, h('h2', null, t('capabilities.batchSettings')),
+          h('button', { type: 'button', className: 'ptcPlusDialogClose', 'aria-label': t('capabilities.batch.cancel'),
+            onClick: () => setBatchOpen(false) }, '\u00d7')),
+        h('div', { className: 'ptcPlusCapabilityBatchBody' },
+          h('p', { className: 'ptcPlusDetail', role: 'status' }, t('capabilities.batch.selected', { count: pickedRows.length })),
+          h('ul', { className: 'ptcPlusCapabilityBatchTargets', 'aria-label': t('capabilities.batch.targetList') },
+            ...pickedRows.map(row => h('li', { key: row.id }, h('span', null, row.name ?? row.id), h('code', null, row.id)))),
+          h('div', { className: 'ptcPlusCapabilityBatchFields' }, ...DIMENSIONS.map(dimension => {
+            const address = t(settingsEntrance ? 'capabilities.batch.address.saved' : 'capabilities.batch.address.session')
+            const label = `${address} · ${dimensionWord(dimension)}`
+            return h('div', { key: dimension, className: 'ptcPlusCapabilityFilter' }, h('span', null, label),
+              h(Select, { value: batchChoices[dimension], label,
+                onChange: choice => setBatchChoices(current => ({ ...current, [dimension]: choice })),
+                // Each entrance offers the words its own address can hold: the session batch offers
+                // the record's words plus `inherit`, the saved batch offers `automatic`.
+                options: [{ value: 'keep', label: t('capabilities.batch.keep') },
+                  ...choiceOptions(dimension === 'availability'
+                    ? (settingsEntrance ? SAVED_AVAILABILITY : SESSION_AVAILABILITY)
+                    : (settingsEntrance ? SAVED_DISCLOSURE : SESSION_DISCLOSURE))] }))
+          })),
+          h('p', { className: 'ptcPlusDetail' },
+            t(settingsEntrance ? 'capabilities.batch.effect' : 'capabilities.batch.effectSession'))),
+        h('div', { className: 'ptcPlusCapabilityBatchFooter' },
+          h('button', { type: 'button', className: 'ptcPlusButton', onClick: () => setBatchOpen(false) },
+            t('capabilities.batch.cancel')),
+          h('button', { type: 'button', className: 'ptcPlusButton', 'data-kind': 'primary',
+            disabled: writable === false, onClick: () => void applyBatch() },
+            t('capabilities.batch.record', { count: batchLines().length })))) : null,
+      h('div', { key: 'footer', className: 'ptcPlusSessionCapabilityFooter' },
+        // The footer states the same receipt the chat card does, in the current
+        // language: which record this write named, its choice and its session. The raw
+        // payload stays in the command's own result, where history keeps it.
+        receipt === null ? null : h('span', { role: 'status' }, receipt.error === undefined
+          ? capabilityCommandText(t, receipt.text)
+          : t('capabilities.quick.writeError', { error: receipt.error }))),
+    ]
+    return inline === true
+      ? h('div', { className: 'ptcPlusCapabilitySurface ptcPlusCapabilitySurface-inline' }, ...body)
+      : h(Modal, { open, onClose: close, title: t('capabilities.quick.modalTitle'),
+        closeLabel: t('settings.close'), headless: true, className: 'ptcPlusSessionCapabilityModal' }, ...body)
   }
 }

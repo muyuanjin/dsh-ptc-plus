@@ -1,5 +1,6 @@
 import { CONFIG_DEFAULTS, CONFIG_FIELDS, CONFIG_GROUPS, CONFIG_MODULES } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, resolveConfig } from '../internal/runtime-config.js'
+import { capabilityPolicyForConfig, capabilityPolicyFromRecord, changeCapabilityRule } from '../internal/capability-policy.js'
 import { featureEnabled } from './client-feature-gates.js'
 import { isHostIconComponent } from './client-host-compat.js'
 import { capabilityPlanReason, createCapabilitySettingsViews } from './client-capabilities-view.js'
@@ -24,8 +25,8 @@ function settingsScrollGeometry(element) {
  * action only while global bindings are eligible.
  */
 export function createPtcSettingsView(React, deps) {
-  const { ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, icons, inspectCapabilityPlans, inspectCapabilityCatalog,
-    inspectCapabilityTargets, inspectCapabilityAllocation, CapabilityRefreshButton } = deps
+  const { ActionButton, BindingsDialog, Modal, Select, useWorkbenchController, icons, inspectCapabilityPlans,
+    inspectCapabilityTargets, inspectCapabilityAllocation, CapabilityRefreshButton, CapabilitySurface } = deps
   const h = React.createElement
   const enabledField = CONFIG_FIELDS.find(field => field.key === 'enabled')
 
@@ -42,13 +43,6 @@ export function createPtcSettingsView(React, deps) {
     return h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
       strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
       className: 'ptcPlusSettingsNavIcon' }, ...paths[section].map((d, key) => h('path', { key, d })))
-  }
-
-  function SearchIcon() {
-    return isHostIconComponent(icons.search) ? h(icons.search, { size: 16, 'aria-hidden': true })
-      : h('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor',
-        strokeWidth: 1.6, strokeLinecap: 'round', 'aria-hidden': true },
-      h('circle', { cx: 10.5, cy: 10.5, r: 6.5 }), h('path', { d: 'm16 16 5 5' }))
   }
 
   function NavigationArrow() {
@@ -111,7 +105,7 @@ export function createPtcSettingsView(React, deps) {
         : saved.invalid && draft === saved.settings ? h('p', { role: 'status', className: 'ptcPlusMessage' }, t('capabilities.savedStatisticsInvalid')) : null)
   }
 
-  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { SearchIcon, Select, Modal })
+  const { CapabilityWorkbench } = createCapabilitySettingsViews(React, { Select, Modal })
 
   function fieldInput(field, value, disabled, onChange, label) {
     if (field.type === 'boolean') {
@@ -153,8 +147,6 @@ export function createPtcSettingsView(React, deps) {
     const [plansError, setPlansError] = React.useState(null)
     const [plansPending, setPlansPending] = React.useState(false)
     const [plansObservedConfiguration, setPlansObservedConfiguration] = React.useState(null)
-    const [catalog, setCatalog] = React.useState(null)
-    const [catalogError, setCatalogError] = React.useState(null)
     const [planRevision, setPlanRevision] = React.useState(0)
     const [targets, setTargets] = React.useState(null)
     const [targetsError, setTargetsError] = React.useState(null)
@@ -203,27 +195,6 @@ export function createPtcSettingsView(React, deps) {
       })
       return () => controller.abort()
     }, [enabled, open, view, planRevision])
-    React.useEffect(() => {
-      if (!enabled) {
-        setCatalog(null)
-        setCatalogError(null)
-        return
-      }
-      if (!(open || view === 'page' || view === 'dialog') || !inspectCapabilityCatalog) return
-      const controller = new AbortController()
-      setCatalogError(null)
-      // The observed session, when one is selected, names the workspace directory the
-      // Host's declaration is read for; with none selected the read states the Host's
-      // own declaration. Neither read needs a live agent behind the session.
-      Promise.resolve().then(() => inspectCapabilityCatalog(refreshSessionId || undefined, controller.signal)).then(available => {
-        if (controller.signal.aborted) return
-        setCatalog(available)
-      }, error => {
-        if (controller.signal.aborted) return
-        setCatalogError(String(error?.message ?? error))
-      })
-      return () => controller.abort()
-    }, [enabled, open, view, planConfiguration, planRevision, refreshSessionId])
     React.useEffect(() => {
       if (!plansEnabled) {
         setPlans(null)
@@ -343,6 +314,79 @@ export function createPtcSettingsView(React, deps) {
     const fieldDisabled = field => unavailable
       || pending.has(field.key)
       || (field.key !== 'enabled' && !enabled)
+    /**
+     * The saved address's one writer.
+     *
+     * The capability surface states values, so a cell writes the value its address
+     * holds for that object; the rule chain is what answers the objects this address
+     * has not decided one by one. The receipt the surface shows is the record this
+     * call wrote, named the way every other capability write names one.
+     *
+     * The decision is merged into the policy the document holds when the write runs, not
+     * into the one this page last rendered: two cells changed before the settings
+     * snapshot republishes compose instead of the second rebuilding the policy from the
+     * older snapshot and dropping the first.
+     */
+    const policyAtWrite = React.useRef(null)
+    const renderedPolicy = React.useRef(value.capabilityPolicy)
+    if (value.capabilityPolicy !== renderedPolicy.current) {
+      renderedPolicy.current = value.capabilityPolicy
+      policyAtWrite.current = null
+    }
+    // The newest published snapshot, for a write that runs after the render that made it. A
+    // queued write closes over its own render, and that snapshot may already be replaced by the
+    // time it composes, so the document it starts from is read from here.
+    const latestValue = React.useRef(value)
+    React.useEffect(() => { latestValue.current = value })
+    const writeSavedCapability = ({ id, dimension, selection }) => {
+      if (!updateCapabilityConfiguration) return Promise.reject(new Error(t('capabilities.configurationUnavailable')))
+      const field = CONFIG_FIELDS.find(candidate => candidate.key === 'capabilityPolicy')
+      const operation = writeTail.current.then(async () => {
+        setPending(current => new Set([...current, field.key]))
+        setCapabilityStatus(null)
+        let key = null
+        try {
+          // A configuration that saved no policy has only a synthesized document, whose bottom
+          // layer the capability-management switch shaped. Writing that document would freeze the
+          // switch's answer into the record and turn untouched cells into it, so a first saved
+          // write starts from the words the record itself wrote: the declared defaults plus the
+          // layers the override record holds, which `capabilityPolicyForConfig` folds into a
+          // document while the synthesis switches are neutral. The resolved config always carries
+          // a policy string, so the provenance marker — not the field's absence — decides which
+          // document is the record's.
+          const document = () => policyAtWrite.current
+            ?? (latestValue.current.capabilityPolicySaved === true
+              ? capabilityPolicyForConfig(latestValue.current) : capabilityPolicyFromRecord(latestValue.current))
+          const policy = changeCapabilityRule(document(), id, dimension, selection)
+          const written = JSON.stringify(policy)
+          key = await updateSetting(field.key, written)
+          // A null answer means either "this scope is not writable" or "the record already holds
+          // this value". The second is not a refusal: the decision the reader made is the state
+          // the record is in, so nothing is written and nothing failed.
+          if (key === null) {
+            if (latestValue.current.capabilityPolicy !== written) throw new Error(t('capabilities.configurationUnavailable'))
+            key = 'status.applied'
+          }
+          if (key === 'status.applied') policyAtWrite.current = policy
+        } catch (error) {
+          recordStatus({ key: 'status.failed', fieldKey: field.key,
+            params: { error: error instanceof Error ? error.message : String(error) } })
+          throw error
+        } finally {
+          setPending(current => {
+            const next = new Set(current)
+            next.delete(field.key)
+            return next
+          })
+        }
+        // The settings page keeps stating its own outcome; the cell states the refusal.
+        recordStatus({ key, fieldKey: field.key })
+        if (key !== 'status.applied') throw new Error(t('capabilities.configurationUnavailable'))
+        return { id, dimension, selection }
+      })
+      writeTail.current = operation.catch(() => {})
+      return operation
+    }
     const renderField = key => {
       const field = CONFIG_FIELDS.find(candidate => candidate.key === key)
       if (field === undefined) return null
@@ -384,7 +428,7 @@ export function createPtcSettingsView(React, deps) {
               h('table', null, h('thead', null, h('tr', null,
                 ...['member', 'selection', 'reason', 'coverage'].map(key => h('th', { key }, t(`capabilities.${key}`))))),
               h('tbody', null, ...plan.effective.entries.map(entry => h('tr', { key: entry.id },
-                h('td', null, entry.id), h('td', null, t(`capabilities.${entry.selection}`)),
+                h('td', null, entry.id), h('td', null, t(`capabilities.word.${entry.selection}`)),
                 h('td', null, capabilityPlanReason(t, entry)),
                 h('td', null, entry.evidence ? `${entry.evidence.used}/${entry.evidence.eligible} (${entry.evidence.scope})` : '—')))))))) : null
 
@@ -431,12 +475,22 @@ export function createPtcSettingsView(React, deps) {
             onChange: event => persist(CONFIG_FIELDS.find(field => field.key === 'capabilityContextEnabled'), event.target.checked) }))) : heading,
       ...(group.key === 'capabilities' ? [
         h(CapabilityWorkbench, { key: 'capability-workbench', id: `${groupIdPrefix}-capability-workbench`,
-          value, configurationReady: snapshot.status === 'ready', catalog, catalogError, plans: plansEnabled ? plans : null, plansError, plansPending,
+          value, configurationReady: snapshot.status === 'ready', plans: plansEnabled ? plans : null, plansError, plansPending,
           plansStale: plansObservedConfiguration !== planConfiguration,
           disabled: key => fieldDisabled({ key }), onChange: persist,
           onReload: () => setPlanRevision(current => current + 1), t, renderField, renderPlans, renderRefresh,
           selectedSessionId: refreshSessionId, onSessionSelect: setRefreshSessionId,
-          allocation, allocationError, allocationPending, saving: [...pending].some(key => CAPABILITY_CONFIGURATION_KEYS.includes(key) || key === 'capabilityProfiles'), saveStatus: capabilityStatus, configurationWritable: !unavailable && enabled, onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : undefined })]
+          allocation, allocationError, allocationPending, saving: [...pending].some(key => CAPABILITY_CONFIGURATION_KEYS.includes(key) || key === 'capabilityProfiles'), saveStatus: capabilityStatus, configurationWritable: !unavailable && enabled, onApplyConfiguration: updateCapabilityConfiguration ? persistConfiguration : undefined,
+          // The one capability surface, mounted with the address this entrance fixes:
+          // the new-session default. Its row set is the Host's own declaration — the
+          // process-scope object set, not a session's full declared face (capability-surface
+          // §8.9), because this entrance names no session — so an observation target changes
+          // only what the observation reads, never these rows, and a target whose supply
+          // cannot be read leaves the rows and their controls in place.
+          surface: CapabilitySurface ? h(CapabilitySurface, { key: 'capability-surface', entrance: 'settings', inline: true,
+            t, writable: !unavailable && enabled, revision: planConfiguration,
+            onReload: () => setPlanRevision(current => current + 1),
+            savedCommands: { run: writeSavedCapability } }) : null })]
         : fields.map(renderField)))
     }
 

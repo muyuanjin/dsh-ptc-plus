@@ -1573,7 +1573,12 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
     // The session column's own word, as one stable token per state. The row and the cell
     // both state it, so availability is read from a stripe and a mark before the word is
     // read: `enabled` and `closed` are the two answers no reader should have to decode from
-    // identical text, and `inherit` must not read as a decision this session made.
+    // identical text, and `inherit` must not read as a decision this session made. What those
+    // words resolve to at runtime stays off the page: a category or `mcpServers.<server>` rule
+    // answers a member whose own entry wrote nothing, a closed server answers over a member's
+    // own `enabled`, and a paused capability switch stops applying the saved document — none of
+    // those resolutions is a word these two columns hold (capability-surface §8.1b/§8.1c), so
+    // none of them becomes this row's colour or a second state token.
     const sessionStateOf = row => row.kind === 'binding'
       ? adoptionOf(row)
       : (recordedOf(row, 'availability') ?? 'inherit')
@@ -1610,12 +1615,21 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
     // edits `mcpServers.<server>` in that same document. Read-only disables, never withdraws.
     const savedControl = row => settingsEntrance
     const savedDisabled = () => writable === false
+    // The saved column states the word its own record wrote, and that word is what this column
+    // makes readable: `enabled`/`closed` take the success and error colours and `automatic` the
+    // business colour, so the entrance that fixes the saved document shows at a glance which
+    // objects it switched off — the entrance that has no session column included. The colour
+    // states this column's own word only; it does not claim the answer a row gets here, because
+    // the saved entry is one layer of a resolution this page does not compute (§8.1b/§8.1c).
+    // The saved disclosure cell states one of five disclosure words and carries no state token:
+    // no rule colours it, and a token no selector or case observes states nothing.
+    const savedState = row => ({ 'data-state': savedOf(row, 'availability') })
     const savedEnabledCell = row => savedControl(row)
-      ? h('div', { className: 'ptcPlusSessionCapabilitySaved' },
+      ? h('div', { className: 'ptcPlusSessionCapabilitySaved', ...savedState(row) },
         h(Select, { label: controlLabel('savedEnabled', row), value: savedOf(row, 'availability'),
           disabled: savedDisabled(), options: choiceOptions(SAVED_AVAILABILITY),
           onChange: value => writeSaved(row, 'availability', value) }))
-      : h('span', { className: 'ptcPlusSessionCapabilitySaved' }, savedEnabled(row))
+      : h('span', { className: 'ptcPlusSessionCapabilitySaved', ...savedState(row) }, savedEnabled(row))
     const savedDisclosureCell = row => savedControl(row) && row.kind !== 'server'
       // A server carries no disclosure of its own, so its saved disclosure cell is the statement
       // that the members decide it; its availability cell is the rule edit below.

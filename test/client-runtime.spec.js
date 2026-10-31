@@ -2247,6 +2247,19 @@ test('the session capability panel states the seven contract columns and the rec
     capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'docs',
       source: { kind: 'mcp', server: 'docs' }, saved: { availability: 'closed', disclosure: 'host' },
       session: { availability: 'closed', disclosure: 'inherit' } }),
+    // The row a reader most needs to read correctly: this session recorded nothing, and the
+    // object's own saved entry wrote `closed` — so the saved column states off while the session
+    // column states that this address recorded nothing.
+    capabilityRow('skills.dormant', { category: 'skill', source: { kind: 'skill', bucket: 'user-agents' },
+      saved: { availability: 'closed', disclosure: 'automatic' } }),
+    // A member of a server this session closed: its own saved entry says enabled, the record
+    // above it says closed, and the runtime answer is closed. The row states what its own record
+    // wrote and the receipt names the layer; it must not paint the saved word as this row's
+    // answer (capability-surface §8.1b).
+    capabilityRow('tools.docs_search', { name: 'docs_search', source: { kind: 'mcp', server: 'docs' },
+      saved: { availability: 'enabled', disclosure: 'host' },
+      record: { availability: undefined, disclosure: undefined,
+        layers: { availability: 'mcpServers.docs', disclosure: null } } }),
   ]
   const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
   const panel = view.getByRole('dialog', { name: 'Manage session capabilities' })
@@ -2296,18 +2309,38 @@ test('the session capability panel states the seven contract columns and the rec
   expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityAvailability').textContent).toContain('Inherit')
   expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
     .toBe("This session's record · Not written")
-  // The session column's state is a visual fact before it is a word: the row states it, the
-  // availability cell states it, and a mark draws it. A row this session enabled, one it
-  // closed and one it left inherited are therefore three different pictures, not one word.
+  // The session column's state is a visual fact before it is a word: the row states the word its
+  // own record holds, the availability cell states it too, and a mark draws it. A row this session
+  // enabled, one it closed and one it left inherited are three different pictures, not one word.
   const stateOf = id => row(id).getAttribute('data-session-state')
   expect([stateOf('tools.probe'), stateOf('skills.review'), stateOf('mcpServers.docs')])
     .toEqual(['enabled', 'inherit', 'closed'])
-  for (const id of ['tools.probe', 'skills.review', 'mcpServers.docs']) {
+  // The reported row: this session recorded nothing, and the saved entry wrote `closed`. The
+  // session column keeps stating its own record's word — what that word resolves to at runtime is
+  // behaviour and reaches no cell (§8.1b/§8.1c) — and the saved column states `closed` in its own
+  // cell, where it is written.
+  expect(stateOf('skills.dormant')).toBe('inherit')
+  expect(row('skills.dormant').querySelector('.ptcPlusSessionCapabilityAvailability').textContent)
+    .toContain('Inherit')
+  expect(row('skills.dormant').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe("This session's record · Not written")
+  // A member whose server this session closed: the record above it answers the dimension, so the
+  // receipt names that layer while the row itself still states `inherit`. No cell claims the
+  // member is enabled on the strength of a saved entry a higher rule overrides.
+  expect(stateOf('tools.docs_search')).toBe('inherit')
+  expect(row('tools.docs_search').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
+    .toBe("This session's record · via mcpServers.docs · availability closed")
+  for (const id of ['tools.probe', 'skills.review', 'mcpServers.docs', 'skills.dormant', 'tools.docs_search']) {
     const cell = row(id).querySelector('.ptcPlusSessionCapabilityAvailability')
     const mark = cell.querySelector('.ptcPlusSessionStateMark')
     expect(cell.getAttribute('data-state')).toBe(stateOf(id))
     expect(mark.getAttribute('data-state')).toBe(stateOf(id))
     expect(mark.getAttribute('aria-hidden')).toBe('true')
+    // The panel states records, not their resolution: no row carries a second "answer" token
+    // that a reader or a later change could mistake for the session's runtime answer.
+    expect(cell.getAttribute('data-effective')).toBeNull()
+    expect(row(id).getAttribute('data-session-effective')).toBeNull()
+    expect(row(id).getAttribute('data-session-origin')).toBeNull()
   }
   // The disclosure column separates a decision it recorded from the layers it inherits.
   expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilityDisclosure').getAttribute('data-state'))
@@ -2316,6 +2349,21 @@ test('the session capability panel states the seven contract columns and the rec
     .toBe('inherit')
   expect(row('mcpServers.docs').querySelector('.ptcPlusSessionCapabilityDisclosure').getAttribute('data-state'))
     .toBe('per-member')
+  // The saved column states its own word as a state too, because that word is what the entrance
+  // without a session column has to show: `closed` reads as off in the settings entrance and in
+  // the read-only session entrance alike, without borrowing another column's meaning.
+  expect(row('mcpServers.docs').querySelector('.ptcPlusSessionCapabilitySaved').getAttribute('data-state'))
+    .toBe('closed')
+  expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilitySaved').getAttribute('data-state'))
+    .toBe('closed')
+  expect(row('skills.review').querySelector('.ptcPlusSessionCapabilitySaved').getAttribute('data-state'))
+    .toBe('automatic')
+  expect(row('skills.dormant').querySelector('.ptcPlusSessionCapabilitySaved').getAttribute('data-state'))
+    .toBe('closed')
+  // The saved disclosure cell states one of five disclosure words and no state token: a token no
+  // rule and no case observes would state nothing.
+  expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilitySavedDisclosure').hasAttribute('data-state'))
+    .toBe(false)
   // Each state owns declared styling for the stripe, the mark and the word, so the difference
   // survives the theme: a colour alone in one rule would leave two states looking alike.
   for (const state of ['enabled', 'closed', 'automatic', 'inherit', 'skip']) {
@@ -2323,6 +2371,8 @@ test('the session capability panel states the seven contract columns and the rec
     expect(CLIENT_CSS).toContain(`[data-state=${state}]`)
   }
   expect(CLIENT_CSS).toContain('.ptcPlusSessionStateMark{')
+  expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilitySaved[data-state=enabled]')
+  expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilitySaved[data-state=closed]')
   // Nothing on the panel is disabled: every row states a decision it can record.
   expect(panel.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
 })

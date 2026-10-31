@@ -12302,9 +12302,10 @@ function createCapabilitySurfaceView(React32, { commands, bindingCommands, Modal
     );
     const savedControl = (row) => settingsEntrance;
     const savedDisabled = () => writable === false;
+    const savedState = (row) => ({ "data-state": savedOf(row, "availability") });
     const savedEnabledCell = (row) => savedControl(row) ? h(
       "div",
-      { className: "ptcPlusSessionCapabilitySaved" },
+      { className: "ptcPlusSessionCapabilitySaved", ...savedState(row) },
       h(Select2, {
         label: controlLabel("savedEnabled", row),
         value: savedOf(row, "availability"),
@@ -12312,7 +12313,7 @@ function createCapabilitySurfaceView(React32, { commands, bindingCommands, Modal
         options: choiceOptions(SAVED_AVAILABILITY),
         onChange: (value) => writeSaved(row, "availability", value)
       })
-    ) : h("span", { className: "ptcPlusSessionCapabilitySaved" }, savedEnabled(row));
+    ) : h("span", { className: "ptcPlusSessionCapabilitySaved", ...savedState(row) }, savedEnabled(row));
     const savedDisclosureCell = (row) => savedControl(row) && row.kind !== "server" ? h(
       "div",
       { className: "ptcPlusSessionCapabilitySavedDisclosure" },
@@ -41359,6 +41360,10 @@ var CLIENT_CSS = `
 .ptcPlusSessionCapabilityAvailability[data-state=automatic] .ptcPlusSelectTrigger{color:var(--dsw-alias-state-business-primary,#4d6bfe);font-weight:600}
 .ptcPlusSessionCapabilityAvailability[data-state=closed] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=closed] .ptcPlusBindingToggle,.ptcPlusSessionCapabilityAvailability[data-state=damaged] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=damaged] .ptcPlusBindingToggle{color:var(--dsw-alias-state-error-primary,#e5484d);font-weight:600}
 .ptcPlusSessionCapabilityAvailability[data-state=inherit] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=inherit] .ptcPlusSessionStateMark,.ptcPlusSessionCapabilityAvailability[data-state=skip] .ptcPlusBindingToggle{color:var(--dsw-alias-label-secondary)}
+.ptcPlusSessionCapabilitySaved[data-state=enabled],.ptcPlusSessionCapabilitySaved[data-state=closed]{font-weight:600}
+.ptcPlusSessionCapabilitySaved[data-state=enabled]{color:var(--dsw-alias-state-success-primary,#12a150)}.ptcPlusSessionCapabilitySaved[data-state=closed]{color:var(--dsw-alias-state-error-primary,#e5484d)}
+.ptcPlusSessionCapabilitySaved[data-state=automatic]{color:var(--dsw-alias-state-business-primary,#4d6bfe)}
+.ptcPlusSessionCapabilitySaved[data-state=enabled] .ptcPlusSelectTrigger{color:var(--dsw-alias-state-success-primary,#12a150);font-weight:600}.ptcPlusSessionCapabilitySaved[data-state=closed] .ptcPlusSelectTrigger{color:var(--dsw-alias-state-error-primary,#e5484d);font-weight:600}
 .ptcPlusSessionCapabilityDisclosure[data-state=inherit]{color:var(--dsw-alias-label-secondary)}.ptcPlusSessionCapabilityDisclosure[data-state=inherit] .ptcPlusSelectTrigger{color:var(--dsw-alias-label-secondary)}.ptcPlusSessionCapabilityDisclosure:not([data-state=inherit]):not([data-state=per-member]) .ptcPlusSelectTrigger{color:var(--dsw-alias-label-primary);font-weight:600}
 .ptcPlusCapabilitySurface-inline{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:hidden}
 .ptcPlusCapabilitySurface-inline .ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}

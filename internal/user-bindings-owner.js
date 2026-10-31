@@ -2,11 +2,14 @@ import { PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { sessionExecutionAvailable } from './host-tool-sdk.js'
 import { bindingToggleMessage } from './binding-toggle-receipt.js'
 import {
-  bindingAdoptionMessage,
+  BINDING_ADOPTION_RECORD,
   clearedBindingAdoption,
   declinedBindingEntries,
   withBindingAdoption,
 } from './binding-adoption.js'
+// Namespace import: the record writer is one public surface of the host, and the module
+// load must not depend on a named export that a future release could rename.
+import * as dshSession from '@deepseek-ai/dsh-session'
 import { RPC_CONTRACTS } from './rpc-contract.js'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
@@ -232,6 +235,11 @@ export function createUserBindingsOwner(ctx, options = {}) {
   let disposed = false
   const codeConsole = new UserBindingConsole(currentOptions)
   const commandRegistrations = new Map()
+  // The host's writer for a fact that belongs in the log but not on the model-visible
+  // surface. Every supported release publishes it, so an adoption decision is taken when
+  // it is made instead of waiting for a step to carry a message.
+  const appendRecord = typeof options.appendRecord === 'function' ? options.appendRecord
+    : typeof dshSession.appendPluginRecord === 'function' ? dshSession.appendPluginRecord : undefined
   const sessionAgents = new Map()
   const sessionGenerations = new Map()
   const agentLifecycles = new WeakMap()
@@ -331,8 +339,17 @@ export function createUserBindingsOwner(ctx, options = {}) {
     if (session === undefined || typeof session.append !== 'function') {
       throw new Error('binding adoption requires a live session')
     }
-    if (session.append('user/message', bindingAdoptionMessage(adoption), { surfaceOp: 'append' }) === undefined) {
-      throw new Error('the session did not record the binding adoption decision')
+    if (appendRecord === undefined) {
+      throw new Error('ptc-plus: this DSH release publishes no plugin-record writer, so a binding adoption decision cannot be recorded')
+    }
+    // Adoption is this session's own statement and the catalog the model reads already
+    // reflects it, so it is taken the moment the control is used: durable through the log,
+    // outside the model-visible surface, and requiring no prior step. A session that cannot
+    // take the record reports that instead of a decision nothing stored.
+    try {
+      appendRecord(session, BINDING_ADOPTION_RECORD, adoption)
+    } catch (error) {
+      throw new Error(`the session did not record the binding adoption decision: ${error?.message ?? String(error)}`)
     }
     return { kind: 'success', text: adoptionReceipt(adoption) }
   }

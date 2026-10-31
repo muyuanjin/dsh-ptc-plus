@@ -1,5 +1,5 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND, RETIRED_SURFACE_RECORD } from './message-sources.js'
 import { CAPABILITY_DISCLOSURES } from './capability-policy.js'
 
 /**
@@ -41,9 +41,35 @@ import { CAPABILITY_DISCLOSURES } from './capability-policy.js'
  * everything, which is the state a session without a record already reads as — and
  * a plan that states the map unreadably reports `unreadable` for the same reason a
  * record does.
+ *
+ * A choice about this session's capability set is a statement the session makes
+ * about itself, not correspondence with the model, and the carrier it travels on
+ * decides when it may be written. It travels as the plugin record below, which the
+ * host retains on every read and interprets as a surface node by none: a decision
+ * taken before the session's first step is therefore durable at once and never
+ * becomes a surface node ahead of the protected head. The `user/message` form is
+ * the historical carrier that 0.5.4 and earlier wrote; it is still read (a session
+ * persisted by those releases keeps its decision), and no writer produces it.
  */
 export const CAPABILITY_SELECTION_FORM = 'capability-selection'
 export const CAPABILITY_SELECTION_SCHEMA = 'ptc-capability-selection/v1'
+
+/**
+ * The log record this session's own choice is written as.
+ *
+ * A choice about this session's capability set is the session's statement about
+ * itself, not correspondence with the model, so it belongs in the log beside the
+ * turn events rather than on the model-visible surface. A plugin record is the
+ * host's carrier for exactly that kind of fact: it is retained on every read,
+ * interpreted as a surface node by none, and it may be written at any moment —
+ * including before the host publishes its protected surface head, where a message
+ * would make the whole log unreadable.
+ *
+ * A record that exists only as a plugin record means the step that composes the
+ * next environment is the only reader that has to know it, which is why the panel
+ * and the planner read this type directly instead of waiting for a delivery.
+ */
+export const CAPABILITY_SELECTION_RECORD = 'plugin:ptc-plus/capability-selection'
 
 const MAX_CHOICES = 256
 /** The one entry-id vocabulary a choice record may use; its writer validates the same form. */
@@ -93,6 +119,14 @@ export function capabilitySelectionText(selection) {
   return `${PREFIX}\n${JSON.stringify(normalizeCapabilitySelection(selection).choices)}`
 }
 
+/**
+ * The historical message this statement was written as before the record carrier.
+ *
+ * 0.5.4 and earlier appended this message on the model-visible surface, which is what
+ * `scripts/repair-session-log.mjs` repairs. No writer produces it now: the record below is
+ * the statement, and this form survives so that a session persisted by one of those releases
+ * is still read, and so that the repair has the shape it retires to build a fixture from.
+ */
 export function capabilitySelectionMessage(selection) {
   const text = capabilitySelectionText(selection)
   const message = createUserMessage({
@@ -101,6 +135,47 @@ export function capabilitySelectionMessage(selection) {
   })
   if (readCapabilitySelection(message) === undefined) throw new TypeError('invalid capability selection message')
   return message
+}
+
+/** Read one committed plugin record back as this session's selection, or nothing. */
+export function readCapabilitySelectionRecord(event) {
+  if (event?.type !== CAPABILITY_SELECTION_RECORD || event.ignorable !== true) return undefined
+  try {
+    return normalizeCapabilitySelection(event.data)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Whether one event states this session's capability selection at all.
+ *
+ * The record type states it, and so does the historical message form. A repaired statement
+ * (`RETIRED_SURFACE_RECORD`) states it only when the payload it kept is this owner's own form:
+ * a repair retires every surface node ahead of the protected head, whichever owner wrote it, so
+ * the carrier alone says nothing about who the statement belongs to. Reading another owner's
+ * retired statement as this one would answer `unreadable` for a decision this session never made
+ * — and would then outvote the selection the session did record.
+ */
+function statesCapabilitySelection(event) {
+  if (event?.type === CAPABILITY_SELECTION_RECORD) return true
+  const source = event?.data?.source
+  return isPtcMessageSource(source) && source.form === CAPABILITY_SELECTION_FORM
+}
+
+/**
+ * Read one selection out of either carrier.
+ *
+ * A record and the historical message state the same selection, so a caller that walks a log
+ * does not have to know which release wrote it — and a repaired statement answers for the owner
+ * whose form it carries.
+ */
+export function readCapabilitySelectionStatement(event) {
+  if (event?.type === CAPABILITY_SELECTION_RECORD) return readCapabilitySelectionRecord(event)
+  if (event?.type === RETIRED_SURFACE_RECORD) {
+    return event.ignorable === true && statesCapabilitySelection(event) ? readCapabilitySelection(event.data) : undefined
+  }
+  return event?.type === 'user/message' ? readCapabilitySelection(event.data) : undefined
 }
 
 /** Read one selection record back from a message, message projection or message fact. */
@@ -228,6 +303,15 @@ export function capabilitySelectionOf(events, sessionId) {
   const records = []
   let delivered
   for (const event of Array.isArray(events) ? events : []) {
+    // A record is the statement itself; the message form is the same statement on a release
+    // that wrote one. A repaired statement keeps its wording and loses only the carrier, so all
+    // three take part in the same "newest statement wins" ordering — but only while the payload
+    // is this owner's own form, because the repair retires every owner's surface node.
+    if (event?.type === CAPABILITY_SELECTION_RECORD || event?.type === RETIRED_SURFACE_RECORD) {
+      if (!statesCapabilitySelection(event)) continue
+      records.push({ form: CAPABILITY_SELECTION_FORM, choices: readCapabilitySelectionStatement(event)?.choices })
+      continue
+    }
     if (event?.type !== 'user/message') continue
     const source = event.data?.source
     if (!isPtcMessageSource(source)) continue

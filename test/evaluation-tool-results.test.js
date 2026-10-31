@@ -1,3 +1,4 @@
+import { attachPtcExecutor } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
@@ -131,7 +132,7 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
   const f = await fixture(t)
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: true, persona: '' })
-  const tools = new ToolRuntime(ctx, { mode: 'ptc' })
+  const tools = new ToolRuntime(ctx); attachPtcExecutor(ctx)
   class FixtureRuntime extends PtcRuntime {
     language = 'typescript'
     output = { logs: ['pkg'], value: '"pkg"' }
@@ -146,9 +147,18 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
     name: new URL('../scripts/evaluation-tool-results.mjs', import.meta.url).href, config: { directory: f.directory } })
   await ctx.loader.await()
   assert.equal(JSON.stringify(await ctx.systemPrompt.assemble({ signal: new AbortController().signal })), before)
-  const exec = { ...f.exec, arguments: { code: 'source', description: 'fixture' },
-    agent: { session: { id: 'session', header: {} } }, signal: new AbortController().signal }
-  const result = await tools.execute(exec)
+  const session = (id, header = {}) => ({ id, header, append() { return { seq: 0 } },
+    snapshotEvents() { return [] } })
+  // One model batch, as a PTC-mode Host dispatches it: the call block carries the identity
+  // and its arguments travel as JSON text.
+  const dispatch = (callId, agent) => tools.execute({
+    agent,
+    signal: new AbortController().signal,
+    calls: [{ id: callId, name: 'run_code',
+      arguments: JSON.stringify({ code: 'source', description: 'fixture' }) }],
+  }).then(batch => batch.results[0].result)
+  const agentFor = (id) => ({ session: session(id), ctx: { effect: () => () => {} } })
+  const result = await dispatch('call', agentFor('session'))
   assert.equal(result.isError, false)
   const evidence = await readEvaluationToolResults(f.directory, 'session')
   assert.equal(evidence.records[0].value, '"pkg"')
@@ -158,7 +168,7 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
     [{ logs: ['pkg'] }, 'fail'], [{ logs: [], value: '"123"' }, 'pass']]) {
     runtime.output = output
     const sessionId = `session-${expected}-${output.value ?? 'none'}`
-    const current = await tools.execute({ ...exec, agent: { session: { id: sessionId, header: {} } } })
+    const current = await dispatch('call', agentFor(sessionId))
     assert.equal(current.isError, false)
     const analysis = { ...f.analysis, session: { id: sessionId },
       canonicalToolResults: await readEvaluationToolResults(f.directory, sessionId) }
@@ -167,7 +177,7 @@ test('actual public tools/result notifies final canonical result and ctx.on disp
   ctx.loader.remove(observerId)
   await ctx.loader.await()
   assert.equal(JSON.stringify(await ctx.systemPrompt.assemble({ signal: new AbortController().signal })), before)
-  await tools.execute({ ...exec, callId: 'other', rootCallId: 'other', signal: new AbortController().signal })
+  await dispatch('other', agentFor('session'))
   assert.equal((await readEvaluationToolResults(f.directory, 'session')).records.length, 1)
 })
 

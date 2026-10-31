@@ -16,6 +16,18 @@ export function isPtcMessageSource(source) {
  */
 export const CAPABILITY_PLAN_FORM = 'capability-plan'
 
+/**
+ * The record a surface statement becomes when it may no longer occupy the surface.
+ *
+ * A session written before the record carrier carries a decision as a `user/message` ahead of the
+ * Host's protected head, and the released format refuses such a log on every read.
+ * `scripts/repair-session-log.mjs` keeps the sequence number and the payload and gives up only the
+ * carrier. The statement is therefore still a statement of the owner whose form its payload names,
+ * which is why this carrier lives beside the forms rather than in either owner: two owners read it,
+ * and each of them reads only its own.
+ */
+export const RETIRED_SURFACE_RECORD = 'plugin:ptc-plus/retired-surface-statement'
+
 /** DSH owns aggregate runtime-context messages independently of PTC messages. */
 export function isHostRuntimeContextSource(source) {
   return source?.kind === 'runtime-context'

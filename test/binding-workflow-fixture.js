@@ -19,6 +19,7 @@ import * as ptc from '../index.js'
 import { ptcPresentation } from '../scripts/dsh-host-contract.mjs'
 import { recordedSessionEvents as sessionEvents } from './session-observation-fixture.js'
 import { createFixtureExecutionProvider } from './host-fixture.js'
+import { provideSandboxPolicyFixture, provideWorkingDirectoryFixture } from './host-service-fixture.js'
 
 export async function bindingWorkflowHost(t) {
   const home = await mkdtemp(join(tmpdir(), 'ptc-binding-workflow-'))
@@ -62,6 +63,10 @@ export async function bindingWorkflowHost(t) {
     const fiber = ctx.plugin(executor.default ?? executor)
     fibers.push(fiber)
     await fiber.await()
+    // The mounted executor resolves the session's working directory before it runs a program
+    // and resolves one file policy per call; this Host states both.
+    provideWorkingDirectoryFixture(ctx, home)
+    provideSandboxPolicyFixture(ctx)
   }
   const requests = []
   const programs = []

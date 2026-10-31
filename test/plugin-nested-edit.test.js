@@ -1,3 +1,4 @@
+import { runTool } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { registerHooks } from 'node:module'
@@ -141,7 +142,7 @@ test('nested edit receipt schedules a revised cell after the root worker finishe
       const data = { rootCallId, parentCallId: rootCallId, subCallId,
         name: 'edit_run_code', arguments: args }
       session.append('tool/ptc-dispatch-start', data)
-      const result = await state.ctx.tools.execute({
+      const result = await state.runTool({
         callId: subCallId, rootCallId, parent: {}, name: 'edit_run_code',
         arguments: args, agent, signal,
       })
@@ -181,7 +182,7 @@ test('nested edit receipt schedules a revised cell after the root worker finishe
     const data = { rootCallId: secondRootCallId, parentCallId: secondRootCallId,
       subCallId: secondSubCallId, name: 'edit_run_code', arguments: args }
     session.append('tool/ptc-dispatch-start', data)
-    const result = await state.ctx.tools.execute({
+    const result = await state.runTool({
       callId: secondSubCallId, rootCallId: secondRootCallId, parent: {},
       name: 'edit_run_code', arguments: args, agent, signal,
     })
@@ -686,7 +687,7 @@ test('session disposal after an accepted nested edit prevents derived dispatch',
       const data = { rootCallId, parentCallId: rootCallId, subCallId,
         name: 'edit_run_code', arguments: args }
       session.append('tool/ptc-dispatch-start', data)
-      const result = await state.ctx.tools.execute({ callId: subCallId, rootCallId,
+      const result = await state.runTool({ callId: subCallId, rootCallId,
         parent: {}, name: 'edit_run_code', arguments: args, agent, signal })
       session.append('tool/ptc-dispatch', { ...data, isError: result.isError, content: result.content })
       return result.value
@@ -721,7 +722,7 @@ test('nested edit can revise a live volatile cell through the session projection
     const data = { rootCallId, parentCallId: rootCallId, subCallId,
       name: 'edit_run_code', arguments: args }
     session.append('tool/ptc-dispatch-start', data)
-    const result = await state.ctx.tools.execute({
+    const result = await state.runTool({
       callId: subCallId, rootCallId, parent: {}, name: 'edit_run_code',
       arguments: args, agent, signal,
     })
@@ -845,7 +846,7 @@ test('a root cell accepts one edit while surrounding code continues with its old
     const data = { rootCallId, parentCallId: rootCallId, subCallId,
       name: 'edit_run_code', arguments: args }
     session.append('tool/ptc-dispatch-start', data)
-    const result = await state.ctx.tools.execute({
+    const result = await state.runTool({
       callId: subCallId, rootCallId, parent: {}, name: 'edit_run_code',
       arguments: args, agent, signal,
     })

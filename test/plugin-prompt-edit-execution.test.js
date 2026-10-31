@@ -1,3 +1,4 @@
+import { runTool } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
@@ -294,7 +295,7 @@ test('does not promote an undeclared top-level editor from archived malformed st
   }, invalidSource)
   assert.equal(settled.find(chunk => chunk.type === 'block-end').block.arguments, invalidRaw)
   assert.deepEqual(settled.at(-1), { type: 'finish', reason: { kind: 'tool-calls' } })
-  const ordinaryToolResult = await state.ctx.tools.execute({
+  const ordinaryToolResult = await state.runTool({
     callId: invalidCallId,
     name: 'edit_run_code',
     arguments: invalidRaw,

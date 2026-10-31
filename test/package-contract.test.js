@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { parse } from 'yaml'
 import { parse as parseJavaScript } from '@babel/parser'
-import { isHostServicePackageName, manifestDigest, probePackages, readManifest, refreshDevelopmentGraph, resolveChannel, satisfiesRange, serializeManifest, validateManifest, verifyInstalledChannel, verifyInstalledHostGraph, describeDevelopmentGraph } from '../scripts/host-channel-manifest.mjs'
+import { DEVELOPMENT_CHANNEL, isHostServicePackageName, manifestDigest, probePackages, readManifest, refreshDevelopmentGraph, resolveChannel, satisfiesRange, serializeManifest, validateManifest, verifyInstalledChannel, verifyInstalledHostGraph, describeDevelopmentGraph } from '../scripts/host-channel-manifest.mjs'
 
 const DSH_RUNTIME_PEERS = [
   '@deepseek-ai/dsh-atomic-write',
@@ -174,7 +174,9 @@ test('keeps host-owned DSH service packages out of plugin dependencies', async (
   for (const packageName of DSH_RUNTIME_PEERS) {
     assert.equal(manifest.dependencies?.[packageName], undefined)
     assert.equal(manifest.peerDependencies?.[packageName], '*')
-    assert.equal(manifest.devDependencies?.[packageName], 'next')
+    // The development graph declares a channel, never one release: a pinned host version
+    // would make this repository's installation follow a single published build.
+    assert.equal(manifest.devDependencies?.[packageName], DEVELOPMENT_CHANNEL)
   }
 })
 
@@ -183,9 +185,12 @@ test('declares directly imported DSH utility packages for clean installs', async
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
   const packageName = '@deepseek-ai/dsh-util-values'
 
-  assert.equal(manifest.dependencies?.[packageName], '^0.2.0-rc.2 || ^0.2.1-alpha.1')
-  assert.equal(lock.packages[''].dependencies[packageName], manifest.dependencies[packageName])
+  const declared = manifest.dependencies?.[packageName]
+  assert.equal(typeof declared, 'string')
+  assert.equal(lock.packages[''].dependencies[packageName], declared)
   assert.equal(lock.packages[`node_modules/${packageName}`].dev, undefined)
+  assert.equal(satisfiesRange(lock.packages[`node_modules/${packageName}`].version, declared), true,
+    'the declared range must resolve the version a clean install receives')
 })
 
 test('packed production imports declare Host peers and runtime dependencies instead of depending on incidental hoisting', async () => {
@@ -276,16 +281,16 @@ test('generates one channel manifest from dist-tags and installs it on demand', 
   const generated = JSON.parse(await readFile(new URL('../compat/channels.json', import.meta.url), 'utf8'))
   const hostSuite = await readFile(new URL('../scripts/dsh-host-contract-suite.mjs', import.meta.url), 'utf8')
 
-  // The development graph declares the in-flight release-candidate channel; the
+  // The development graph declares the channel this checkout builds against; the
   // graph it actually materializes is a separate layer that host:channels:graph
   // moves, and ordinary gates only ever read the lock they find.
   const dshDevelopmentPackages = Object.entries(manifest.devDependencies)
     .filter(([name]) => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
   assert.ok(dshDevelopmentPackages.some(([name]) => name === '@deepseek-ai/dsh'))
-  assert.ok(dshDevelopmentPackages.every(([, version]) => version === 'next'))
-  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[''].devDependencies[name] === 'next'))
-  const nextVersion = lock.packages['node_modules/@deepseek-ai/dsh'].version
-  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[`node_modules/${name}`].version === nextVersion))
+  assert.ok(dshDevelopmentPackages.every(([, version]) => version === DEVELOPMENT_CHANNEL))
+  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[''].devDependencies[name] === DEVELOPMENT_CHANNEL))
+  const installedChannelVersion = lock.packages['node_modules/@deepseek-ai/dsh'].version
+  assert.ok(dshDevelopmentPackages.every(([name]) => lock.packages[`node_modules/${name}`].version === installedChannelVersion))
 
   // The tracked manifest is the only record of the channels, so it must cover
   // every probed host package and state which channel may block a release.

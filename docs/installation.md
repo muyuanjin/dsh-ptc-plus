@@ -12,7 +12,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 | Component | Current contract |
 | --- | --- |
-| DeepSeek Harness | Latest available release; validate the live public extension surfaces after every upstream release |
+| DeepSeek Harness | `>=0.2.1-0 <0.2.3` (the 0.2.1 and 0.2.2 lines), declared once in `engines.dsh`; validate the live public extension surfaces after every upstream release |
 | Runtime | DSH TypeScript PTC mode; cells currently accept modern JavaScript syntax |
 | Node.js | `^22.19.0 || >=24.0.0` |
 | Platforms | Windows CLI/Desktop and Linux CLI/Web verified locally; macOS package tests and import smoke run in CI, while live DSH integration and Desktop require release-time smoke testing |
@@ -32,7 +32,7 @@ The Client root requires `slots`, `locale`, `connection`, and `remote`; it adopt
 
 ### Compatibility Evidence
 
-Support is expressed as channels, not versions. `compat/channels.json` records, per channel, the host release each official dist-tag resolves to and the tarball integrity of every host package whose published surface the plugin probes. `latest` and `next` are the blocking channels; `alpha` is a pre-adaptation that reports without blocking. A probed package the release does not publish is recorded at the version and integrity its own declared dependency range resolves to, so a publish inside that range is a recorded drift; a probed package the release neither publishes nor depends on is recorded as absent, and the install proof rejects a graph that contains one. The recorded versions do not prove live registry availability or untested compatibility, and behaviour never branches on them: presentation, transport ownership and state retention are detected from the host's published shapes. `npm run host:channels:verify` checks the tracked manifest offline; `npm run host:channels:update` is the only command that resolves it from the registry.
+The plugin states its runtime requirement once, in `engines.dsh`: DSH evaluates that range alone and ignores the `peerDependencies` on its own packages, so the peers stay unrestricted while the accepted runtime line is one fact. The range admits both the 0.2.1 and 0.2.2 lines, prereleases included; 0.2.0 is outside it. Support is expressed as channels, not versions. `compat/channels.json` records, per channel, the host release each official dist-tag resolves to and the tarball integrity of every host package whose published surface the plugin probes. `latest` and `next` are the blocking channels; `alpha` carries the line this checkout develops against and reports without blocking a release. The development graph declares that channel rather than a release — every host `devDependencies` entry names it, and the lock resolves it — so a supported line is reached by moving the channel definition, not by editing the graph by hand. A probed package the release does not publish is recorded at the version and integrity its own declared dependency range resolves to, so a publish inside that range is a recorded drift; a probed package the release neither publishes nor depends on is recorded as absent, and the install proof rejects a graph that contains one. The recorded versions do not prove live registry availability or untested compatibility, and behaviour never branches on them: presentation, transport ownership and state retention are detected from the host's published shapes. `npm run host:channels:verify` checks the tracked manifest offline; `npm run host:channels:update` is the only command that resolves it from the registry.
 
 | Retained interface | Evidence and consequence of removal |
 | --- | --- |
@@ -185,6 +185,13 @@ Start from the exact diagnostic: every message below names the surface that is m
 - `ptc-plus: Cordis companion tooling withdrew from an agent scope` — an exposed companion service, preset, Skill or child fiber failed its required contract. Repair the specific cause attached to the warning, or disable `cordisToolsEnabled` if that integration is unavailable. A scope missing optional companion surfaces instead waits silently and retries when its tool surface changes or its next prompt is assembled.
 - A commit is refused with a verification or proof error — follow [deterministic verification](verification.md): resolve any incomplete lanes shown by `npm run review:status`, run `npm run check` on the frozen tree, then `npm run review:finalize`. Stage that verified candidate and retry. Use `npm run hooks:install` if the hook is missing; never bypass it.
 - A historical PTC session cannot be resumed — follow the Session format upgrade below, keep the original log, and report the exact refusal message.
+- A session written by 0.5.4 or earlier cannot be exported or reopened, and the export reports `HTTP 500` — those releases appended a session decision (a capability choice or a binding adoption) as a surface message before the Host had published its protected system head, and the released format refuses such a log on every read. Stop the Host that owns the profile, then repair the artifact (it keeps every sequence number and turns only the offending statements into ignorable records; each statement keeps the form that names its owner, so the capability panel and the binding group read back the decisions the session recorded):
+
+  ```sh
+  node scripts/repair-session-log.mjs --input /path/to/session.v4.jsonl.zstd --write --dsh-entry /path/to/dsh/lib/bin.js
+  ```
+
+  `--write` copies the original to `<input>.bak` first, and the command refuses to write a log the released format would still reject. Without `--write` it writes `session.repaired.jsonl.zstd` beside the input and leaves the original untouched, which is the way to inspect the result first. A version after 0.5.4 does not create these logs.
 
 ## Session format upgrades
 

@@ -1,3 +1,4 @@
+import { attachNativeExecutor } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -10,17 +11,18 @@ import { Session } from '@deepseek-ai/dsh-session'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry } from '@deepseek-ai/dsh-agent'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
+import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionStore } from '@deepseek-ai/dsh-session'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime } from '@deepseek-ai/dsh-tools'
-import { createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, createSystemMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { assertObjectJsonSchema, assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import {
   USER_BINDINGS_RPC_CONTRACT,
   createUserBindingsOwner,
 } from '../internal/user-bindings-owner.js'
-import { latestBindingAdoption, readBindingAdoption } from '../internal/binding-adoption.js'
+import { BINDING_ADOPTION_RECORD, bindingAdoptionOf, latestBindingAdoption, readBindingAdoption } from '../internal/binding-adoption.js'
 import { projectSessionLog } from '../internal/session-log-view.js'
 import { createUserBindingsSnapshot } from '../internal/user-bindings.js'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
@@ -96,16 +98,23 @@ test('confirmed binding toggles publish a configuration receipt without waking o
 
 test('binding toggles before the first task leave no receipts queued for the model', async t => {
   const ctx = new Context()
-  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' }); new AgentRegistry(ctx); new SessionStore(ctx); new SessionProjectionRegistry(ctx)
+  await mountAgentLoopTestDependencies(ctx, {
+    systemPrompt: { includeHarnessIdentity: false, includeRuntimeContext: false,
+      personaPrefix: 'Fixture system prompt.', personaSuffix: '' },
+    tools: { mode: 'native' },
+  })
   const requests = []
   async function* stream(request) {
     requests.push(request.messages)
     yield { type: 'text-delta', index: 0, text: 'done' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
-  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
-  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  ctx.effect(() => ctx.llm.registerAdapter(['fixture'], new (class extends LlmAdapter {
+    providerInfo(provider) { return { id: provider, name: provider, models: [{ id: 'fixture', name: 'fixture', contextWindow: 8192 }] } }
+    resolveModel(provider, model) { return { provider, id: model, name: model, contextWindow: 8192 } }
+    async *stream(options) { yield* stream(options) }
+  })()))
+  await mountAgentLoopTestHarness(ctx)
   const owned = await ctx.agents.create({ sessionId: 'binding-receipt-head', meta: { cwd: process.cwd(), delegationDepth: 0 }, agentOptions: { provider: 'fixture', model: 'fixture' } })
   const target = ownerFixture(); target.ctx.agents = { list: () => [owned.agent] }
   const owner = createUserBindingsOwner(target.ctx, { enabled: true, store: fakeStore() })
@@ -2453,11 +2462,14 @@ async function adoptionFixture(t) {
   const target = ownerFixture({ agents: { list: () => agents }, commands: {}, on() { return () => {} } })
   // A restart is the same log read again, so adoption is derived from the
   // session's own events instead of any owner-local cache.
-  const adoptionOf = agent => latestBindingAdoption(projectSessionLog(
-    typeof agent?.session?.snapshotEvents === 'function'
-      ? { session: { events: agent.session.snapshotEvents() } }
-      : agent,
-  ).ptcMessages)
+  // Adoption is a plugin record now, so the fixture reads the session's own log directly
+  // instead of projecting it into the message surface it no longer occupies.
+  const adoptionOf = agent => {
+    const events = typeof agent?.session?.snapshotEvents === 'function' ? agent.session.snapshotEvents()
+      : Array.isArray(agent?.session?.events) ? agent.session.events : []
+    const statement = bindingAdoptionOf(events)
+    return statement.state === 'decided' ? statement.adoption : undefined
+  }
   const owner = createUserBindingsOwner(target.ctx, {
     enabled: true,
     store,
@@ -2531,7 +2543,7 @@ test('adoption cannot add, revive or outlive the global catalog', async t => {
 test('adoption survives a restart because the session log owns the decision', async t => {
   const state = await adoptionFixture(t)
   await state.run(state.agent, 'skip beta')
-  const recorded = state.agent.session.snapshotEvents().filter(event => readBindingAdoption(event.data))
+  const recorded = state.agent.session.snapshotEvents().filter(event => event.type === BINDING_ADOPTION_RECORD)
   assert.equal(recorded.length, 1)
   // A new process reads the same events: no owner state exists to migrate.
   const restarted = () => ({ session: { events: state.agent.session.snapshotEvents() } })

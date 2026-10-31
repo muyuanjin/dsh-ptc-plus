@@ -3,6 +3,10 @@ import { capabilityRule, capabilityPolicyForConfig, capabilityPolicyFromRecord, 
 import { createHash } from 'node:crypto'
 import { jsonSchemaToTs, renderToolsSdk, ToolNotFoundError } from './host-tool-sdk.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+// Namespace import, not a named one: an older host does not export the plugin-record
+// writer at all, and a missing named export would fail this module's load instead of
+// leaving the fallback carrier to the branch that checks for it.
+import * as dshSession from '@deepseek-ai/dsh-session'
 import { isModelInvocable, isUserInvocable } from '@deepseek-ai/dsh-skill'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Context } from '@deepseek-ai/cordis'
@@ -12,7 +16,7 @@ import { readCapabilityCommandReceipt } from './capability-command-receipt.js'
 import { createCapabilityPlan } from './capability-plan.js'
 import { bindingAdoptionOf } from './binding-adoption.js'
 import { bindingModelPreferences } from './user-binding-model-context.js'
-import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilityRuleOfSelection, capabilitySelectionMessage, capabilitySelectionOf, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
+import { CAPABILITY_ENTRY_ID, capabilityChoiceOf, capabilityRuleOfSelection, capabilitySelectionOf, CAPABILITY_SELECTION_RECORD, CAPABILITY_SELECTION_SCHEMA } from './capability-selection.js'
 import { CAPABILITY_PLAN_FORM, isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
 import { deepFreeze } from './record-utils.js'
 import { capabilityProfileConfiguration } from './runtime-config.js'
@@ -484,11 +488,20 @@ function readContractUpdate(message, planDigest, sessionId) {
  * that store belongs to the user-bindings owner: the capability read reports what
  * the global catalog supplies without owning or duplicating it.
  */
-export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, store, sessionHistoryForAgent, readUserBindings }) {
+export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, store, sessionHistoryForAgent, readUserBindings, appendRecord: hostAppendRecord }) {
   let currentConfig = config
   const sessions = new Map()
   const histories = new WeakMap()
-  const sessionEvents = session => Array.isArray(session?.events) ? session.events : histories.get(session) ?? []
+  // The host's own writer for a record outside the model-visible surface. Every supported
+  // release publishes it, so a session states a decision when it is made: durable at once,
+  // visible to the next composition, and absent from the surface the model reads.
+  const appendRecord = typeof hostAppendRecord === 'function' ? hostAppendRecord
+    : typeof dshSession.appendPluginRecord === 'function' ? dshSession.appendPluginRecord : undefined
+  // The committed log, read through the surface the selected Host publishes: an
+  // array-backed fixture states `events`, a Host Session states `snapshotEvents()`.
+  const sessionEvents = session => Array.isArray(session?.events) ? session.events
+    : typeof session?.snapshotEvents === 'function' ? session.snapshotEvents()
+      : histories.get(session) ?? []
   const sessionQueryService = () => typeof ctx.get === 'function' ? ctx.get('sessionQuery') : ctx.sessionQuery
   async function observeHistory(agent, signal) {
     const query = sessionQueryService()
@@ -685,35 +698,41 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     agent.session.append('user/message', message, { surfaceOp: 'append' })
   }
   /**
-   * A session capability choice is a record, not a plan edit.
+   * A session capability choice is a record, not a plan edit and not a message.
    *
    * The panel states what this session decided, so the decision itself has to exist in
    * the session's own log. The plan is what a runtime later materializes from it; a
    * change that only rebuilt a plan would leave the row stating the value it replaced.
    *
-   * The record is this session's statement about itself, so it is appended to every live
-   * session, before the Host's first system head as well as after it. Skipping that
-   * append would leave the panel reporting a decision the log never received, and no
-   * later read could recover it.
+   * A decision is made when the control is used, and nothing about that moment requires a
+   * turn: it is the session's statement about itself, taken through the host's plugin-record
+   * writer, durable at once and outside the model-visible surface. Writing it as a message
+   * instead would need the host's protected surface head first, and a node ahead of that
+   * head leaves the whole log unreadable — which is why this decision never travels that way.
    */
   function recordSelection(agent, overrides, signal) {
     signal?.throwIfAborted()
-    if (typeof agent?.session?.append !== 'function') {
+    const session = agent?.session
+    if (typeof session?.append !== 'function') {
       throw new Error('ptc-plus: session capability choices require the public Session.append surface')
+    }
+    if (appendRecord === undefined) {
+      throw new Error('ptc-plus: this DSH release publishes no plugin-record writer, so a session capability choice cannot be recorded')
     }
     const choices = {}
     for (const [id, value] of Object.entries(overrides ?? {})) {
       const rule = capabilityRuleOfSelection(value)
       if (Object.keys(rule).length > 0) choices[id] = rule
     }
-    const message = capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA, choices })
-    agent.session.append('user/message', message, { surfaceOp: 'append' })
-    // This record is now the session's newest statement. The observed cut the
-    // readers use is the same log, so it carries the statement the write just made;
-    // otherwise a read immediately after a change would answer from the record this
-    // one replaced.
-    const observed = histories.get(agent.session)
-    if (Array.isArray(observed)) histories.set(agent.session, [...observed, { type: 'user/message', data: message }])
+    const seq = appendRecord(session, CAPABILITY_SELECTION_RECORD, { schema: CAPABILITY_SELECTION_SCHEMA, choices })
+    // This record is the session's newest statement, and it is already in the log the
+    // readers observe, so the next read answers from it without re-observing the session.
+    const observed = histories.get(session)
+    if (Array.isArray(observed)) {
+      const committed = sessionEvents(session).find(event => event.seq === seq)
+      if (committed !== undefined) histories.set(session, [...observed, committed])
+    }
+    return 'recorded'
   }
   function selection(state, id) { return state?.snapshot.plan.entries.find(entry => entry.id === id)?.selection }
   function liveCapability(state, id) {
@@ -1470,8 +1489,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // one starts from the log that holds the current statement — the same log the
       // panel reads. A stale or empty runtime view would silently restate the choice
       // just made and withdraw every decision recorded before it.
-      const statement = capabilitySelectionOf(await observeHistory(agent, signal),
-        String(agent.session.id ?? agent.id))
+      const statement = capabilitySelectionOf(await observeHistory(agent, signal), String(agent.session.id ?? agent.id))
       signal?.throwIfAborted()
       const choices = { ...(statement.state === 'decided' ? statement.selection.choices : {}) }
       const patch = { ...(choices[intent.id] ?? {}) }
@@ -1484,8 +1502,8 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       else Object.assign(patch, capabilityRuleOfSelection(intent.selection))
       if (Object.keys(patch).length > 0) choices[intent.id] = patch
       else delete choices[intent.id]
-      recordSelection(agent, choices, signal)
-      return { globalSaved: false, sessionApplied: true, publication: 'recorded' }
+      const publication = recordSelection(agent, choices, signal)
+      return { globalSaved: false, sessionApplied: true, publication }
     },
     /**
      * The composition this session built but has not delivered yet.
@@ -1738,8 +1756,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // composition reports what it built, and this field reports what the session
       // decided. They agree once the composition has caught up, and until then only
       // this field is the answer.
-      const sessionOverrides = sessionOverridesOf(capabilitySelectionOf(sessionEvents(agent?.session),
-        agent?.session === undefined ? undefined : String(agent.session.id ?? agent.id)))
+      const sessionOverrides = sessionOverridesOf(capabilitySelectionOf(sessionEvents(agent?.session), agent?.session === undefined ? undefined : String(agent.session.id ?? agent.id)))
       return state === undefined ? { configured: capabilityConfiguration(currentConfig), effective: null, sessionOverrides }
         : { configured: capabilityConfiguration(currentConfig), effective: state.snapshot.plan,
           publication: state.message === undefined ? 'not-required' : planCommitted(agent, state.message) ? 'accepted' : 'pending',

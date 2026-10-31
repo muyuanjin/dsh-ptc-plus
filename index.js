@@ -151,6 +151,19 @@ function capabilityListingEntry(row) {
     saved: statement(row.saved), temporary: statement(row.session) }
 }
 
+/**
+ * The composition a pending capability command made, in the shape a receipt carries.
+ *
+ * A command that composed a plan before the Host accepted a step has to carry it in its
+ * receipt: the plan is not in the log yet, so a restart would otherwise have no way to know
+ * which composition the command made. `recordedPlan` reads it back by matching the command's
+ * own id and raw input, which is why the proposal states both.
+ */
+function pendingProposal(capabilityEnvironment, commandId, rawInput, agent) {
+  const message = capabilityEnvironment.pendingChoiceMessage(agent)
+  return message === undefined ? undefined : { commandId, rawInput, message }
+}
+
 /** Register the session-bound REPL runtime. */
 function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolSdkSchemasForAgent, sessionId, sessionLog, settingsForCommand, readPromptText) {
   const presentationGeneration = randomUUID()
@@ -513,10 +526,11 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
           input: { hint: 'refresh | list [all|skills|tools|mcp|mcp_tools] [query] | set session|global <id> [availability|disclosure] <choice>' },
           handler: async ({ commandId, agent, rawInput, signal }) => {
             const input = rawInput.trim()
+            // A composition the Host has not committed yet is not in the log, so a pending
+            // receipt carries it as the proposal it is: a restart reads that proposal back as
+            // the plan the command made. A record needs no proposal — it is in the log already.
             const receipt = (state, error, record) => capabilityCommandReceipt(state, String(agent.session.id), error,
-              state === 'pending' && capabilityEnvironment.pendingChoiceMessage(agent)
-                ? { commandId, rawInput, message: capabilityEnvironment.pendingChoiceMessage(agent) } : undefined,
-              record)
+              state === 'pending' ? pendingProposal(capabilityEnvironment, commandId, rawInput, agent) : undefined, record)
             const selection = /^set (session|global) (\S+) (?:(availability|disclosure) )?(full|on-demand|closed|automatic|inherit|enabled|host|adaptive)$/.exec(input)
             if (selection) {
               // The write is stated before it happens: the receipt names the record
@@ -530,8 +544,9 @@ function installPtCRuntime(ctx, resolvedConfig, seam, toolSchemasForAgent, toolS
               // A receipt states what this command wrote — which entry, which choice
               // and which session or global configuration now records it. What a cell
               // later obtained is that row's own `evidence` field, not a sentence here.
-              const state = !changed.sessionApplied ? 'saved-only'
-                : changed.publication === 'pending' ? 'pending' : 'recorded'
+              // A session choice is a record of this session's log, so it is durable the
+              // moment the command returns and needs no waiting state.
+              const state = changed.sessionApplied ? 'recorded' : 'saved-only'
               return { kind: changed.sessionApplied ? 'success' : 'error',
                 text: receipt(state, changed.error, state === 'recorded' ? record : undefined) }
             }

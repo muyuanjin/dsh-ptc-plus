@@ -1,3 +1,4 @@
+import { attachNativeExecutor , runTool} from './tool-executor-fixture.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
@@ -35,7 +36,7 @@ async function fixture(t, storage, managed = true, choices = {}) {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
     personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   const root = await mkdtemp(join(tmpdir(), 'ptc-context-preview-'))
   t.after(async () => { await ctx.fiber.dispose(); await rm(root, { recursive: true, force: true }) })
   const store = storage === 'failed' ? new FailedSpillStore(ctx)
@@ -61,7 +62,7 @@ async function fixture(t, storage, managed = true, choices = {}) {
   await env.prepare(agent, [])
   ctx.on('tools/post-execute', (exec, result, next) => env.postExecute(exec, result, next), { prepend: true })
   ctx.on('tools/ptc-dispatch-log', (dispatch, next) => env.dispatchLog(dispatch, next), { prepend: true })
-  const execute = () => ctx.tools.execute({ name: 'preview_probe', callId: 'preview-call', arguments: {},
+  const execute = () => runTool(ctx, { name: 'preview_probe', callId: 'preview-call', arguments: {},
     agent, signal: new AbortController().signal })
   return { ctx, agent, canonical, content, store, execute, executions: () => executions }
 }

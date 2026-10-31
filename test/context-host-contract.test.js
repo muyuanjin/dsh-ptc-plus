@@ -1,3 +1,8 @@
+import * as ptcExecutor from '@deepseek-ai/dsh-tool-executor-ptc'
+import * as sessionPersistenceJsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { attachNativeExecutor, attachPtcExecutor, runTool } from './tool-executor-fixture.js'
+import { provideSandboxPolicyFixture, provideWorkingDirectoryFixture } from './host-service-fixture.js'
+import { settleService } from './service-fixture.js'
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -33,6 +38,7 @@ import { CapabilityStatisticsStore } from '../internal/capability-statistics-sto
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 import { CAPABILITY_PLAN_FORM, createCapabilityEnvironment } from '../internal/capability-environment.js'
 import { CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage } from '../internal/capability-selection.js'
+import { hostTransportDefinition } from '../internal/host-tool-sdk.js'
 
 const signal = () => new AbortController().signal
 const session = (id, parentSession) => Session.create(id, [], {
@@ -50,11 +56,17 @@ function host(t, mode = 'native', run = async () => ({ logs: [], value: null }))
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
     personaPrefix: '', personaSuffix: '' })
+  // run_code resolves the session's working directory before it executes.
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider({
     language: 'typescript', isolation: 'worker-thread',
     resolve(request) { return { ...request, cwd: process.cwd(), timeoutMs: null } }, run,
   })))
-  new ToolRuntime(ctx, { mode })
+  // The registry has no mode of its own any more: the fixture mounts the executor it wants
+  // and the registry renders whatever that executor describes.
+  new ToolRuntime(ctx)
+  if (mode === 'ptc') attachPtcExecutor(ctx)
+  else attachNativeExecutor(ctx)
   t.after(() => ctx.fiber.dispose())
   const agent = { id: 'context-host-agent', session: session('context-host-agent') }
   const scope = createScope(ctx, agent)
@@ -110,15 +122,27 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
     // Cordis injection checks and cannot prove the Host lifecycle contract.
     await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false,
       personaPrefix: '', personaSuffix: '' }).await()
+    // run_code resolves the session's working directory before it executes, and a delegated
+    // child asks this service to record the directory it runs in.
+    provideWorkingDirectoryFixture(ctx)
     ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider({
       language: 'typescript', isolation: 'worker-thread',
       resolve(request) { return { ...request, cwd: root, timeoutMs: null } },
       async run() { throw new Error('PTC Plus must own execution in this fixture') },
     })))
-    await ctx.plugin(ToolRuntime, { mode: 'ptc' }).await()
-    await ctx.plugin(AgentRegistry).await()
+    await ctx.plugin(ToolRuntime).await()
+    // A confined PTC runtime resolves one file policy per call, and a delegated child asks
+    // this service for the parent's recorded override.
+    provideSandboxPolicyFixture(ctx)
+    // A continuable subagent needs durable session ownership, so this fixture mounts the
+    // published JSONL persistence backend into its temporary DSH home.
+    await ctx.plugin(sessionPersistenceJsonl, { root: join(root, 'sessions'), compression: 'none' }).await()
+    // The executor is a Cordis module plugin: mounting the module runs its own apply, which
+    // selects it in a fiber that can see the registry service.
+    await ctx.plugin(ptcExecutor).await()
     await ctx.plugin(SessionStore).await()
     await ctx.plugin(SessionProjectionRegistry).await()
+    await ctx.plugin(AgentRegistry).await()
     await ctx.plugin(SessionQueryEngine).await()
     let skillsComplete = true
     let skillControl
@@ -164,7 +188,7 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
       appendRunCodeCall(calls, callId, code, description)
       for (const event of calls) owner.agent.session.append(event.type, event.data,
         event.surfaceOp ? { surfaceOp: event.surfaceOp } : {})
-      const result = await ctx.tools.execute({ name: 'run_code', callId, agent: owner.agent,
+      const result = await runTool(ctx, { name: 'run_code', callId, agent: owner.agent,
         signal: signal(), arguments: { code, description } })
       const results = []
       appendRunCodeResult(results, callId, 0, result)
@@ -172,18 +196,29 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
       return result
     }
     const initial = await invoke('parent-initial', 'let retained = 40; return retained')
-    assert.equal(initial.isError, false)
+    assert.equal(initial.isError, false, JSON.stringify(initial.error))
     for (const name of ['subagent', 'subagent_fork']) {
       if (incompleteSkills) { skillsComplete = true; skillControl.invalidate() }
       const result = await invoke(`delegate-${name}`, `return await tools.${name}({ description: 'Fixture delegation', prompt: 'Answer fixture' })`)
       assert.equal(result.isError, false, JSON.stringify(result.error))
-      if (incompleteSkills) assert.equal(skillsComplete, false)
-      assert.match(JSON.stringify(result.value), /fixture answer/)
+      // One delegation is one managed activation: the call answers with the child's id, and
+      // the Host delivers that child's closing message to this parent as a settlement notice.
+      assert.equal(result.value.result.kind, 'activation')
       const child = created.at(-1)
-      assert.notEqual(child.id, owner.agent.id)
+      assert.equal(result.value.result.subagentId, child.id)
+      assert.notEqual(child.id, owner.agent.session.id)
       assert.equal(child.session.header.origin, 'subagent')
       assert.equal(child.session.header.parentSession, owner.agent.session.id)
-      assert.ok(disposed.includes(child.id), 'The Host releases the child after collecting its result.')
+      await ctx.subagents.waitForChildren(owner.agent)
+      if (incompleteSkills) assert.equal(skillsComplete, false)
+      // The settlement wakes this parent, so its own turn and the notice it reads belong to
+      // the parent's log rather than to the child's result.
+      await owner.agent.whenIdle()
+      const settled = owner.agent.session.snapshotEvents().filter(event => event.type === 'user/message'
+        && event.data.source?.kind === 'subagent-settled' && event.data.source?.senderSessionId === child.id)
+      assert.equal(settled.length, 1, 'the Host delivers one settlement notice for one delegation')
+      assert.match(settled[0].data.content.map(block => block.text).join('\n'), /fixture answer/)
+      assert.ok(disposed.includes(child.id), 'The Host releases the child after delivering its settlement.')
       assert.equal(ctx.agents.get(child.id), undefined)
       const store = new CapabilityStatisticsStore({ filename: join(root, 'lineage.json'), ctx })
       assert.equal(store.family(child), owner.agent.session.id)
@@ -192,7 +227,8 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
       assert.equal(continued.value.result, name === 'subagent' ? 41 : 42)
     }
     assert.equal(created.length, 3)
-    assert.equal(requests.length, 2)
+    // One request per child turn, and one per settlement turn the notice wakes in this parent.
+    assert.equal(requests.length, 4)
     assert.deepEqual(errors, [])
     await owner.dispose()
     assert.deepEqual(ctx.agents.list(), [])
@@ -202,7 +238,14 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
       const document = JSON.parse(await readFile(join(root, 'ptc-plus', 'capability-statistics.json'), 'utf8'))
       assert.equal(document.families.length, 1)
       assert.equal(document.families[0].id, owner.agent.session.id)
-      assert.deepEqual(new Set(document.members.map(member => member.id)), new Set(created.map(agent => agent.session.id)))
+      // A delegated child is a family member once the family is observed while that child is
+      // live: a delegation is one activation, so its child can settle between two statistics
+      // boundaries. The store therefore keeps the members it observed and never invents one,
+      // and every row it holds must name a session this family really created.
+      const memberIds = new Set(document.members.map(member => member.id))
+      const createdIds = new Set(created.map(agent => agent.session.id))
+      assert.equal(memberIds.has(owner.agent.session.id), true)
+      assert.equal([...memberIds].every(id => createdIds.has(id)), true, [...memberIds].join(', '))
     }
   })
 }
@@ -216,7 +259,7 @@ test('public restrictions remove inherited tools from schemas and the next PTC b
   ctx.effect(() => ctx.tools.register(echo('inherited_capability')))
   const before = await ctx.systemPrompt.assemble({ agent, scope: agent, signal: signal() })
   assert.match(text(before), /inherited_capability/)
-  const invoke = id => ctx.tools.execute({ name: 'run_code', callId: id, arguments: {
+  const invoke = id => runTool(ctx, { name: 'run_code', callId: id, arguments: {
     code: 'return null', description: 'Probe published bindings',
   }, agent, signal: signal() })
   assert.equal((await invoke('before-restriction')).isError, false)
@@ -239,7 +282,7 @@ test('public restrictions cannot remove a tool registered in the viewing scope',
   agent.ctx.effect(() => agent.ctx.tools.restrict({ allow: [] }))
   assert.equal(ctx.tools.get('inherited_capability', agent), undefined)
   assert.equal(ctx.tools.get('scope_owned_capability', agent)?.name, 'scope_owned_capability')
-  const outcome = await ctx.tools.execute({ name: 'scope_owned_capability', callId: 'scope-own',
+  const outcome = await runTool(ctx, { name: 'scope_owned_capability', callId: 'scope-own',
     arguments: {}, agent, signal: signal() })
   assert.equal(outcome.isError, false)
   assert.equal(outcome.value, 'scope_owned_capability')
@@ -264,6 +307,7 @@ test('the public prompt waterfall replaces the full SDK while preserving host di
 
 test('hiding the shared skill loader leaves explicit user skill injection available', async t => {
   const { ctx, agent } = host(t)
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   ctx.skills.register({ name: 'probe-skill', description: 'Probe complete skill description.',
     source: 'runtime', content: 'PROBE_SKILL_BODY' })
@@ -299,7 +343,7 @@ test('MCP tools use registry restrictions but resource providers retain separate
   assert.equal(ctx.tools.get('mcp__probe__read', agent), undefined)
   assert.equal(ctx.tools.get('list_mcp_resources', agent), undefined)
   assert.match(text(await ctx.systemPrompt.assemble({ scope: agent, agent })), /probe/)
-  const result = await ctx.tools.execute({ name: 'read_mcp_resource', callId: 'resource-read',
+  const result = await runTool(ctx, { name: 'read_mcp_resource', callId: 'resource-read',
     arguments: { server: 'probe', uri: 'probe://item' }, agent, signal: signal() })
   assert.equal(result.isError, false)
   assert.equal(result.value.method, 'resources/read')
@@ -331,6 +375,9 @@ test('PTC Plus starts a model turn with empty tool and MCP instructions', async 
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  // The registry registers its turn-boundary projection in Service.init, and an agent
+  // turn reads it; the projection owner above must exist before that init settles.
+  await settleService(ctx.agents)
   await ctx.plugin(SessionQueryEngine).await()
   ctx.effect(() => ctx.tools.register(echo('mcp__docs__probe')))
   for (const name of ['tool:mcp__docs__probe', 'mcp:docs']) {
@@ -376,6 +423,10 @@ test('capability commands advertise refresh input and apply through the public h
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  // A registry publishes its service when constructed, but registers the turn-boundary
+  // projection every agent turn reads in its own init. Constructing it here keeps it
+  // visible to the plugins mounted below; settling the init makes it usable.
+  await settleService(ctx.agents)
   await ctx.plugin(SessionQueryEngine).await()
   let requests = 0
   ctx.provide('llm', { stream() { requests++; throw new Error('Human commands must not request a model') } })
@@ -440,6 +491,10 @@ for (const [config, state] of [
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  // A registry publishes its service when constructed, but registers the turn-boundary
+  // projection every agent turn reads in its own init. Constructing it here keeps it
+  // visible to the plugins mounted below; settling the init makes it usable.
+  await settleService(ctx.agents)
   await ctx.plugin(SessionQueryEngine).await()
   let requests = 0
   ctx.provide('llm', { stream() { requests++; throw new Error('Human commands must not request a model') } })
@@ -471,6 +526,9 @@ test('the public agent factory provides real ownership and durable non-waking ma
   new AgentRegistry(ctx)
   new SessionStore(ctx)
   new SessionProjectionRegistry(ctx)
+  // The registry registers its turn-boundary projection in Service.init, and an agent
+  // turn reads it; the projection owner above must exist before that init settles.
+  await settleService(ctx.agents)
   await ctx.plugin(SessionQueryEngine).await()
   let requests = 0
   ctx.provide('llm', { stream() { requests += 1; throw new Error('This probe must never request a model.') } })
@@ -676,12 +734,14 @@ test('a capability observation assembles the session scope without preparing the
   // The session becomes live only after the plugin installed, so the read below is the
   // first assembly that could prepare this transport.
   ctx.agents.list = () => [agent]
-  const definition = ctx.tools.get('run_code', agent)
+  // A PTC-mode Host keeps its reserved transport in the executor it dispatches through
+  // rather than registering it as a visible tool, so the read states that surface.
+  const definition = hostTransportDefinition(ctx.tools, agent, 'run_code')
   assert.ok(definition, 'the ptc-mode Host publishes the reserved transport')
   const projection = definition.output.presentationMeta
   const panel = await operations.get('ptcPlusCapabilities')('session-catalog', { sessionId: agent.session.id }, signal())
   assert.equal(panel.ok, true)
-  assert.equal(definition.output.presentationMeta, projection,
+  assert.equal(hostTransportDefinition(ctx.tools, agent, 'run_code').output.presentationMeta, projection,
     'the observation must not re-apply the model-facing transport projection')
 })
 

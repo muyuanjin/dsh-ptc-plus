@@ -10,10 +10,10 @@ test('semantic obligation graph closes the tracked implementation and evidence',
   const report = await semanticObligationReport()
   assert.deepEqual(report, {
     schema: 'dsh-semantic-obligations/v1',
-    // The inventory is the filesystem's. This batch deletes one client source
-    // (src/client-capability-sort.js), so the count is one below the 178 the
-    // previous batch recorded.
-    sources: 177,
+    // The inventory is the filesystem's. This batch restores one client source
+    // (src/client-capability-sort.js, deleted by the previous batch) and registers it in
+    // the obligation that owns the capability page, so the count is back to 178.
+    sources: 178,
     obligations: 8,
     dispositions: {
       preserved: 2,

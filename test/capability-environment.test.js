@@ -1,3 +1,4 @@
+import { attachNativeExecutor , runTool} from './tool-executor-fixture.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { PLAN_NAVIGATION, PLAN_OVERAGE, PLAN_OVERAGE_HOLE } from '../internal/prompt-text.js'
 import { createCapabilityPlan } from '../internal/capability-plan.js'
@@ -9,24 +10,28 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
 import { AgentRegistry, agentEvents } from '@deepseek-ai/dsh-agent'
-import { createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { LlmAdapter, createSystemMessage, createToolResultMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { McpResourceRuntime } from '@deepseek-ai/dsh-mcp-resources'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import { Session, SessionStore } from '@deepseek-ai/dsh-session'
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
 import { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import { capabilityCommandReceipt } from '../internal/capability-command-receipt.js'
 import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
+import { mountAgentLoopTestDependencies, mountAgentLoopTestHarness, provideWorkingDirectoryFixture } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import { sessionFormatCatalog } from '@deepseek-ai/dsh-session-format-catalog'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import * as skillTool from '@deepseek-ai/dsh-tool-skill'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
-import { ToolRuntime, defineTool, renderToolsSdk } from '@deepseek-ai/dsh-tools'
+import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
+import { renderToolsSdk } from '../internal/host-tool-sdk.js'
 import { createCapabilityEnvironment as createEnvironment, capabilityPlanText, capabilityPlanTextFromMessage, CAPABILITY_PLAN_FORM, readCapabilityContextMessage, sessionCapabilitySettings } from '../internal/capability-environment.js'
 import { capabilityInspect, capabilitySearch, toolCapabilityMetadata, toolSdkSchemas } from '../internal/program-bindings.js'
 import { appendOnlySession } from './plugin-fixture.js'
 import { BINDING_ADOPTION_SCHEMA, bindingAdoptionMessage } from '../internal/binding-adoption.js'
-import { CAPABILITY_SELECTION_FORM, CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage, capabilitySelectionOf } from '../internal/capability-selection.js'
+import { CAPABILITY_SELECTION_FORM, CAPABILITY_SELECTION_RECORD, CAPABILITY_SELECTION_SCHEMA, capabilitySelectionMessage, capabilitySelectionOf } from '../internal/capability-selection.js'
+import { assertReleasedV4Relationships, RELEASED_V3_EVENT_TYPES } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { UserBindingsStore } from '../internal/user-bindings-store.js'
 import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
 import { capabilityProfileConfiguration, resolveConfig } from '../internal/runtime-config.js'
@@ -45,6 +50,54 @@ const config = overrides => ({ capabilityManagementEnabled: true,
 const schema = name => ({ name, description: `Owner contract for ${name}.`, parameters: { type: 'object' }, output: { type: 'string' } })
 const sections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:closed_capability', text: 'closed guidance' }]
 const agentFor = (session, id = session.id) => ({ id, session, signal: new AbortController().signal })
+/**
+ * A provider adapter for fixtures that run the real AgentLoop.
+ *
+ * The selected release registers provider routes through the LLM runtime instead of
+ * replacing the service, so a fixture declares one route and lets the runtime own dispatch.
+ * `prepareCall` decides whether the request may start, which is how a fixture simulates a
+ * preparation failure.
+ */
+const fixtureLlmAdapter = (resolveModel, stream) => new (class extends LlmAdapter {
+  providerInfo(provider) {
+    return { id: provider, name: provider, models: [{ id: 'fixture', name: 'fixture', contextWindow: 8192 }] }
+  }
+  // The runtime resolves the exact route before it prepares a call, so a fixture that
+  // simulates a refused request refuses here — and one that serves a route states the model
+  // it serves rather than leaving the inherited answer for a route it does not describe.
+  resolveModel(provider, model, signal) {
+    return resolveModel(provider, model, signal)
+  }
+  async *stream(options) {
+    // The fixture supplies the stream when it counts requests; otherwise one turn is enough.
+    if (stream !== undefined) {
+      yield* stream(options)
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+})()
+// The host publishes one protected surface head at the first accepted step. A surface
+// node ahead of it leaves the whole log unreadable to every reader that folds it back,
+// so a fixture that wants this session's choice to reach the log has to give the
+// session that head first — the same order the host imposes.
+const appendSystemHead = session => session.append('system/message', { turn: 1, step: 1,
+  message: { role: 'system', id: 'system-head', source: { kind: 'system-prompt' },
+    content: [{ type: 'text', text: 'Host system prompt' }] } },
+{ surfaceOp: 'append' })
+// Filtering a fixture log changes its indices, so its seqs and every surface range that
+// cites them have to move together.
+const renumber = events => {
+  const seqs = new Map(events.map((event, seq) => [event.seq, seq]))
+  return events.map((event, seq) => ({ ...event, seq,
+    ...(event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: event.sourceEventSeqs.map(source => seqs.get(source)) }),
+    ...(event.surfaceOp === undefined || event.surfaceOp === 'append' ? {} : { surfaceOp: {
+      ...event.surfaceOp,
+      startSeq: seqs.get(event.surfaceOp.startSeq),
+      endSeq: seqs.get(event.surfaceOp.endSeq),
+    } }) }))
+}
 
 test('session catalog lists every supplied row with its saved and recorded columns and writes nothing', async t => {
   const session = Session.create('observed-session')
@@ -1175,7 +1228,15 @@ test('a capability write reports the one thing it did and a refused write leaves
   let saved = config()
   const agent = agentFor(Session.create('choice-failures'))
   const ctx = { systemPrompt: { assemble: async () => ({ sections: [] }) } }
-  const env = createCapabilityEnvironment({ ctx, config: saved, toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  // A choice is written through the host's plugin-record writer, so that write is what a
+  // refused record has to intercept: the session's own append is not the carrier.
+  let refusing = false
+  const appendRecord = (session, type, data) => {
+    if (refusing) throw new Error('record refused')
+    return appendPluginRecord(session, type, data)
+  }
+  const env = createCapabilityEnvironment({ ctx, config: saved, appendRecord,
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
   t.after(() => env.dispose())
   await acceptPreparation(env, agent, [])
   const before = env.stateFor(agent)
@@ -1188,11 +1249,10 @@ test('a capability write reports the one thing it did and a refused write leaves
   assert.equal(env.stateFor(agent), before)
   assert.equal(agent.session.snapshotEvents().length, length)
   // A record that cannot be appended is a failed write, not a saved one.
-  const append = agent.session.append.bind(agent.session)
-  agent.session.append = () => { throw new Error('record refused') }
+  refusing = true
   await assert.rejects(env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal),
     /record refused/)
-  agent.session.append = append
+  refusing = false
   assert.equal(env.stateFor(agent), before)
   assert.equal(agent.session.snapshotEvents().length, length)
   // The write path needs this session's log and the settings writer, not a
@@ -1306,7 +1366,7 @@ test('cold session controls restore prior temporary choices before change or ref
   await assert.rejects(fresh.change(restored, { scope: 'session', id: 'mcpServers.docs', selection: 'full' }, restored.signal), /MCP server choices/)
 })
 
-test('a recorded session choice materializes before the first system head whatever its command receipt says', async t => {
+test('a session choice recorded before the first system head never touches the surface', async t => {
   const ctx = new Context()
   new CommandRuntime(ctx)
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
@@ -1325,11 +1385,14 @@ test('a recorded session choice materializes before the first system head whatev
     } }))
   t.after(() => ctx.fiber.dispose())
   await ctx.commands.execute(agent, '/capabilities set session tools.probe closed', [], agent.signal)
-  // The choice is this session's own record, so it reaches the log before any Host
-  // system head; the plan is what stays uncommitted until the first accepted step.
-  assert.deepEqual(session.deriveMessages().map(message => message.source?.form), [CAPABILITY_SELECTION_FORM],
-    'a choice before the first system head records itself and publishes no plan')
-  assert.ok(!session.snapshotEvents().some(event => event.type.startsWith('plugin:')))
+  // The decision is a record of this session's own log: it is taken when the command runs,
+  // it needs no surface and no step, and the next composition already reads it.
+  assert.equal(session.snapshotEvents().filter(event => event.type === CAPABILITY_SELECTION_RECORD).length, 1,
+    'the decision is one record')
+  assert.deepEqual(session.snapshotEvents().filter(event => event.surfaceOp !== undefined), [],
+    'no surface node is written, before the protected head or after it')
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'], 'closed',
+    'the record is already this session\'s answer')
   await env.prepare(agent, [])
   assert.equal(env.describe(agent).effective.entries.find(item => item.id === 'tools.probe').selection, 'closed')
   const events = session.snapshotEvents()
@@ -1391,7 +1454,7 @@ for (const action of ['choice', 'refresh']) test(`a cancelled first-session ${ac
   assert.equal(agent.session.snapshotEvents().filter(event => event.type === 'command/done').length, 1)
 })
 
-test('pre-session capability changes replace the initial plan without refresh notifications', async t => {
+test('pre-session capability changes are records taken at once and publish no plan', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
   const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
@@ -1399,28 +1462,80 @@ test('pre-session capability changes replace the initial plan without refresh no
   agent.runMaintenance = operation => operation(agent.signal)
   t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
   await env.prepare(agent, [])
-  const recorded = () => agent.session.deriveMessages().filter(message => message.source?.form === CAPABILITY_SELECTION_FORM)
   for (const selection of ['closed', 'full', 'on-demand']) {
     await env.change(agent, { scope: 'session', id: 'tools.probe', selection }, agent.signal)
-    // Each change is one record of this session's own decision; the plan stays
-    // unwritten until admission, so every model-visible message here is a record.
-    assert.equal(agent.session.deriveMessages().length, recorded().length,
-      'a pre-session change records the choice and publishes no plan')
+    // A decision is taken the moment it is made: it is a record of this session's own log,
+    // it writes no surface node, and the plan stays unwritten until admission.
+    assert.equal(agent.session.snapshotEvents().filter(event => event.surfaceOp !== undefined).length, 0,
+      'a pre-session change writes no surface node')
   }
-  assert.equal(recorded().length, 3)
+  assert.equal(agent.session.snapshotEvents().filter(event => event.type === CAPABILITY_SELECTION_RECORD).length, 3,
+    'three decisions are three records')
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'], 'on-demand',
+    'the newest record is the whole statement')
   await env.refresh(agent, undefined, agent.signal)
+  appendSystemHead(agent.session)
   const task = createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'task' }] })
   const entered = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [task] }))
+  // The choice never travels as a message: the step carries the plan and the task only.
+  assert.equal(entered.messages.filter(message => message.source?.form === CAPABILITY_SELECTION_FORM).length, 0,
+    'a recorded choice needs no delivered statement')
   const plans = entered.messages.filter(message => message.source?.form === 'capability-plan')
   assert.equal(plans.length, 1)
-  // A recorded choice is not task history: the initial plan still precedes the task,
-  // even though the session log already carries the session's own statements.
   assert.equal(entered.messages[0].source.form, 'capability-plan', 'the initial plan precedes the task')
-  assert.equal(entered.messages[1], task)
+  assert.equal(entered.messages.at(-1), task)
   assert.equal(plans[0].source.refresh, false)
   assert.match(plans[0].content[0].text, /^PTC Plus session capability environment:/)
   assert.doesNotMatch(plans[0].content[0].text, /refreshed|replaces the preceding/)
   assert.equal(plans[0].source.snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'on-demand')
+})
+
+test('a session that decides before its first step writes a record the released format accepts', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  const agent = agentFor(Session.create('pre-head-surface-validity'))
+  await env.prepare(agent, [])
+  await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  const events = agent.session.snapshotEvents()
+  assert.deepEqual(events.filter(event => event.surfaceOp !== undefined), [],
+    'the decision occupies no surface node')
+  assert.equal(events.filter(event => event.type === CAPABILITY_SELECTION_RECORD).length, 1,
+    "the decision is a record of this session's own log")
+  // The property the whole repair exists for: a log written this way is one the released
+  // format can read back, so the session can be exported and reopened.
+  agent.session.append('turn/start', { turn: 1 })
+  agent.session.append('step/start', { turn: 1, step: 1 })
+  appendSystemHead(agent.session)
+  agent.session.append('step/end', { turn: 1, step: 1 })
+  agent.session.append('turn/end', { turn: 1, reason: 'complete' })
+  const { type: _type, ...header } = agent.session.header
+  assertReleasedV4Relationships({ header, events: agent.session.snapshotEvents().map(event => ({ ...event })),
+    inheritedEventCount: 0 }, RELEASED_V3_EVENT_TYPES)
+  assert.equal(capabilitySelectionOf(agent.session.snapshotEvents()).state, 'decided')
+})
+
+test('every decision restates the choices this session already recorded', async t => {
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] })
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  const agent = agentFor(Session.create('post-delivery-accumulation'))
+  await env.prepare(agent, [])
+  await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  await env.change(agent, { scope: 'session', id: 'tools.other', selection: 'full' }, agent.signal)
+  await env.change(agent, { scope: 'session', id: 'tools.other', selection: 'closed' }, agent.signal)
+  // Each record is the whole statement, so the third decision keeps the first one's choice
+  // and the second one's disclosure instead of restating only what it changed.
+  assert.deepEqual(capabilitySelectionOf(agent.session.snapshotEvents()).selection.choices, {
+    'tools.probe': { availability: 'closed' },
+    'tools.other': { availability: 'closed', disclosure: 'full' },
+  })
+  assert.deepEqual(env.describe(agent).sessionOverrides,
+    { 'tools.probe': 'closed', 'tools.other': { availability: 'closed', disclosure: 'full' } })
 })
 
 test('a later session choice restates every decision this session recorded', async t => {
@@ -1429,8 +1544,8 @@ test('a later session choice restates every decision this session recorded', asy
   const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [] })
   const agent = agentFor(Session.create('choice-accumulation'))
   t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
-  // The tool table supplies no run_code: a choice is a record of this session's
-  // own log, so it materializes without any session-supplied execution surface.
+  // The tool table supplies no run_code: a choice is a record of this session's own log, so
+  // it materializes without any session-supplied execution surface and without a head.
   await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
   await env.change(agent, { scope: 'session', id: 'tools.other', selection: 'full' }, agent.signal)
   // A statement is the whole of what the session decided. The second decision must
@@ -1441,6 +1556,9 @@ test('a later session choice restates every decision this session recorded', asy
     'tools.probe': { availability: 'closed' },
     'tools.other': { availability: 'enabled', disclosure: 'full' },
   })
+  // Two decisions, two records, and no surface node either of them had to occupy.
+  assert.equal(agent.session.snapshotEvents().filter(event => event.type === CAPABILITY_SELECTION_RECORD).length, 2)
+  assert.deepEqual(agent.session.snapshotEvents().filter(event => event.surfaceOp !== undefined), [])
 })
 
 test('a choice recorded by a second process restates every decision the session already made', async t => {
@@ -1450,6 +1568,7 @@ test('a choice recorded by a second process restates every decision the session 
     toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] }); t.after(() => env.dispose()); return env }
   t.after(() => ctx.fiber.dispose())
   const agent = agentFor(Session.create('accumulated-choices'))
+  appendSystemHead(agent.session)
   // No plan is published here: the log carries only this session's own records, so
   // nothing but the record can carry the first decision into the second process.
   const first = make()
@@ -1479,6 +1598,7 @@ test('a cold composition builds the plan from the record when the log holds no p
     toolSchemasForAgent: () => [schema('run_code'), schema('probe'), schema('other')] }); t.after(() => env.dispose()); return env }
   t.after(() => ctx.fiber.dispose())
   const agent = agentFor(Session.create('cold-record-composition'))
+  appendSystemHead(agent.session)
   const recording = make()
   await recording.prepare(agent, [])
   await recording.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
@@ -1501,6 +1621,7 @@ test('a session whose choices live only in its delivered plan keeps them after t
   const writing = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => schemas })
   t.after(() => writing.dispose())
   const agent = agentFor(Session.create('delivered-plan-choices')); agent.runMaintenance = operation => operation(agent.signal)
+  appendSystemHead(agent.session)
   await acceptPreparation(writing, agent, [])
   await writing.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
   await writing.change(agent, { scope: 'session', id: 'tools.other', selection: 'full' }, agent.signal)
@@ -1511,13 +1632,11 @@ test('a session whose choices live only in its delivered plan keeps them after t
   // 0.5.4 and earlier never appended a record: their log states the same decisions
   // only in the snapshot it delivered. Both logs below are that one session, one per
   // record form, and a cold composition must answer them the same way.
-  const delivered = events.filter(event => event.data?.source?.form !== CAPABILITY_SELECTION_FORM)
-    .map((event, seq) => ({ ...event, seq }))
-  const recorded = events.filter(event => event.data?.source?.form !== CAPABILITY_PLAN_FORM)
-    .map((event, seq) => ({ ...event, seq }))
+  const delivered = renumber(events.filter(event => event.type !== CAPABILITY_SELECTION_RECORD))
+  const recorded = renumber(events.filter(event => event.data?.source?.form !== CAPABILITY_PLAN_FORM))
   assert.ok(delivered.some(event => event.data?.source?.form === CAPABILITY_PLAN_FORM))
-  assert.ok(!delivered.some(event => event.data?.source?.form === CAPABILITY_SELECTION_FORM))
-  assert.ok(recorded.some(event => event.data?.source?.form === CAPABILITY_SELECTION_FORM))
+  assert.ok(!delivered.some(event => event.type === CAPABILITY_SELECTION_RECORD))
+  assert.ok(recorded.some(event => event.type === CAPABILITY_SELECTION_RECORD))
   assert.ok(!recorded.some(event => event.data?.source?.form === CAPABILITY_PLAN_FORM))
   // Both forms answer as one statement; the marker is the only thing that says which
   // form answered, and it is what proves the plan branch is the one read here.
@@ -1676,7 +1795,7 @@ test('successful first-session refresh receipts retain the refreshed source afte
 test('SDK output contracts use only public scoped schemas and definitions with detached JSON', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   const agent = agentFor(Session.create('public-sdk-contract'))
   const scope = createScope(ctx, agent)
   t.after(async () => { await scope.dispose(); await ctx.fiber.dispose() })
@@ -1701,6 +1820,7 @@ test('settings catalog states the named session\'s Skill eligibility from its sc
   // caller names the session whose directory it wants; which sessions happen to be
   // live changes no entry, and no cross-workspace vote has to be derived.
   const ctx = new Context()
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   const agents = ['user', 'model'].map(name => {
     const initial = Session.create(`invocation-${name}`)
@@ -1839,7 +1959,7 @@ test('Skill inventory follows the public current directory while saved plans and
 test('empty Host instructions preserve tool and MCP contracts, ownership, restoration and refresh', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   t.after(() => ctx.fiber.dispose())
   let instructions = ''
   for (const name of ['probe', 'mcp__docs__search', 'read_mcp_resource']) {
@@ -1937,7 +2057,8 @@ test('a routine provider release keeps the frozen plan when the session resumes'
 test('new Skills outside a frozen plan stay declared and usable until refresh folds them into the plan', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   skillTool.apply(ctx)
   const agent = agentFor(Session.create('new-skill'))
@@ -1979,7 +2100,7 @@ test('new Skills outside a frozen plan stay declared and usable until refresh fo
 test('Host tools added after the plan froze stay declared and callable until refresh', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   const tool = name => defineTool({ name, description: name, parameters: {},
     output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })
   ctx.effect(() => ctx.tools.register(tool('probe')))
@@ -2002,7 +2123,7 @@ test('Host tools added after the plan froze stay declared and callable until ref
 test('an explicit availability rule keeps a late Host tool closed across declarations and dispatch', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   const tool = name => defineTool({ name, description: name, parameters: {},
     output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })
   ctx.effect(() => ctx.tools.register(tool('kept')))
@@ -2048,7 +2169,7 @@ async function settle(env, agent) {
 test('real ToolRuntime preserves SDK output contracts and detects output-only changes during description recovery', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   t.after(() => ctx.fiber.dispose())
   const output = { type: 'object', additionalProperties: false, properties: { lines: { type: 'array', items: {
     type: 'object', additionalProperties: false, properties: { number: { type: 'integer' }, text: { type: 'string' } }, required: ['number', 'text'],
@@ -2218,64 +2339,36 @@ test('first capability plan remains provisional across rejected and aborted step
   assert.equal(agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan').length, 1)
 })
 
-test('real AgentLoop protects its first system head before accepting one capability plan and strict restoration', async t => {
+test('a capability plan never precedes the protected head and restores strictly', async t => {
   const ctx = new Context()
-  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
-    personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
-  new AgentRegistry(ctx)
-  new SessionStore(ctx)
-  new SessionProjectionRegistry(ctx)
-  ctx.effect(() => ctx.tools.register(defineTool({ name: 'mcp__docs__probe', description: 'MCP probe.', parameters: {},
-    output: { schema: { type: 'string' }, render: () => [] }, execute: async () => 'probe' })))
-  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp:docs', order: 10, text: '' }))
-  ctx.effect(() => ctx.systemPrompt.section({ name: 'tool:mcp__docs__probe', order: 11, text: '' }))
-  const errors = []
-  ctx.on('agent/error', payload => errors.push(payload.error))
-  let failPreparation = true
-  let requests = 0
-  async function* stream() {
-    requests++
-    yield { type: 'text-delta', index: 0, text: 'done' }
-    yield { type: 'finish', reason: { kind: 'stop' } }
-  }
-  ctx.effect(() => ctx.provide('llm', { async prepareCall(requestConfig) {
-    if (failPreparation) throw new Error('Fixture request preparation failed.')
-    return { config: requestConfig, stream, adapterDefaults: {} }
-  }, stream }))
-  await ctx.plugin(AgentLoop, { agents: [] }).await()
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
-  ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
-    const assembly = await next()
-    await env.prepare(context.agent, assembly.sections)
-    return { ...assembly, sections: env.projectSections(context.agent, assembly.sections) }
-  })
-  ctx.on('agent/pre-step', (payload, next) => env.preStep(payload, next), { prepend: true })
-  const owned = await ctx.agents.create({ sessionId: 'first-capability-plan-real-loop',
-    meta: { cwd: process.cwd(), delegationDepth: 0 }, agentOptions: { provider: 'fixture', model: 'fixture' } })
-  t.after(async () => { await owned.dispose(); await env.dispose(); await ctx.fiber.dispose() })
-  const agent = owned.agent
-  const run = async () => {
-    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'probe' }] }), 'next-turn', true)
-    await agent.whenIdle()
-  }
-  await run()
-  assert.equal(errors.length, 1)
-  assert.equal(requests, 0)
-  assert.equal(agent.session.snapshotEvents().some(event => event.data?.source?.form === 'capability-plan'), false)
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  // The strict restore below reads the released header, which requires the delegation depth
+  // the fixture states explicitly.
+  const base = Session.create('first-capability-plan-real-loop')
+  const agent = agentFor(Session.create(base.id, [], { ...base.header, delegationDepth: 0 }))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: config(),
+    toolSchemasForAgent: () => [schema('run_code'), schema('probe')] })
+  t.after(async () => { await env.dispose(); await ctx.fiber.dispose() })
+  await env.prepare(agent, [])
+  // A composition before any accepted step cannot publish: the host has not published its
+  // protected head, and a plan written now would precede it and make the log unreadable.
   await env.refresh(agent)
   assert.equal(env.describe(agent).publication, 'pending')
   assert.equal(agent.session.snapshotEvents().some(event => event.data?.source?.form === 'capability-plan'), false)
-  failPreparation = false
-  await run()
-  await run()
-  assert.equal(requests, 2)
+  // Once the head exists the composition is published behind it, never before it.
+  agent.session.append('turn/start', { turn: 1 })
+  agent.session.append('step/start', { turn: 1, step: 1 })
+  appendSystemHead(agent.session)
+  await env.refresh(agent)
+  agent.session.append('step/end', { turn: 1, step: 1 })
+  agent.session.append('turn/end', { turn: 1, reason: 'complete' })
   const events = agent.session.snapshotEvents()
   const firstSurface = events.find(event => event.surfaceOp)
   assert.equal(firstSurface.type, 'system/message')
   const plans = events.filter(event => event.type === 'user/message' && event.data?.source?.form === 'capability-plan')
   assert.equal(plans.length, 1)
-  assert.ok(firstSurface.seq < plans[0].seq)
+  assert.ok(firstSurface.seq < plans[0].seq, 'the plan follows the head it depends on')
   assert.equal(env.describe(agent).publication, 'accepted')
   const restore = sessionFormatCatalog.createRestore(
     sessionFormatCatalog.encodeCurrentHeader(agent.session.header, agent.session.inheritedEventCount),
@@ -2287,22 +2380,20 @@ test('real AgentLoop protects its first system head before accepting one capabil
 
 test('actual first requests share pre-task plans across sessions and preserve pinned prefixes across statistics', async t => {
   const ctx = new Context()
-  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false,
-    personaPrefix: 'Fixture system prompt.', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
-  new AgentRegistry(ctx)
-  new SessionStore(ctx)
-  new SessionProjectionRegistry(ctx)
+  await mountAgentLoopTestDependencies(ctx, {
+    systemPrompt: { includeHarnessIdentity: false, includeRuntimeContext: false,
+      personaPrefix: 'Fixture system prompt.', personaSuffix: '' },
+    tools: { mode: 'native' },
+  })
   const requests = []
   async function* stream(options) {
     requests.push(options.messages)
     yield { type: 'text-delta', index: 0, text: 'done' }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
-  ctx.effect(() => ctx.provide('llm', { async prepareCall(requestConfig) {
-    return { config: requestConfig, stream, adapterDefaults: {} }
-  }, stream }))
-  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  ctx.effect(() => ctx.llm.registerAdapter(['fixture'],
+    fixtureLlmAdapter(async (provider, model) => ({ provider, id: model, name: model, contextWindow: 8192 }), stream)))
+  await mountAgentLoopTestHarness(ctx)
   let selected = 'a'
   const schemas = ['a', 'b', 'pinned'].map(schema)
   const store = { available() {}, coverage: async () => Object.fromEntries(schemas.map(item => [`tools.${item.name}`, {
@@ -2557,7 +2648,8 @@ test('capability contracts keep the Host SDK member shape for valid and exotic n
 test('Skill contracts preserve model and user invocation eligibility across disclosure, discovery and Host loading', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   skillTool.apply(ctx)
   const agent = agentFor(Session.create('skill-invocation-contracts'))
@@ -2605,7 +2697,7 @@ test('Skill contracts preserve model and user invocation eligibility across disc
   assert.deepEqual(catalog.find(item => item.id === 'skills.user-only').invocation, invocations['user-only'])
   assert.ok(catalog.some(item => item.id === 'skills.closed'), 'The user can still configure a closed entry.')
   assert.equal(bodyReads, 0)
-  const rejected = await ctx.tools.execute({ agent, name: 'skill', arguments: { name: 'user-only' }, callId: 'user-only-model', signal: agent.signal })
+  const rejected = await runTool(ctx, { agent, name: 'skill', arguments: { name: 'user-only' }, callId: 'user-only-model', signal: agent.signal })
   assert.equal(rejected.isError, true)
   assert.match(rejected.error.message, /not available for model invocation/)
   assert.equal(bodyReads, 0)
@@ -2695,7 +2787,8 @@ test('shared loaders have no executable member when their selector domains are e
 test('closed Skills disappear from host invocation without reading bodies and refresh sees original providers', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   skillTool.apply(ctx)
   const agent = agentFor(Session.create('closed-skill-session'))
@@ -2746,6 +2839,7 @@ test('closed Skills disappear from host invocation without reading bodies and re
 
 test('disposing Skill providers contracts discovery and shared loading without reallocating the session plan', async t => {
   const ctx = new Context()
+  if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx)
   new SkillRegistry(ctx)
   const register = name => ctx.skills.registerProvider(() => ({ name: `${name}-provider`,
     list: async () => [{ name, description: `${name} summary`, invocation: { modelInvocable: true, userInvocable: true },
@@ -2920,7 +3014,7 @@ test('discarded computation expansion recovers complete contracts and resource i
 test('Host final outcomes count admitted capability calls while pre-dispatch cancellation does not', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   t.after(() => ctx.fiber.dispose())
   const agent = agentFor(Session.create('host-capability-outcomes'))
   let bodyCalls = 0
@@ -2933,7 +3027,7 @@ test('Host final outcomes count admitted capability calls while pre-dispatch can
   await acceptPreparation(env, agent, [])
   ctx.on('tools/execute', (exec, next) => { env.admitted(exec); return next() })
   ctx.on('tools/result', (exec, result) => env.dispatched(exec, result))
-  const execute = callId => ctx.tools.execute({ agent, name: 'probe', arguments: {}, callId,
+  const execute = callId => runTool(ctx, { agent, name: 'probe', arguments: {}, callId,
     signal: agent.signal })
   const canceled = new AbortController()
   canceled.abort()
@@ -3000,7 +3094,7 @@ test('initial full contracts and mixed inspect evidence recover identically afte
 test('disposing an MCP resource provider removes discovery, selectors and recovered descriptions', async t => {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, personaPrefix: '', personaSuffix: '' })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   await ctx.plugin(McpResourceRuntime).await()
   t.after(() => ctx.fiber.dispose())
   const provider = { async request() { return { contents: [{ uri: 'probe://item', text: 'value' }] } } }
@@ -3228,7 +3322,7 @@ test('composed collection without management observes actual public availability
 for (const collection of [false, true]) test(`management off keeps Host tool withdrawal and additions usable with collection ${collection}`, async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
   const tool = name => defineTool({ name, description: name, parameters: {},
     output: { schema: { type: 'string' }, render: () => [] }, execute: async () => name })
   const remove = ctx.tools.register(tool('withdrawn'))
@@ -3251,7 +3345,7 @@ for (const collection of [false, true]) test(`management off keeps Host tool wit
 
 
 test('stable parent and child Skill projections do not invalidate an overlapping public catalog read', async t => {
-  const ctx = new Context(); new SkillRegistry(ctx)
+  const ctx = new Context(); if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx); new SkillRegistry(ctx)
   const parent = agentFor(Session.create('stable-parent-skills'))
   const parentScope = createScope(ctx, parent); parent.ctx = parentScope.ctx
   const child = agentFor(Session.create('stable-child-skills'))
@@ -3280,7 +3374,7 @@ test('stable parent and child Skill projections do not invalidate an overlapping
 })
 
 test('an incomplete Skill observation keeps only the proved frozen Skills and does not record their availability', async t => {
-  const ctx = new Context(); new SkillRegistry(ctx)
+  const ctx = new Context(); if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx); new SkillRegistry(ctx)
   const agent = agentFor(Session.create('retained-incomplete-skills'))
   const scope = createScope(ctx, agent); agent.ctx = scope.ctx
   let complete = true
@@ -3324,9 +3418,12 @@ test('an incomplete Skill observation keeps only the proved frozen Skills and do
 
 test('public AgentLoop completes parent and child turns and resumes them after an incomplete Skill observation', async t => {
   const ctx = new Context()
-  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' }); new SkillRegistry(ctx); skillTool.apply(ctx)
-  new AgentRegistry(ctx); new SessionStore(ctx); new SessionProjectionRegistry(ctx)
+  await mountAgentLoopTestDependencies(ctx, {
+    systemPrompt: { includeHarnessIdentity: false, includeRuntimeContext: false },
+    tools: { mode: 'native' },
+    workingDirectory: true,
+  })
+  new SkillRegistry(ctx); skillTool.apply(ctx)
   let complete = true
   let control
   ctx.effect(() => ctx.skills.registerProvider(owner => {
@@ -3361,7 +3458,8 @@ test('public AgentLoop completes parent and child turns and resumes them after a
       yield { type: 'finish', reason: { kind: 'stop' } }
     }
   }
-  ctx.effect(() => ctx.provide('llm', { prepareCall: async requestConfig => ({ config: requestConfig, stream, adapterDefaults: {} }), stream }))
+  ctx.effect(() => ctx.llm.registerAdapter(['fixture'],
+    fixtureLlmAdapter(async (provider, model) => ({ provider, id: model, name: model, contextWindow: 8192 }), stream)))
   await ctx.plugin(AgentLoop, { agents: [] }).await()
   const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: target => toolSdkSchemas(ctx.tools, target) })
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
@@ -3503,7 +3601,7 @@ test('initial and refreshed capability plans require a complete Skill observatio
 test('all unselected features and preview-only delegate the public incomplete Skill catalog lifecycle', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' }); new SkillRegistry(ctx); skillTool.apply(ctx)
+  new ToolRuntime(ctx); attachNativeExecutor(ctx); if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx); new SkillRegistry(ctx); skillTool.apply(ctx)
   ctx.effect(() => ctx.skills.registerProvider(() => ({ name: 'unavailable',
     list: async () => { throw new Error('provider temporarily unavailable') }, get: async () => undefined })))
   const agent = agentFor(Session.create('off-incomplete-skills'))
@@ -3620,7 +3718,7 @@ test('composed recovery without management publishes only actual Host Skill and 
 test('composed collection without management excludes absent invocation paths and follows real Host restoration', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' }); new SkillRegistry(ctx); skillTool.apply(ctx)
+  new ToolRuntime(ctx); attachNativeExecutor(ctx); if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx); new SkillRegistry(ctx); skillTool.apply(ctx)
   await ctx.plugin(McpResourceRuntime).await()
   ctx.effect(() => ctx.skills.register({ name: 'unloadable', description: 'Model only', source: 'runtime', content: 'MODEL_ONLY',
     invocation: { modelInvocable: true, userInvocable: false } }))
@@ -3662,7 +3760,7 @@ test('composed collection without management excludes absent invocation paths an
 test('composed closed Skill loader preserves public user injection and replaces misleading Host summaries', async t => {
   const ctx = new Context(); t.after(() => ctx.fiber.dispose())
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
-  new ToolRuntime(ctx, { mode: 'native' }); new SkillRegistry(ctx); skillTool.apply(ctx)
+  new ToolRuntime(ctx); attachNativeExecutor(ctx); if (ctx.get('workingDirectory') === undefined) provideWorkingDirectoryFixture(ctx); new SkillRegistry(ctx); skillTool.apply(ctx)
   ctx.effect(() => ctx.skills.register({ name: 'algebra', description: 'Algebra instructions', content: 'USER_ALGEBRA_BODY', source: 'runtime' }))
   const agent = agentFor(Session.create('composed-user-skill'))
   const scope = createScope(ctx, agent); agent.ctx = scope.ctx; t.after(() => scope.dispose())
@@ -3848,13 +3946,21 @@ test('Skill projection restores its prior state after publication failure and re
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
   const agent = agentFor(Session.create('skill-projection-rollback'))
   agent.runMaintenance = operation => operation(agent.signal)
-  const env = createCapabilityEnvironment({ ctx, config: config(), toolSchemasForAgent: () => [schema('run_code'), schema('skill'), schema('probe')] })
+  // A choice now travels through the host's plugin-record writer, so a refused publication
+  // is a refused record and not a refused session append.
+  let refusing = false
+  const appendRecord = (session, type, data) => {
+    if (refusing) throw new Error('publication failed')
+    return appendPluginRecord(session, type, data)
+  }
+  const env = createCapabilityEnvironment({ ctx, config: config(), appendRecord,
+    toolSchemasForAgent: () => [schema('run_code'), schema('skill'), schema('probe')] })
   t.after(async () => { failInvalidation = false; await env.dispose(); await ctx.fiber.dispose() })
   await acceptPreparation(env, agent, [])
   const previous = env.stateFor(agent)
-  const append = agent.session.append.bind(agent.session)
-  agent.session.append = () => { throw new Error('publication failed') }
+  refusing = true
   await assert.rejects(env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal), /publication failed/)
+  refusing = false
   assert.equal(env.stateFor(agent), previous)
   assert.equal(invalidations, 0, 'A tool-only failed publication leaves the unchanged Skill projection alone.')
   env.reconfigure(config({ 'skills.fixture': 'closed' }))
@@ -3865,7 +3971,6 @@ test('Skill projection restores its prior state after publication failure and re
     && error.errors.every(item => /projection invalidate failed/.test(item.message)))
   assert.equal(env.stateFor(agent), previous)
   failInvalidation = false
-  agent.session.append = append
   await env.refresh(agent, [])
   assert.notEqual(env.stateFor(agent), previous)
   await env.dispose()

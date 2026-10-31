@@ -26,14 +26,17 @@ test('an installed host package that fails to initialise is reported, not skippe
   const broken = join(root, 'broken-host-package.mjs')
   await writeFile(broken, 'throw new Error("installed host package is not loadable")\n')
   const brokenUrl = pathToFileURL(broken).href
+  // The tool executor publishes the model-facing renderers, so it is the package this
+  // resolver asks first. Breaking that specifier keeps the failure on the package the
+  // plugin resolved itself rather than on a dependency of it.
   const hooks = registerHooks({
     resolve(specifier, context, next) {
-      return specifier === '@deepseek-ai/dsh-tools'
+      return specifier === '@deepseek-ai/dsh-tool-executor-ptc'
         ? { url: brokenUrl, shortCircuit: true }
         : next(specifier, context)
     },
   })
   t.after(() => hooks.deregister())
   await assert.rejects(() => import('../internal/host-tool-sdk.js'),
-    /ptc-plus: host package @deepseek-ai\/dsh-tools failed to load: installed host package is not loadable/u)
+    /ptc-plus: host package @deepseek-ai\/dsh-tool-executor-ptc failed to load: installed host package is not loadable/u)
 })

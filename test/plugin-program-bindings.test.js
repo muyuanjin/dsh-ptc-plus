@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import test from 'node:test'
+import { Session } from '@deepseek-ai/dsh-session'
 import { Config } from '../index.js'
 import { createRuntimeBridgeOwner } from '../internal/runtime-bridge-owner.js'
 import { createExecutionSeam } from '../internal/execution-seam-compat.js'
@@ -1178,7 +1179,12 @@ test('registered capability command lists public inventory and records the choic
     provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable: true } }] }) }
   const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' },
     { name: 'mcp:docs', text: 'Docs server owner instructions' }]
-  const session = appendOnlySession('command-choices')
+  // A choice is a plugin record, which only a real Session commits; the fixture states the
+  // protected head the host publishes at the first accepted step.
+  const session = Session.create('command-choices')
+  session.append('system/message', { turn: 1, step: 1,
+    message: { role: 'system', id: 'system-head', source: { kind: 'system-prompt' },
+      content: [{ type: 'text', text: 'Host system prompt' }] } }, { surfaceOp: 'append' })
   const agent = ptcAgent('command-choices', session)
   liveAgents.push(agent)
   const signal = new AbortController().signal
@@ -1210,7 +1216,7 @@ test('registered capability command lists public inventory and records the choic
   // which owner recorded it. What a cell later reached is not its question.
   assert.deepEqual(readCapabilityCommandReceipt(changed.text).record,
     { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' })
-  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+  assert.deepEqual(capabilitySelectionOf(session.snapshotEvents()).selection.choices,
     { 'tools.probe': { availability: 'closed' } })
   // The listing states the dimensions this row decides, each from its own source: the
   // availability this session recorded and the disclosure it never did, which stays
@@ -1228,17 +1234,47 @@ test('registered capability command lists public inventory and records the choic
     await assert.rejects(() => invoke(rawInput),
       /a capability choice names an entry as tools\.<name>, skills\.<name>, mcp\.<server> or mcpServers\.<server>/u)
   }
-  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+  assert.deepEqual(capabilitySelectionOf(session.snapshotEvents()).selection.choices,
     { 'tools.probe': { availability: 'closed' } })
-  // A refresh does compose a plan, and before the first accepted step that plan is a
-  // proposal the receipt has to carry so a cold restart can recover it.
+  // A refresh composes a plan and, once this session has a protected head to publish
+  // behind, delivers it as the record it is; a session still before its first accepted
+  // step carries the composition as a proposal instead.
   const refreshed = await invoke('refresh')
-  assert.equal(readCapabilityCommandReceipt(refreshed.text).state, 'pending')
-  assert.equal(readCapabilityCommandReceipt(refreshed.text).proposal.rawInput, 'refresh')
+  assert.equal(readCapabilityCommandReceipt(refreshed.text).state, 'recorded')
   // Withdrawing the declaration removes the row; the record it was about stays as it
   // was written, because a choice states a decision and never claims supply.
   state.ctx.tools.schemas = () => []
   assert.deepEqual(await list('list tools'), [])
-  assert.deepEqual(capabilitySelectionOf(session.events).selection.choices,
+  assert.deepEqual(capabilitySelectionOf(session.snapshotEvents()).selection.choices,
     { 'tools.probe': { availability: 'closed' } })
+})
+
+test('a refresh before the first accepted step carries its composition in the receipt', async t => {
+  const { ptcAgent, appendOnlySession } = await import('./plugin-fixture.js')
+  const { readCapabilityCommandReceipt } = await import('../internal/capability-command-receipt.js')
+  const { CAPABILITY_PLAN_FORM } = await import('../internal/message-sources.js')
+  let command
+  const liveAgents = []
+  const state = fixture({ capabilityManagementEnabled: true }, { agents: { list: () => liveAgents },
+    commands: { register(definition) { command = definition; return () => {} } },
+    schemas: [{ name: 'probe', description: 'Ordinary probe', parameters: {} }] })
+  t.after(() => state.dispose())
+  state.ctx.skills = { snapshot: async () => ({ complete: true, skills: [] }) }
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'as the server argument: ["docs"].' }]
+  // No system head yet: the Host has accepted no step, so the composition this command makes is a
+  // proposal that exists nowhere but its receipt — a restart reads the plan back from there.
+  const session = appendOnlySession('refresh-before-head')
+  const agent = ptcAgent('refresh-before-head', session)
+  liveAgents.push(agent)
+  const signal = new AbortController().signal
+  agent.signal = signal; agent.runMaintenance = operation => operation(signal)
+  await state.assemble({ sections: hostSections, contexts: [], variables: {}, tools: [state.runCodeDefinition] },
+    { agent, scope: agent, signal })
+  state.ctx.systemPrompt.assemble = async () => ({ sections: hostSections })
+  const refreshed = await command.handler({ commandId: 'refresh-before-head', rawInput: 'refresh', agent, signal })
+  const receipt = readCapabilityCommandReceipt(refreshed.text)
+  assert.equal(receipt.state, 'pending')
+  assert.equal(receipt.proposal.commandId, 'refresh-before-head')
+  assert.equal(receipt.proposal.rawInput, 'refresh')
+  assert.equal(receipt.proposal.message.source.form, CAPABILITY_PLAN_FORM)
 })

@@ -1,3 +1,4 @@
+import { runTool, attachPtcExecutor } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { access, rm } from 'node:fs/promises'
@@ -9,8 +10,8 @@ import { createScope } from '@deepseek-ai/dsh-scope'
 import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
-import { ptcPresentation } from '../scripts/dsh-host-contract.mjs'
 import { createFixtureExecutionProvider, executionInstalled } from './host-fixture.js'
+import { hostTransportDefinition } from '../internal/host-tool-sdk.js'
 import { Config, apply } from '../index.js'
 import { CONFIG_DEFAULTS } from '../internal/config-spec.js'
 import { createDirectSurfaceOwner } from '../internal/direct-surface-owner.js'
@@ -553,13 +554,10 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
   // reads so that `apply` can run here at all.
   ctx.provide('agents', { list: () => [] })
   ctx.provide('llm', {})
-  // This fixture patches the registered transport definition, so it needs a host
-  // that registers one. It writes the presentation field only when the installed
-  // schema publishes one, and reports the shape it found instead of assuming it.
-  const presentation = ptcPresentation()
-  assert.equal(presentation.kind, 'registry',
-    'this fixture requires a host that registers the run_code transport definition')
-  new ToolRuntime(ctx, { mode: presentation.mode })
+  // This fixture patches the live transport definition, so it mounts the PTC executor a
+  // PTC-mode Host dispatches through and reads the definition from that surface.
+  new ToolRuntime(ctx)
+  attachPtcExecutor(ctx)
   let echoCalls = 0
   ctx.tools.register(defineTool({
     name: 'echo',
@@ -575,7 +573,9 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     },
   }))
   const upstreamRun = ctx.get('ptcRuntime').run
-  const hostOutput = ctx.tools.get('run_code').output
+  const transport = hostTransportDefinition(ctx.tools, undefined, 'run_code')
+  assert.ok(transport, 'the PTC-mode Host publishes the reserved transport')
+  const hostOutput = transport.output
   hostOutput.ownerTag = 'host-output-owner'
   let callbackRevision = 1
   const callbackDescriptor = { configurable: true, enumerable: false,
@@ -621,7 +621,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
       name: 'run_code',
       arguments: argumentsValue,
     })
-    const result = await ctx.tools.execute({
+    const result = await runTool(ctx, {
       name: 'run_code',
       callId,
       arguments: args,
@@ -641,7 +641,7 @@ test('preserves canonical run_code results through the real DSH ToolRuntime pipe
     return result
   }
 
-  const malformedTransport = await ctx.tools.execute({
+  const malformedTransport = await runTool(ctx, {
     name: 'run_code',
     callId: 'malformed-transport-rejection',
     arguments: '{"dsh_ptc_plus_malformed_tool_json":',
@@ -930,14 +930,14 @@ test('keeps native tools inside run_code after a later broader assembly', async 
   assert.deepEqual(mixed.tools.map(tool => tool.name), ['run_code'])
   assert.equal(agent.ctx.tools.get('edit_run_code')?.name, 'edit_run_code')
 
-  const edit = await state.ctx.tools.execute({
+  const edit = await state.runTool({
     name: 'edit_run_code', callId: 'active-code-only-edit', arguments: { edits: [] },
     agent, signal: codeSignal,
   })
   assert.equal(edit.isError, true)
   assert.match(edit.error.message, /must be called through tools\.edit_run_code inside run_code/)
 
-  const broadEdit = await state.ctx.tools.execute({
+  const broadEdit = await state.runTool({
     name: 'edit_run_code', callId: 'mixed-request-edit', arguments: { edits: [] },
     agent, signal: broadSignal,
   })

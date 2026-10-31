@@ -19,6 +19,9 @@ function visibleEventSeqs(events) {
 
 export function orderedSurfaceSession(id, events = []) {
   const session = { id, events }
+  // A Host Session states its committed events through this method; readers that work
+  // against a live session are given the same surface here.
+  session.snapshotEvents = () => Object.freeze([...session.events])
   session.surface = {
     replaceGeneration: 0,
     get nodes() { return visibleEventSeqs(session.events) },
@@ -35,6 +38,11 @@ export function appendOnlySession(id, events = []) {
       get nodes() { return visibleEventSeqs(events) },
     },
     get events() {
+      return Object.freeze([...events])
+    },
+    // A Host Session states its committed events through this method; readers that work
+    // against a live session are given the same surface here.
+    snapshotEvents() {
       return Object.freeze([...events])
     },
     append(type, data) {
@@ -76,9 +84,11 @@ export async function runNestedEditCell(state, {
     const data = { rootCallId: callId, parentCallId: callId, subCallId,
       name: 'edit_run_code', arguments: dispatchedArgs }
     session.append('tool/ptc-dispatch-start', data)
-    const original = await state.ctx.tools.execute({
-      callId: subCallId, rootCallId: callId, parent: {}, name: 'edit_run_code',
-      arguments: dispatchedArgs, agent, signal,
+    // A nested dispatch names the root cell it belongs to; this fixture host's registry
+    // contract takes that identity as part of the call.
+    const original = await state.runTool({
+      callId: subCallId, rootCallId: callId, parent: {}, token: Symbol('nested.edit'),
+      name: 'edit_run_code', arguments: dispatchedArgs, agent, signal,
     })
     nestedResult = transformNestedResult === undefined
       ? original : transformNestedResult(original)
@@ -598,6 +608,10 @@ export function fixture(config = {}, fixtureOptions = {}) {
     assembleStep,
     stream,
     executeRun,
+    // Dispatch one nested call through the contract this fixture host publishes: it accepts
+    // one named call with the identity the caller chose, which is what a nested dispatch
+    // carries. A host that answers model batches is the product's own adapter's concern.
+    runTool: execution => ctx.tools.execute(execution),
     runDurable,
     run,
     async emit(name, value) {
@@ -614,6 +628,7 @@ export function fixture(config = {}, fixtureOptions = {}) {
 
 export function appendRunCodeCall(events, callId, code, description = 'test cell') {
   const argumentsValue = JSON.stringify({ code, description })
+  const call = { type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }
   const assistantSeq = events.length
   events.push({
     type: 'assistant/message',
@@ -627,8 +642,17 @@ export function appendRunCodeCall(events, callId, code, description = 'test cell
         id: `message-assistant-${callId}`,
         role: 'assistant',
         source: { kind: 'model', provider: 'fixture', model: 'fixture' },
-        content: [{ type: 'tool-call', id: callId, name: 'run_code', arguments: argumentsValue }],
+        content: [call],
       },
+      // A recorded message keeps the chunks that produced it: the stored shape is what a
+      // restored Session and a forked child read back, so the stream that yielded this call
+      // is part of the event rather than something only the live loop remembers.
+      stream: [
+        { type: 'block-start', index: 0, blockType: 'tool-call' },
+        { type: 'tool-call-delta', index: 0, id: callId, name: 'run_code', argumentsDelta: argumentsValue },
+        { type: 'block-end', index: 0, block: call },
+        { type: 'finish', reason: { kind: 'tool-calls' } },
+      ],
     },
   })
   const callSeq = events.length
@@ -659,11 +683,15 @@ export function appendRunCodeResult(events, callId, callSeq, result) {
     sourceEventSeqs: [callSeq],
     surfaceOp: 'append',
     data: {
+      // The answering message is a tool-role message that names the call it answers; a
+      // restored Session and a forked child validate those fields before replaying it.
       message: {
         id: `message-${callId}`,
-        role: 'user',
+        role: 'tool',
         source: { kind: 'tool', callId },
-        content: [{ type: 'tool-result', toolCallId: callId, content: [] }],
+        toolCallId: callId,
+        content: Array.isArray(result.content) ? result.content : [],
+        ...(result.isError === undefined ? {} : { isError: result.isError }),
       },
       ...(result.meta === undefined ? {} : { meta: result.meta }),
     },

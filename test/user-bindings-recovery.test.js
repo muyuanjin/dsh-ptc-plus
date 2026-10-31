@@ -1,3 +1,5 @@
+import { attachPtcExecutor } from './tool-executor-fixture.js'
+import { createFixtureExecutionProvider } from './host-fixture.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
@@ -25,25 +27,37 @@ const codeOnlyAssembly = state => ({
   tools: [state.runCodeDefinition],
 })
 
-async function publicModelToolSchemas(assembly) {
+/** Run one inspection against a Host whose tools are registered and whose transport is PTC. */
+async function withModelSchemaHost(run) {
   const ctx = new Context()
   new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(ctx, { mode: 'ptc' })
+  // A PTC-mode executor describes its transport from the runtime it dispatches into.
+  ctx.effect(() => ctx.provide('ptcRuntime', createFixtureExecutionProvider({
+    language: 'typescript', isolation: 'worker-thread',
+    resolve: request => ({ ...request, cwd: process.cwd(), timeoutMs: null }),
+    run: async () => ({ logs: [], value: null }),
+  })))
+  new ToolRuntime(ctx); attachPtcExecutor(ctx)
   const agent = { id: 'model-schema-snapshot' }
   const scope = createScope(ctx, agent)
   try {
-    for (const definition of assembly.tools) {
-      if (definition.name === 'run_code') {
-        Object.defineProperties(ctx.tools.get('run_code', agent), Object.getOwnPropertyDescriptors(definition))
-      } else {
-        scope.ctx.effect(() => scope.ctx.tools.register(definition))
-      }
-    }
-    return ctx.tools.schemas(agent)
+    return await run(ctx, agent, scope)
   } finally {
     await scope.dispose()
     await ctx.fiber.dispose()
   }
+}
+
+async function publicModelToolSchemas(assembly) {
+  return withModelSchemaHost(async (ctx, agent, scope) => {
+    for (const definition of assembly.tools) {
+      // The reserved transport belongs to the executor this Host dispatches through, so it
+      // reaches the model as that executor's projection rather than as a registration.
+      if (definition.name !== 'run_code') scope.ctx.effect(() => scope.ctx.tools.register(definition))
+    }
+    const transport = ctx.tools.selectExecutor(agent).describe(ctx.tools.definitions(agent)).schemas
+    return [...ctx.tools.schemas(agent), ...transport]
+  })
 }
 
 function document(value) {
@@ -105,21 +119,27 @@ function evaluationWitness(log) {
 }
 
 test('public scoped model schemas retain fields and detach parameters from definitions', async () => {
+  // The registry's inspection surface serves registered capabilities; the reserved transport
+  // is projected by the executor above, so its parameters stay the executor's live object.
   const parameters = { type: 'object', additionalProperties: false,
     properties: { value: { type: 'string', description: 'Initial value' } }, required: ['value'] }
-  const definition = { name: 'run_code', description: 'Initial schema', parameters, deferLoading: true,
+  const definition = { name: 'schemas_probe', description: 'Initial schema', parameters, deferLoading: true,
     execute: () => 'unused', projectContent: () => [],
     output: { schema: { type: 'string' }, render: () => [] } }
-  const first = await publicModelToolSchemas({ tools: [definition] })
-  const recorded = first.find(tool => tool.name === 'run_code')
-  assert.deepEqual(recorded, { name: 'run_code', description: 'Initial schema',
+  const registered = () => withModelSchemaHost(async (ctx, agent, scope) => {
+    scope.ctx.effect(() => scope.ctx.tools.register(definition))
+    return ctx.tools.schemas(agent)
+  })
+  const first = await registered()
+  const recorded = first.find(tool => tool.name === 'schemas_probe')
+  assert.deepEqual(recorded, { name: 'schemas_probe', description: 'Initial schema',
     parameters: structuredClone(parameters), deferLoading: true })
-  assert.deepEqual(first.map(tool => tool.name), ['run_code'])
+  assert.deepEqual(first.map(tool => tool.name), ['schemas_probe'])
   const bytes = JSON.stringify(recorded)
   parameters.properties.value.description = 'Changed value'
   definition.description = 'Changed schema'
   assert.equal(JSON.stringify(recorded), bytes)
-  const next = (await publicModelToolSchemas({ tools: [definition] })).find(tool => tool.name === 'run_code')
+  const next = (await registered()).find(tool => tool.name === 'schemas_probe')
   assert.equal(next.description, 'Changed schema')
   assert.equal(next.parameters.properties.value.description, 'Changed value')
   assert.notEqual(JSON.stringify(next), bytes)

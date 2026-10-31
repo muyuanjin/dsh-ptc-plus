@@ -27,8 +27,16 @@ export const MANIFEST_PATH = 'compat/channels.json'
 export const CHANNELS = Object.freeze([
   Object.freeze({ channel: 'latest', distTag: 'latest', blocks: true }),
   Object.freeze({ channel: 'next', distTag: 'next', blocks: true }),
-  Object.freeze({ channel: 'alpha', distTag: 'alpha', blocks: false }),
+  // The development graph follows one channel rather than a release: this checkout builds
+  // against the surfaces that channel publishes, and a release never waits on a channel that
+  // carries no blocking role.
+  Object.freeze({ channel: 'alpha', distTag: 'alpha', blocks: false, development: true }),
 ])
+
+/** The channel this checkout's development graph declares and installs. */
+export const DEVELOPMENT_CHANNEL = Object.freeze(
+  CHANNELS.find(definition => definition.development === true).channel,
+)
 /** The package whose dist-tag selects the cohort, and the package every install is rooted at. */
 export const COHORT_PACKAGE = '@deepseek-ai/dsh'
 
@@ -348,7 +356,7 @@ export async function refreshDevelopmentGraph(options = {}) {
     // without a shell), so the spawn error is stated instead.
     if (result.error !== undefined || result.status !== 0) throw spawnFailure(command.executable, command.args, result)
   })
-  const record = options.record ?? (await readManifest(root)).channels.get('next')
+  const record = options.record ?? (await readManifest(root)).channels.get(DEVELOPMENT_CHANNEL)
   const manifestPath = join(root, 'package.json')
   const lockPath = join(root, 'package-lock.json')
   const manifestText = await readFile(manifestPath, 'utf8')
@@ -358,7 +366,7 @@ export async function refreshDevelopmentGraph(options = {}) {
   if (lock.packages?.['node_modules/@deepseek-ai/dsh']?.version === record.version) return undefined
   const specifications = Object.keys(manifest.devDependencies ?? {})
     .filter(name => name === '@deepseek-ai/dsh' || name.startsWith('@deepseek-ai/dsh-'))
-    .map(name => `${name}@next`)
+    .map(name => `${name}@${DEVELOPMENT_CHANNEL}`)
   // npm cannot atomically move a complete peer cohort away from an old lock, and
   // `--save-dev` rewrites the channel declarations to pinned ranges. Resolve the
   // transition, restore the declarations, then require an ordinary resolver pass
@@ -383,7 +391,7 @@ export async function refreshDevelopmentGraph(options = {}) {
     }
     const moved = JSON.parse(await readFile(lockPath, 'utf8'))
     if (moved.packages?.['node_modules/@deepseek-ai/dsh']?.version !== record.version) {
-      throw new Error(`the development graph did not move onto the next channel release ${record.version}`)
+      throw new Error(`the development graph did not move onto the ${DEVELOPMENT_CHANNEL} channel release ${record.version}`)
     }
   } catch (error) {
     await writeFile(manifestPath, manifestText)

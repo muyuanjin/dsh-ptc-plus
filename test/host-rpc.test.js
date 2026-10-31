@@ -11,26 +11,27 @@ async function fixture(t, late = false) {
   const fibers = []
   t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose() })
   const mount = async plugin => { const fiber = ctx.plugin(plugin); fibers.push(fiber); await fiber; return fiber }
-  let dispatch
-  await mount({ apply(scope) { scope.provide('connection', { rpc: {
-    intercept(channel, claims, handler) {
-      assert.equal(channel, '/api')
-      dispatch = (method, payload, signal) => { assert.equal(claims(method), true); return handler(method, payload, signal) }
-      return () => { dispatch = undefined }
-    },
-    handle() { assert.fail('plugin-specific Connection channels must not be used') },
-  } }) } })
+  // One owner Peer: the Host's own invocations answer without a remote-access decision, and
+  // the Peer's signal is the lifetime a disposed caller closes.
+  const lifetime = new AbortController()
+  const peer = { principal: { kind: 'owner', id: 'host-rpc-test' }, signal: lifetime.signal }
   let registry = late ? undefined : await mount(TypertRegistry)
+  // The Gateway admits non-owner Peers through the deployment's remote-access policy; this
+  // fixture's own Peer is the Host, so the policy never answers for it.
+  await mount({ apply(scope) { scope.provide('remoteAccess', { decide: () => ({ kind: 'allow' }) }) } })
   await mount(TypertGatewayService)
   let owner
   await mount({ apply(scope) { owner = createHostRpc(scope); scope.effect(() => () => owner.dispose()) } })
   let port
   const consumer = await mount({ inject: ['ptcPlusRpc'], apply(scope) { port = scope.ptcPlusRpc } })
+  const call = (contract, operation, payload = {}, signal = new AbortController().signal) =>
+    ctx.typertGateway.invoke({ namespace: contract.service, method: 'invoke',
+      args: { operation, payload }, peer, signal })
   return { ctx, mount, owner, consumer, get port() { return port },
     async removeRegistry() { await registry.dispose(); registry = undefined },
     async addRegistry() { registry = await mount(TypertRegistry) },
-    call: (contract, operation, payload = {}, signal = new AbortController().signal) =>
-      dispatch(`${contract.service}/invoke`, { args: { operation, payload } }, signal),
+    call,
+    async closePeer() { lifetime.abort() },
   }
 }
 
@@ -46,9 +47,9 @@ test('Remote wire uses the shared Gateway and preserves literal payloads, errors
     return { ok: true, value: payload }
   })
   const payload = { text: '{{literal}}', entries: [1, null, { enabled: false }], empty: {} }
-  assert.deepEqual(await target.call(RPC_CONTRACTS.bindings, 'list', payload), { ok: true, value: { ok: true, value: payload } })
-  assert.deepEqual((await target.call(RPC_CONTRACTS.bindings, 'fail')).value.error.details, { revision: 2 })
-  assert.equal((await target.call(RPC_CONTRACTS.bindings, 42)).ok, false)
+  assert.deepEqual(await target.call(RPC_CONTRACTS.bindings, 'list', payload), { ok: true, value: payload })
+  assert.deepEqual((await target.call(RPC_CONTRACTS.bindings, 'fail')).error.details, { revision: 2 })
+  await assert.rejects(target.call(RPC_CONTRACTS.bindings, 42))
   assert.equal(calls, 2)
   const controller = new AbortController()
   const waiting = target.call(RPC_CONTRACTS.bindings, 'wait', {}, controller.signal)
@@ -61,9 +62,9 @@ test('Remote wire uses the shared Gateway and preserves literal payloads, errors
   await release()
   await pending
   assert.equal(target.ctx.get(RPC_CONTRACTS.bindings.service), undefined)
-  assert.equal(target.ctx.typert.local.get('ptcPlusBindings/invoke'), undefined)
+  assert.equal(target.ctx.typert.get(`${RPC_CONTRACTS.bindings.service}/invoke`), undefined)
   assert.throws(() => service.invoke('list', {}, new AbortController().signal), /abort/i)
-  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).ok, false)
+  await assert.rejects(target.call(RPC_CONTRACTS.bindings, 'list'))
   await release()
 })
 
@@ -147,13 +148,13 @@ test('Cordis consumers release and remount their operations when the provider is
       return { ok: true, value: starts }
     }))
   } })
-  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value.value, 1)
+  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value, 1)
   await target.removeRegistry()
   assert.equal(priorSignal.aborted, true)
   assert.equal(target.ctx.get(RPC_CONTRACTS.bindings.service), undefined)
   await target.addRegistry()
   await new Promise(resolve => setImmediate(resolve))
-  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value.value, 2)
+  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value, 2)
 })
 
 test('failed publication rolls back the service and permits a later registration', async t => {
@@ -164,5 +165,5 @@ test('failed publication rolls back the service and permits a later registration
   assert.equal(target.ctx.get(RPC_CONTRACTS.bindings.service), undefined)
   await release()
   target.port.register(RPC_CONTRACTS.bindings, async () => ({ ok: true, value: 1 }))
-  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value.value, 1)
+  assert.equal((await target.call(RPC_CONTRACTS.bindings, 'list')).value, 1)
 })

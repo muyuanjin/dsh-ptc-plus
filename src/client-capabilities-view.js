@@ -2,6 +2,7 @@ import { capabilityPolicyForConfig, capabilityPolicyFromRecord, changeCapability
 import { CONFIG_DEFAULTS, CONFIG_FIELDS } from '../internal/config-spec.js'
 import { CAPABILITY_CONFIGURATION_KEYS, capabilityProfileConfiguration, validateCapabilityProfiles } from '../internal/runtime-config.js'
 import { readCapabilityCommandReceipt } from '../internal/capability-command-receipt.js'
+import { capabilitySortDirection, cycleCapabilitySort, sortCapabilityEntries } from './client-capability-sort.js'
 import { createFallbackModal } from './client-primitives.js'
 import {
   PROMPT_ASSETS, PROMPT_TEXT_MAX_SLOT_BYTES, PROMPT_TEXT_SCHEMA,
@@ -1336,6 +1337,9 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
     const [query, setQuery] = React.useState('')
     const [family, setFamily] = React.useState('all')
     const [source, setSource] = React.useState('all')
+    // The table's ordering, owned by this page: a display decision that writes nothing
+    // and is dropped with the session it was made in.
+    const [sort, setSort] = React.useState(null)
     const request = React.useRef(null)
     // Every write owns its own signal: a submitted command is not cancelled because
     // another row was used, and each row reports only its own progress.
@@ -1371,6 +1375,7 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
       setQuery('')
       setFamily('all')
       setSource('all')
+      setSort(null)
     }, [sessionId])
     const load = React.useCallback(async signal => {
       const mine = ++epoch.current
@@ -1565,25 +1570,37 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
     // it, which is the only way the row can leave that state.
     const writeAdoption = row => void record(bindingCommands,
       `${adoptionOf(row) === 'use' ? 'skip' : 'use'} ${row.id}`, row.id)
+    // The session column's own word, as one stable token per state. The row and the cell
+    // both state it, so availability is read from a stripe and a mark before the word is
+    // read: `enabled` and `closed` are the two answers no reader should have to decode from
+    // identical text, and `inherit` must not read as a decision this session made.
+    const sessionStateOf = row => row.kind === 'binding'
+      ? adoptionOf(row)
+      : (recordedOf(row, 'availability') ?? 'inherit')
     const sessionAvailabilityCell = row => row.kind === 'binding'
-      ? h('div', { className: 'ptcPlusSessionCapabilityAvailability' },
+      ? h('div', { className: 'ptcPlusSessionCapabilityAvailability', 'data-state': sessionStateOf(row) },
+        h('span', { className: 'ptcPlusSessionStateMark', 'data-state': sessionStateOf(row), 'aria-hidden': true }),
         h('button', { type: 'button', className: 'ptcPlusBindingToggle', 'data-kind': adoptionOf(row),
           'aria-pressed': adoptionOf(row) === 'use' ? 'true' : 'false',
           'aria-label': controlLabel('sessionEnabled', row),
           'aria-busy': writing.includes(row.id) ? 'true' : undefined,
           onClick: () => writeAdoption(row) }, t(ADOPTION_WORDS[adoptionOf(row)])))
-      : h('div', { className: 'ptcPlusSessionCapabilityAvailability' },
+      : h('div', { className: 'ptcPlusSessionCapabilityAvailability', 'data-state': sessionStateOf(row) },
+        h('span', { className: 'ptcPlusSessionStateMark', 'data-state': sessionStateOf(row), 'aria-hidden': true }),
         h(Select, { label: controlLabel('sessionEnabled', row), value: recordedOf(row, 'availability'),
           options: choiceOptions(SESSION_AVAILABILITY),
           onChange: value => writeSession(row, 'availability', value) }))
     const sessionDisclosureCell = row => row.kind === 'binding'
       // A binding's adoption record holds no disclosure decision at all, so the cell
       // states that address's own word instead of borrowing the one a service row owns.
-      ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure' }, t('capabilities.word.inherit'))
+      ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure', 'data-state': 'inherit' },
+        t('capabilities.word.inherit'))
       : row.kind === 'server'
         // A server carries no disclosure of its own: its members do.
-        ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure' }, t('capabilities.word.perMember'))
-      : h('div', { className: 'ptcPlusSessionCapabilityDisclosure' },
+        ? h('span', { className: 'ptcPlusSessionCapabilityDisclosure', 'data-state': 'per-member' },
+          t('capabilities.word.perMember'))
+      : h('div', { className: 'ptcPlusSessionCapabilityDisclosure',
+        'data-state': recordedOf(row, 'disclosure') ?? 'inherit' },
         h(Select, { label: controlLabel('sessionDisclosure', row), value: recordedOf(row, 'disclosure'),
           options: choiceOptions(SESSION_DISCLOSURE),
           onChange: value => writeSession(row, 'disclosure', value) }))
@@ -1636,25 +1653,55 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
       return cells
     }
     const columns = COLUMNS[settingsEntrance ? 'settings' : 'session']
+    // What the reader compares in a column is the word that column shows: a translated
+    // badge, a source label, a record's own word. Sorting therefore reads this page's
+    // display values instead of the fields they were derived from.
+    const sortValue = (row, column) => column === 'object' ? (row.name ?? row.id)
+      : column === 'type' ? t(`capabilities.type.${badgeOf(row)}`)
+        : column === 'source' ? sourceText(row)
+          : column === 'savedEnabled' ? savedEnabled(row)
+            : column === 'savedDisclosure' ? savedDisclosure(row)
+              : column === 'sessionEnabled' ? (row.kind === 'binding' ? t(ADOPTION_WORDS[adoptionOf(row)])
+                : word(recordedOf(row, 'availability')))
+                : column === 'sessionDisclosure' ? (row.kind === 'binding' ? t('capabilities.word.inherit')
+                  // A server states where the decision lives, not a disclosure of its own,
+                  // so that is the word this column shows and therefore the word it sorts by.
+                  : row.kind === 'server' ? t('capabilities.word.perMember')
+                    : word(recordedOf(row, 'disclosure')))
+                  : ''
+    // The receipt column states a whole sentence per row, so it offers no ordering: a
+    // reader sorting by the wording of a receipt would be sorting by prose.
+    const sortable = column => column !== 'receipt'
     const renderRow = row => {
       const cells = cellsOf(row)
       return h('div', { key: row.id, role: 'row',
         className: `ptcPlusSessionCapabilityRow ptcPlusCapabilityItem ptcPlusSessionCapabilityRow-${columns.length}`,
         'data-capability-id': row.id, 'data-kind': row.kind,
+        'data-session-state': sessionStateOf(row),
         ...(row.kind === 'binding' ? { 'data-binding-id': row.id, 'data-binding-state': adoptionOf(row) } : {}) },
         ...columns.map(column => h(React.Fragment, { key: column }, React.cloneElement(cells[column], { role: 'cell' }))))
     }
     const columnsRow = () => h('div', {
       className: `ptcPlusSessionCapabilityColumns ptcPlusCapabilityColumns ptcPlusSessionCapabilityColumns-${columns.length}`,
-      role: 'row' }, ...columns.map(column => h('span', { key: column, role: 'columnheader' }, t(COLUMN_COPY[column]))))
+      role: 'row' }, ...columns.map(column => h('span', { key: column, role: 'columnheader',
+        'aria-sort': sortable(column) ? capabilitySortDirection(sort, column) : undefined },
+      sortable(column)
+        ? h('button', { type: 'button', className: 'ptcPlusCapabilitySort', title: t('capabilities.sortCycle'),
+          'aria-label': t('capabilities.sortColumn', { column: t(COLUMN_COPY[column]) }),
+          onClick: () => setSort(current => cycleCapabilitySort(current, column)) },
+        t(COLUMN_COPY[column]),
+        h('span', { className: 'ptcPlusCapabilitySortMark', 'aria-hidden': true },
+          capabilitySortDirection(sort, column) === 'ascending' ? '↑'
+            : capabilitySortDirection(sort, column) === 'descending' ? '↓' : '↕'))
+        : t(COLUMN_COPY[column]))))
     const capabilities = rows.filter(row => row.kind !== 'binding')
     const matches = row => {
       const text = [row.name, row.id, sourceText(row)].filter(Boolean).join(' ').toLocaleLowerCase()
       return text.includes(query.trim().toLocaleLowerCase())
     }
-    const listed = capabilities.filter(row => (family === 'all' || familyOf(row) === family)
-      && (source === 'all' || sourceKeyOf(row) === source) && matches(row))
-    const bindings = rows.filter(row => row.kind === 'binding')
+    const listed = sortCapabilityEntries(capabilities.filter(row => (family === 'all' || familyOf(row) === family)
+      && (source === 'all' || sourceKeyOf(row) === source) && matches(row)), sort, sortValue)
+    const bindings = sortCapabilityEntries(rows.filter(row => row.kind === 'binding'), sort, sortValue)
     const sources = new Map()
     for (const row of capabilities) {
       if (family !== 'all' && familyOf(row) !== family) continue

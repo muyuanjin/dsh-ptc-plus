@@ -1,3 +1,4 @@
+import { attachPtcExecutor } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Context } from '@deepseek-ai/cordis'
@@ -39,6 +40,10 @@ async function swapFixture(t) {
         language = 'typescript'
         isolation = 'process'
         get programFormat() { return 'repl' }
+        // The published declaration is what ownership is decided on: a provider that keeps a
+        // program environment per state owner says so, and the REPL source form alone no
+        // longer implies it.
+        get retainsState() { return true }
         get executionInstructions() { return 'official REPL guidance' }
         get sandboxMode() { return 'workspace-write' }
         get timeout() { return { defaultMs: 1000, maxMs: 2000 } }
@@ -68,7 +73,7 @@ async function swapFixture(t) {
   await root.loader.await()
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   return { root, state }
 }
 
@@ -79,8 +84,8 @@ test('a volatile settings commit swaps execution ownership in both directions', 
   await root.loader.await()
   assert.equal(root.get('ptcRuntime').executionInstructions, 'official REPL guidance')
   assert.equal(root.get('ptcRuntime').sandboxMode, 'workspace-write')
-  // The retentive form is what the decision reads on a provider that publishes
-  // no declaration of its own.
+  // The decision reads the provider's own retention declaration, so the deferred
+  // attachment leaves that same declaration in front of consumers.
   assert.equal(root.get('ptcRuntime').retainsState, true)
 
   // Deferred -> owned: the deferred runtime cannot produce these descriptors.

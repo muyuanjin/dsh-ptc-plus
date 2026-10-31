@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { projectProgramSdk } from '../internal/sdk-projection.js'
-import { renderToolsSdk } from '@deepseek-ai/dsh-tools'
+import { renderToolsSdk } from '../internal/host-tool-sdk.js'
 
 const EDIT_SCHEMA = {
   name: 'edit_run_code',

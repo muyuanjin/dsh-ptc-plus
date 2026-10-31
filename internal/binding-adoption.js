@@ -1,5 +1,5 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.js'
+import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND, RETIRED_SURFACE_RECORD } from './message-sources.js'
 
 /**
  * Session binding adoption: which Global User Binding catalog entries this
@@ -23,12 +23,27 @@ import { isPtcMessageSource, PTC_MESSAGE_SOURCE_KIND } from './message-sources.j
  * `automatic`, which means "the host derives this value". A binding has no host
  * derivation to defer to, so borrowing that word would misdescribe both.
  *
- * The decision is recorded as one PTC message in the session log, so it is
+ * The decision is recorded as a plugin record in the session log, so it is
  * reconstructed by replaying that log after a restart instead of being kept in
- * process memory.
+ * process memory. The message form is the historical carrier that 0.5.4 and
+ * earlier wrote; it is still read (those sessions keep their decision, and a
+ * repaired statement answers through it), and no writer produces it.
  */
 export const BINDING_ADOPTION_FORM = 'binding-adoption'
 export const BINDING_ADOPTION_SCHEMA = 'ptc-binding-adoption/v1'
+
+/**
+ * The log record this session's adoption is written as.
+ *
+ * Adoption is a decision about this session's own environment: the catalog the
+ * model reads already reflects it, so the decision needs no message of its own.
+ * Writing it as a record makes it durable and immediate — it is taken the moment
+ * the control is used, before any step, without entering the model-visible surface
+ * (a surface node ahead of the host's protected head would make the log
+ * unreadable to every reader). A host that publishes no plugin-record writer
+ * refuses the write instead of falling back to that surface node.
+ */
+export const BINDING_ADOPTION_RECORD = 'plugin:ptc-plus/binding-adoption'
 
 const MAX_DECLINED = 64
 const ENTRY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -65,6 +80,7 @@ export function bindingAdoptionText(adoption) {
   return `${PREFIX}\n${JSON.stringify(normalizeBindingAdoption(adoption).declined)}`
 }
 
+/** The historical message this adoption was written as before the record carrier. */
 export function bindingAdoptionMessage(adoption) {
   const text = bindingAdoptionText(adoption)
   const message = createUserMessage({
@@ -119,23 +135,61 @@ export function classifyBindingAdoption(records) {
   return Object.freeze({ state: 'none' })
 }
 
+/** Read one committed plugin record back as this session's adoption, or nothing. */
+export function readBindingAdoptionRecord(event) {
+  if (event?.type !== BINDING_ADOPTION_RECORD || event.ignorable !== true) return undefined
+  try {
+    return normalizeBindingAdoption(event.data)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Whether one event states this session's adoption at all.
+ *
+ * The record type states it, and so does the historical message form. A repaired statement
+ * (`RETIRED_SURFACE_RECORD`) states it only when the payload it kept is this owner's own form:
+ * the repair retires every surface node ahead of the protected head, whichever owner wrote it,
+ * so the carrier alone says nothing about who the statement belongs to.
+ */
+function statesBindingAdoption(event) {
+  if (event?.type === BINDING_ADOPTION_RECORD) return true
+  const source = event?.data?.source
+  return isPtcMessageSource(source) && source.form === BINDING_ADOPTION_FORM
+}
+
+/**
+ * Read one adoption out of either carrier, so a reader never has to know which release wrote it —
+ * and a repaired statement answers for the owner whose form it carries.
+ */
+export function readBindingAdoptionStatement(event) {
+  if (event?.type === BINDING_ADOPTION_RECORD) return readBindingAdoptionRecord(event)
+  if (event?.type === RETIRED_SURFACE_RECORD) {
+    return event.ignorable === true && statesBindingAdoption(event) ? readBindingAdoption(event.data) : undefined
+  }
+  return event?.type === 'user/message' ? readBindingAdoption(event.data) : undefined
+}
+
 /**
  * This session's newest adoption statement, read from its own log events.
  *
- * The log is the owner of the decision, so every adoption statement it carries is
- * classified, including one this build cannot read. Extracting the statements and
- * classifying them here keeps every reader on the same cut: a reader that filtered
- * to the readable statements first would hand a superseded record the answer, and
- * the panel and the `/binding` command would then disagree about which record
- * governs this session.
+ * The log is the owner of the decision, so every adoption statement it carries — a record, the
+ * message form an older release wrote, or a repaired statement of the same form — is classified,
+ * including one this build cannot read. Extracting the statements and classifying them here keeps
+ * every reader on the same cut: a reader that filtered to the readable statements first would hand
+ * a superseded record the answer, and the panel and the `/binding` command would then disagree
+ * about which record governs this session.
  */
 export function bindingAdoptionOf(events) {
   const records = []
   for (const event of Array.isArray(events) ? events : []) {
-    if (event?.type !== 'user/message') continue
-    const source = event.data?.source
-    if (!isPtcMessageSource(source) || source.form !== BINDING_ADOPTION_FORM) continue
-    records.push({ form: BINDING_ADOPTION_FORM, declined: readBindingAdoption(event.data)?.declined })
+    if (event?.type !== 'user/message' && event?.type !== BINDING_ADOPTION_RECORD
+      && event?.type !== RETIRED_SURFACE_RECORD) continue
+    // A repair retires every owner's surface node, so only a statement that kept this owner's
+    // form joins the ordering; another owner's retired node is not an adoption at all.
+    if (!statesBindingAdoption(event)) continue
+    records.push({ form: BINDING_ADOPTION_FORM, declined: readBindingAdoptionStatement(event)?.declined })
   }
   return classifyBindingAdoption(records)
 }

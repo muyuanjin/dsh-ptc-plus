@@ -176,6 +176,19 @@ beforeAll(() => {
   Range.prototype.getClientRects = () => []
   Range.prototype.getBoundingClientRect = () => new DOMRect()
   Element.prototype.scrollIntoView = () => {}
+  // JSDOM has no media features either. The answer states a desktop browser
+  // without a reduced-motion preference: pointer hover opens overlays, and
+  // motion-sensitive paths behave as they do for most users.
+  window.matchMedia = (query) => ({
+    matches: query !== '(prefers-reduced-motion: reduce)',
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  })
   globalThis.ResizeObserver = class {
     constructor(callback) { this.callback = callback }
     observe(target) {
@@ -2240,10 +2253,13 @@ test('the session capability panel states the seven contract columns and the rec
   const table = panel.querySelector('.ptcPlusSessionCapabilityTable')
   // §4's page: every address states both dimensions, and the session entrance adds the
   // record the decision leaves. The address is part of the header, so no cell has to
-  // borrow its neighbour's to be read.
+  // borrow its neighbour's to be read. A header that can order the table states that it
+  // can, and the mark states the ordering it would apply next.
   expect([...table.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure',
-      'This session · on', 'This session · disclosure', 'Receipt'])
+    .toEqual(['Object↕', 'Type↕', 'Source↕', 'Saved · on↕', 'Saved · disclosure↕',
+      'This session · on↕', 'This session · disclosure↕', 'Receipt'])
+  expect([...table.querySelectorAll('[role="columnheader"]')].map(cell => cell.getAttribute('aria-sort')))
+    .toEqual(['none', 'none', 'none', 'none', 'none', 'none', 'none', null])
   const row = id => table.querySelector(`[data-capability-id="${id}"]`)
   expect([...row('tools.probe').children]).toHaveLength(8)
   expect(row('tools.probe').querySelector('.ptcPlusCapabilitySource').textContent).toBe('DSH tools')
@@ -2280,6 +2296,33 @@ test('the session capability panel states the seven contract columns and the rec
   expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityAvailability').textContent).toContain('Inherit')
   expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityReceipt').textContent)
     .toBe("This session's record · Not written")
+  // The session column's state is a visual fact before it is a word: the row states it, the
+  // availability cell states it, and a mark draws it. A row this session enabled, one it
+  // closed and one it left inherited are therefore three different pictures, not one word.
+  const stateOf = id => row(id).getAttribute('data-session-state')
+  expect([stateOf('tools.probe'), stateOf('skills.review'), stateOf('mcpServers.docs')])
+    .toEqual(['enabled', 'inherit', 'closed'])
+  for (const id of ['tools.probe', 'skills.review', 'mcpServers.docs']) {
+    const cell = row(id).querySelector('.ptcPlusSessionCapabilityAvailability')
+    const mark = cell.querySelector('.ptcPlusSessionStateMark')
+    expect(cell.getAttribute('data-state')).toBe(stateOf(id))
+    expect(mark.getAttribute('data-state')).toBe(stateOf(id))
+    expect(mark.getAttribute('aria-hidden')).toBe('true')
+  }
+  // The disclosure column separates a decision it recorded from the layers it inherits.
+  expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilityDisclosure').getAttribute('data-state'))
+    .toBe('full')
+  expect(row('skills.review').querySelector('.ptcPlusSessionCapabilityDisclosure').getAttribute('data-state'))
+    .toBe('inherit')
+  expect(row('mcpServers.docs').querySelector('.ptcPlusSessionCapabilityDisclosure').getAttribute('data-state'))
+    .toBe('per-member')
+  // Each state owns declared styling for the stripe, the mark and the word, so the difference
+  // survives the theme: a colour alone in one rule would leave two states looking alike.
+  for (const state of ['enabled', 'closed', 'automatic', 'inherit', 'skip']) {
+    expect(CLIENT_CSS).toContain(`[data-session-state=${state}]`)
+    expect(CLIENT_CSS).toContain(`[data-state=${state}]`)
+  }
+  expect(CLIENT_CSS).toContain('.ptcPlusSessionStateMark{')
   // Nothing on the panel is disabled: every row states a decision it can record.
   expect(panel.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
 })
@@ -2350,6 +2393,16 @@ test('binding rows record their adoption through the `/binding` command, includi
   // session cannot parse that still leaves the control usable.
   expect(toggle('gamma').textContent).toBe('Record damaged')
   expect(toggle('gamma').disabled).toBe(false)
+  // Adoption is a session state too, so each binding row states it the way a capability row
+  // does: the row, its cell and its mark name the same answer.
+  const bindingRowOf = id => group.querySelector(`[data-binding-id="${id}"]`)
+  expect(['alpha', 'beta', 'gamma'].map(id => bindingRowOf(id).getAttribute('data-session-state')))
+    .toEqual(['use', 'skip', 'damaged'])
+  for (const id of ['alpha', 'beta', 'gamma']) {
+    const cell = bindingRowOf(id).querySelector('.ptcPlusSessionCapabilityAvailability')
+    expect(cell.getAttribute('data-state')).toBe(bindingRowOf(id).getAttribute('data-session-state'))
+    expect(cell.querySelector('.ptcPlusSessionStateMark').getAttribute('data-state')).toBe(cell.getAttribute('data-state'))
+  }
   expect(group.querySelector('[data-binding-id="alpha"] .ptcPlusSessionCapabilityReceipt').textContent)
     .toBe('Binding adoption record · Not written')
   expect(group.querySelector('[data-binding-id="beta"] .ptcPlusSessionCapabilityReceipt').textContent)
@@ -2370,8 +2423,8 @@ test('the binding group is always rendered, with the same columns and possibly n
   expect(within(group).getByRole('heading', { name: 'Global User Bindings' })).not.toBeNull()
   expect(group.querySelectorAll('[data-binding-id]')).toHaveLength(0)
   expect([...group.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-    .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure',
-      'This session · on', 'This session · disclosure', 'Receipt'])
+    .toEqual(['Object↕', 'Type↕', 'Source↕', 'Saved · on↕', 'Saved · disclosure↕',
+      'This session · on↕', 'This session · disclosure↕', 'Receipt'])
   // An empty group is an empty table, not a sentence explaining its absence.
   expect(group.querySelector('.ptcPlusSessionCapabilityMessage')).toBeNull()
 })
@@ -3247,7 +3300,20 @@ test('the authoring entry opens the complete settings dialog from every host sea
     expect(surface.querySelector('.ptcPlusSessionCapabilityAddresses').textContent)
       .toBe(SETTINGS_COPY.en['capabilities.surface.addresses.settings'])
     expect([...surface.querySelector('.ptcPlusSessionCapabilityColumns').children].map(cell => cell.textContent))
-      .toEqual(['Object', 'Type', 'Source', 'Saved · on', 'Saved · disclosure'])
+      .toEqual(['Object↕', 'Type↕', 'Source↕', 'Saved · on↕', 'Saved · disclosure↕'])
+    // One renderer, so the control works here too: the settings entrance orders the same
+    // rows through the same page, and a dead control here would mean a second page.
+    const orderNow = () => [...surface.querySelectorAll('[data-capability-id]')].map(row => row.dataset.capabilityId)
+    const unsorted = orderNow()
+    const objectHeader = surface.querySelector('.ptcPlusSessionCapabilityColumns [role=columnheader]')
+    await act(async () => { fireEvent.click(objectHeader.querySelector('button')) })
+    expect(objectHeader.getAttribute('aria-sort')).toBe('ascending')
+    expect([...orderNow()].sort()).toEqual([...unsorted].sort())
+    await act(async () => { fireEvent.click(objectHeader.querySelector('button')) })
+    expect(objectHeader.getAttribute('aria-sort')).toBe('descending')
+    await act(async () => { fireEvent.click(objectHeader.querySelector('button')) })
+    expect(objectHeader.getAttribute('aria-sort')).toBe('none')
+    expect(orderNow()).toEqual(unsorted)
     expect(dialog.querySelector('textarea')).toBeNull()
     expect(dialog.querySelector('.ptcPlusHeader')).toBeNull()
     expect(dialog.querySelector('.ptcPlusSettingsDialog')).not.toBeNull()
@@ -7772,7 +7838,7 @@ test.each(['zh', 'en'])('statistics parameters stay visible beside read-only obs
   } finally { view.unmount() }
 })
 
-test('session capability rows keep the supplied order, expose no sort control and narrow by search', async () => {
+test('session capability rows keep the supplied order until a header orders them, and narrow by search', async () => {
   const rows = [
     capabilityRow('tools.zulu', { name: 'Zulu' }),
     capabilityRow('tools.bravo', { name: 'Bravo' }),
@@ -7784,14 +7850,40 @@ test('session capability rows keep the supplied order, expose no sort control an
   const order = () => [...table.querySelectorAll('[data-capability-id]')].map(row => row.dataset.capabilityId)
   // The row set is the supply's order; the panel invents neither rows nor a ranking.
   expect(order()).toEqual(['tools.zulu', 'tools.bravo', 'skills.alpha', 'mcpServers.docs'])
-  // Every header states its column and offers no sorting control.
-  const headers = [...table.querySelector('.ptcPlusSessionCapabilityColumns').children]
-  expect(headers.map(header => header.textContent)).toEqual(['Object', 'Type', 'Source', 'Saved · on',
-    'Saved · disclosure', 'This session · on', 'This session · disclosure', 'Receipt'])
-  for (const header of headers) {
-    expect(header.querySelector('button')).toBeNull()
-    expect(header.getAttribute('aria-sort')).toBeNull()
+  const headers = () => [...table.querySelector('.ptcPlusSessionCapabilityColumns').children]
+  expect(headers().map(header => header.textContent)).toEqual(['Object↕', 'Type↕', 'Source↕', 'Saved · on↕',
+    'Saved · disclosure↕', 'This session · on↕', 'This session · disclosure↕', 'Receipt'])
+  // Every column that can order the table says so, and the receipt column — one sentence
+  // per row — is the one column that does not.
+  for (const header of headers().slice(0, -1)) {
+    expect(header.querySelector('button')).not.toBeNull()
+    expect(header.getAttribute('aria-sort')).toBe('none')
+    // The control names the column it orders, and the mark is decoration: a reader's
+    // screen reader must not announce the arrow as part of the header.
+    expect(header.querySelector('button').getAttribute('aria-label')).toBe(`Sort by ${header.querySelector('button').textContent.slice(0, -1)}`)
+    expect(header.querySelector('.ptcPlusCapabilitySortMark').getAttribute('aria-hidden')).toBe('true')
   }
+  expect(headers().at(-1).querySelector('button')).toBeNull()
+  expect(headers().at(-1).getAttribute('aria-sort')).toBeNull()
+  const arrange = async column => {
+    const button = headers()[column].querySelector('button')
+    await act(async () => { fireEvent.click(button) })
+  }
+  // One click orders ascending, the second reverses it, and the third returns the order
+  // the read stated instead of leaving the reader to reconstruct it.
+  await arrange(0)
+  expect(headers()[0].getAttribute('aria-sort')).toBe('ascending')
+  expect(order()).toEqual(['skills.alpha', 'tools.bravo', 'mcpServers.docs', 'tools.zulu'])
+  await arrange(0)
+  expect(headers()[0].getAttribute('aria-sort')).toBe('descending')
+  expect(order()).toEqual(['tools.zulu', 'mcpServers.docs', 'tools.bravo', 'skills.alpha'])
+  await arrange(0)
+  expect(headers()[0].getAttribute('aria-sort')).toBe('none')
+  expect(order()).toEqual(['tools.zulu', 'tools.bravo', 'skills.alpha', 'mcpServers.docs'])
+  // A column orders by the word it shows: the type column sorts by the badge the reader
+  // compares, not by the prefix of the id that produced it.
+  await arrange(1)
+  expect(order()).toEqual(['mcpServers.docs', 'skills.alpha', 'tools.zulu', 'tools.bravo'])
   fireEvent.change(view.getByRole('searchbox', { name: SETTINGS_COPY.en['capabilities.search'] }),
     { target: { value: 'Zulu' } })
   await act(async () => {})
@@ -7799,9 +7891,27 @@ test('session capability rows keep the supplied order, expose no sort control an
   fireEvent.change(view.getByRole('searchbox', { name: SETTINGS_COPY.en['capabilities.search'] }),
     { target: { value: '' } })
   await act(async () => {})
-  expect(order()).toEqual(['tools.zulu', 'tools.bravo', 'skills.alpha', 'mcpServers.docs'])
+  expect(order()).toEqual(['mcpServers.docs', 'skills.alpha', 'tools.zulu', 'tools.bravo'])
   // Reading, filtering and arranging are not writes.
   expect(commands.run).not.toHaveBeenCalled()
+})
+
+test('the disclosure column orders a server row by the word that column shows', async () => {
+  // A server has no disclosure of its own: its cell states that its members decide it. That
+  // word is what the reader compares, so it is the word the column orders by — a key read
+  // from the record would place the row among the `Inherit` rows it does not share.
+  const rows = [
+    capabilityRow('mcpServers.docs', { kind: 'server', category: 'server', name: 'Docs', source: { kind: 'mcp', server: 'docs' } }),
+    capabilityRow('tools.zulu', { name: 'Zulu' }),
+  ]
+  const { view } = await sessionControlsFixture({ read: async () => sessionCatalog(rows) })
+  const table = view.baseElement.querySelector('.ptcPlusSessionCapabilityTable')
+  const order = () => [...table.querySelectorAll('[data-capability-id]')].map(row => row.dataset.capabilityId)
+  const server = table.querySelector('[data-capability-id="mcpServers.docs"] .ptcPlusSessionCapabilityDisclosure')
+  expect(server.textContent).toBe('Per member')
+  const disclosureHeader = [...table.querySelector('.ptcPlusSessionCapabilityColumns').children][6]
+  await act(async () => { fireEvent.click(disclosureHeader.querySelector('button')) })
+  expect(order()).toEqual(['tools.zulu', 'mcpServers.docs'])
 })
 
 test('prompt text panel accounts for every owner, keeps unwired channels honest and edits nothing read-only', async () => {

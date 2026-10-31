@@ -672,9 +672,9 @@ if (values.list) {
         const items = panel.locator('.ptcPlusSessionCapabilityRow')
         await items.first().waitFor()
         assert.equal(await items.count(), 84, 'one row per supplied capability and MCP source')
-        // Seven columns plus the receipt, one owner each. A header states its column and
-        // offers nothing else: the v1 table's sort controls are gone, so the supply
-        // order is the only order this table states.
+        // Seven columns plus the receipt, one owner each. A header that can order the
+        // table carries the control that does it and states the ordering it would apply
+        // next; the receipt column states a sentence, so it offers none.
         const table = panel.locator('.ptcPlusSessionCapabilityTable')
         assert.equal(await table.count(), 1)
         assert.equal(await table.locator('[data-capability-id]').count(), 84, 'every capability row lives in the one table')
@@ -682,17 +682,19 @@ if (values.list) {
           'capabilities.column.savedEnabled', 'capabilities.column.savedDisclosure',
           'capabilities.column.sessionEnabled', 'capabilities.column.sessionDisclosure',
           'capabilities.column.receipt']
-        assert.deepEqual(await table.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
+        assert.deepEqual(await table.locator('[role=columnheader]').allTextContents(),
+          [...columnKeys.slice(0, -1).map(key => `${labels[key]}↕`), labels[columnKeys.at(-1)]],
           'the table states its seven columns in the documented order')
-        assert.equal(await panel.locator('[aria-sort]').count(), 0, 'no header claims a sort state')
-        assert.equal(await panel.locator('[role=columnheader] button').count(), 0, 'no header carries a sort control')
+        assert.equal(await table.locator('[aria-sort=none]').count(), 7, 'every orderable header states that nothing is sorted')
+        assert.equal(await table.locator('[role=columnheader] button').count(), 7, 'every orderable header carries its sort control')
         // The Host supplies the binding document whether or not this session used any
         // of it, so the group is always present and a zero-row group is an empty table.
         const bindings = panel.locator('.ptcPlusBindingGroup')
         assert.equal(await bindings.count(), 1, 'the binding group renders for every session')
         assert.equal(await bindings.locator('h3').innerText(), labels['bindings.title'])
         assert.equal(await bindings.locator('.ptcPlusSessionCapabilityRow').count(), 0, 'this session used no binding')
-        assert.deepEqual(await bindings.locator('[role=columnheader]').allTextContents(), columnKeys.map(key => labels[key]),
+        assert.deepEqual(await bindings.locator('[role=columnheader]').allTextContents(),
+          [...columnKeys.slice(0, -1).map(key => `${labels[key]}↕`), labels[columnKeys.at(-1)]],
           'the binding group answers the same questions in the same places')
         // The row set is the supply's order; the panel invents neither rows nor a ranking.
         const order = () => items.evaluateAll(rows => rows.map(row => row.dataset.capabilityId))
@@ -1188,8 +1190,8 @@ if (values.list) {
           labels['capabilities.surface.addresses.settings'], `${label}: the page states its address set`)
         assert.deepEqual(await surface.locator('.ptcPlusSessionCapabilityColumns [role=columnheader]').allTextContents(),
           ['capabilities.column.object', 'capabilities.typesColumn', 'capabilities.sourceColumn',
-            'capabilities.column.savedEnabled', 'capabilities.column.savedDisclosure'].map(key => labels[key]),
-          `${label}: the settings entrance states five columns and no session address`)
+            'capabilities.column.savedEnabled', 'capabilities.column.savedDisclosure'].map(key => `${labels[key]}↕`),
+          `${label}: the settings entrance states five orderable columns and no session address`)
         assert.equal(await surface.locator('.ptcPlusSessionCapabilityAvailability').count(), 0,
           `${label}: the session availability column must not exist at this entrance`)
         assert.equal(await surface.locator('.ptcPlusSessionCapabilityDisclosure').count(), 0,
@@ -1207,7 +1209,7 @@ if (values.list) {
         // scope's rule on its own and takes no part in a batch (§8.1a).
         assert.equal(await surface.locator('.ptcPlusPick').count(), capabilityRows,
           `${label}: one pick per capability row and none on a server row`)
-        assert.equal(await surface.locator('[role=columnheader] button').count(), 0, `${label}: no header carries a sort control`)
+        assert.equal(await surface.locator('[role=columnheader] button').count(), 5, `${label}: every orderable header carries its sort control`)
         assert.equal(await workbench.locator('textarea').count(), 0)
         // A saved cell writes the object's own rule through the settings writer and no
         // other capability key.

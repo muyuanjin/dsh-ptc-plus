@@ -18,6 +18,7 @@ import { auditRuntimeContexts, isRuntimeContextSource } from '../scripts/accepta
 import { createRuntimeMessageOwner, handBackRuntimeSessions, projectRuntimeMessages, sessionRuntimeContexts } from '../internal/runtime-contexts.js'
 import { latestRecoveryTip } from '../internal/recovery-tips.js'
 import { createUserBindingsSnapshot, userBindingsConfiguredContext } from '../internal/user-bindings.js'
+import { attachNativeExecutor } from './tool-executor-fixture.js'
 import { createSessionLogOwner, createSessionLogProjection, projectSessionLog, runtimeMessageFacts, systemPromptSnapshotSections } from '../internal/session-log-view.js'
 import {
   PTC_BINDING_CATALOG, PTC_DELIVERY_CONTEXT, PTC_STATE_NAMES, readRuntimeMessage, recoveryTipIdentity,
@@ -1195,14 +1196,18 @@ async function hostFixture(t, includeRuntimeContext = true) {
   const ctx = new Context()
   const fibers = []
   t.after(async () => { for (const fiber of fibers.reverse()) await fiber.dispose() })
+  // Prerequisite order is the Host's own: the projection owner a registry registers into
+  // exists before that registry, the registry exists before the loop reads a turn boundary,
+  // and a tool executor answers the registry's model-facing tool projection.
   for (const [plugin, config] of [
-    [SystemPrompt, { includeRuntimeContext }], [SessionStore], [AgentRegistry],
-    [LlmRuntime], [SessionProjectionRegistry], [ToolRuntime], [AgentLoop],
+    [SystemPrompt, { includeRuntimeContext }], [SessionStore], [SessionProjectionRegistry],
+    [LlmRuntime], [ToolRuntime], [AgentRegistry], [AgentLoop],
   ]) {
     const fiber = ctx.plugin(plugin, config)
     fibers.push(fiber)
     await fiber.await()
   }
+  attachNativeExecutor(ctx)
   const calls = []
   class Adapter extends LlmAdapter {
     async *stream(options) {

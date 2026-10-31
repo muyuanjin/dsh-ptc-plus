@@ -28,7 +28,10 @@ export const LANES = Object.freeze({
     hostAnchors: Object.freeze(['tools:sdk', 'tools:sdk#capability-appendix']),
     hashes: Object.freeze({
       'tools:ptc-plus-repl': 'f7e2f3a8e066188dc83dc9e7d3171f8e66ff3609f6be079955f4b2c1a7a6f8ca',
-      'tools:sdk': '6f99cf22232d754ef6bfdf7feea81936f5be572ddf99c9aee6a4470471fa16fc',
+      // The host renders this section, and the tool executor that owns the renderer states
+      // the program SDK in its own words. The plugin's appended segment is hashed separately
+      // below and did not change, so the delivered difference belongs to the host's text.
+      'tools:sdk': 'ce2023b637c389bf7447a71751d166f46af240e8c58bd936dbea1ad189730374',
       'tools:sdk#capability-appendix': '1b2937bb8ceccccf66d476c815c3d191402782db67212d21ebda0a4a3a2b9201',
       run_code: '8910d1ca110c66719c28729a09d09c9b3cdf402c2583339e49bcc6f1dc1de810',
     }),

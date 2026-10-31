@@ -1,3 +1,4 @@
+import { attachPtcExecutor } from './tool-executor-fixture.js'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -150,7 +151,7 @@ test('actual main plugin disable/re-enable leaves delegation and frozen source i
   const { root, state } = await loaderFixture(t)
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const config = { enabled: false, userBindingsEnabled: false, cordisToolsEnabled: false }
   const main = root.plugin({ apply: applyMain }, config)
   await main.await()
@@ -217,7 +218,7 @@ test('a stateless original never receives execution, however often the setting i
   })
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const config = { enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false }
   const main = root.plugin({ apply: applyMain }, config)
   await main.await()
@@ -242,7 +243,7 @@ test('a live host reconfiguration keeps execution when only the installed compos
   })
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const main = root.plugin({ apply: applyMain }, {
     enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false,
   })
@@ -265,7 +266,7 @@ test('official REPL priority yields execution to the original provider and takes
   })
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const config = { enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false }
   const main = root.plugin({ apply: applyMain }, config)
   await main.await()
@@ -292,7 +293,7 @@ test('official REPL priority keeps plugin execution without an official REPL pro
   const { root } = await loaderFixture(t, {})
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const main = root.plugin({ apply: applyMain }, {
     enabled: true, officialReplPriority: true, userBindingsEnabled: false, cordisToolsEnabled: false,
   })
@@ -306,7 +307,7 @@ test('activation validates the current original language after reload in both di
     const { root, originalEntry } = await loaderFixture(t, { originalConfig: { language: initialLanguage } })
     root.provide('agents', { list: () => [] })
     new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-    new ToolRuntime(root, { mode: 'ptc' })
+    new ToolRuntime(root); attachPtcExecutor(root)
     const config = { enabled: false, userBindingsEnabled: false, cordisToolsEnabled: false }
     let main = root.plugin({ apply: applyMain }, config)
     await main.await()
@@ -340,7 +341,7 @@ test('enabled main follows original language changes without executing a differe
   const { root, originalEntry } = await loaderFixture(t)
   root.provide('agents', { list: () => [] })
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root); attachPtcExecutor(root)
   const main = root.plugin({ apply: applyMain }, { enabled: true, userBindingsEnabled: false, cordisToolsEnabled: false })
   await main.await()
   const provider = root.get('ptcRuntime')

@@ -10,6 +10,7 @@ import { resolveConfig } from '../internal/runtime-config.js'
 import { CAPABILITY_POLICY_DEFAULT } from '../internal/capability-policy.js'
 import { CONFIG_FIELDS } from '../internal/config-spec.js'
 import { createFixtureExecutionProvider } from './host-fixture.js'
+import { attachPtcExecutor } from './tool-executor-fixture.js'
 import {
   configFieldSchema,
   hostOwnsSettingsDocument,
@@ -215,7 +216,10 @@ test('failed activation compensates the custom Loader entry through real Setting
     run: async () => ({ logs: [], value: 42 }) }))
   await root.plugin(SystemPrompt, { includeHarnessIdentity: false, includeRuntimeContext: false,
     persona: '', toolOrder: undefined }).await()
-  await root.plugin(ToolRuntime, { mode: 'ptc' }).await()
+  // A PTC-mode Host mounts the executor that reserves the transport; the registry no longer
+  // configures a presentation mode of its own.
+  await root.plugin(ToolRuntime).await()
+  attachPtcExecutor(root)
   const defaults = (await Config['~standard'].validate({})).value
   const writes = []
   let compensated

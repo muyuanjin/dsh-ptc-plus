@@ -212,6 +212,17 @@ const CLIENT_CSS = `
 .ptcPlusSessionCapabilitySaved,.ptcPlusSessionCapabilitySavedDisclosure{min-width:0;overflow:hidden}.ptcPlusSessionCapabilitySavedDisclosure .ptcPlusSelectTrigger,.ptcPlusSessionCapabilitySaved .ptcPlusSelectTrigger{width:100%;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ptcPlusSessionCapabilityReceipt{font-size:11px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}
 .ptcPlusSessionCapabilityAddresses{margin:2px 0 0;color:var(--dsw-alias-label-secondary);font-size:12px;overflow-wrap:anywhere}
+.ptcPlusSessionCapabilityRow[data-session-state=enabled]{border-left-color:var(--dsw-alias-state-success-primary,#12a150)}.ptcPlusSessionCapabilityRow[data-session-state=use]{border-left-color:var(--dsw-alias-state-success-primary,#12a150)}.ptcPlusSessionCapabilityRow[data-session-state=automatic]{border-left-color:var(--dsw-alias-state-business-primary,#4d6bfe)}.ptcPlusSessionCapabilityRow[data-session-state=closed]{border-left-color:var(--dsw-alias-state-error-primary,#e5484d)}.ptcPlusSessionCapabilityRow[data-session-state=damaged]{border-left-color:var(--dsw-alias-state-error-primary,#e5484d)}.ptcPlusSessionCapabilityRow[data-session-state=inherit]{border-left-color:var(--dsw-alias-border-l2)}.ptcPlusSessionCapabilityRow[data-session-state=skip]{border-left-color:var(--dsw-alias-border-l2)}
+.ptcPlusSessionCapabilityRow[data-session-state=closed] .ptcPlusSessionCapabilityName,.ptcPlusSessionCapabilityRow[data-session-state=closed] .ptcPlusCapabilitySource,.ptcPlusSessionCapabilityRow[data-session-state=skip] .ptcPlusSessionCapabilityName{opacity:.6}
+.ptcPlusSessionStateMark{flex:none;box-sizing:border-box;width:9px;height:9px;border-radius:50%;border:1.5px solid var(--dsw-alias-label-tertiary);background:transparent}
+.ptcPlusSessionCapabilityAvailability[data-state=enabled] .ptcPlusSessionStateMark,.ptcPlusSessionCapabilityAvailability[data-state=use] .ptcPlusSessionStateMark{border-color:var(--dsw-alias-state-success-primary,#12a150);background:var(--dsw-alias-state-success-primary,#12a150)}
+.ptcPlusSessionCapabilityAvailability[data-state=automatic] .ptcPlusSessionStateMark{border-color:var(--dsw-alias-state-business-primary,#4d6bfe);background:var(--dsw-alias-state-business-primary,#4d6bfe)}
+.ptcPlusSessionCapabilityAvailability[data-state=closed] .ptcPlusSessionStateMark,.ptcPlusSessionCapabilityAvailability[data-state=damaged] .ptcPlusSessionStateMark{border-color:var(--dsw-alias-state-error-primary,#e5484d);background:linear-gradient(135deg,transparent 42%,var(--dsw-alias-state-error-primary,#e5484d) 42% 58%,transparent 58%)}
+.ptcPlusSessionCapabilityAvailability[data-state=enabled] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=use] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=use] .ptcPlusBindingToggle{color:var(--dsw-alias-state-success-primary,#12a150);font-weight:600}
+.ptcPlusSessionCapabilityAvailability[data-state=automatic] .ptcPlusSelectTrigger{color:var(--dsw-alias-state-business-primary,#4d6bfe);font-weight:600}
+.ptcPlusSessionCapabilityAvailability[data-state=closed] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=closed] .ptcPlusBindingToggle,.ptcPlusSessionCapabilityAvailability[data-state=damaged] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=damaged] .ptcPlusBindingToggle{color:var(--dsw-alias-state-error-primary,#e5484d);font-weight:600}
+.ptcPlusSessionCapabilityAvailability[data-state=inherit] .ptcPlusSelectTrigger,.ptcPlusSessionCapabilityAvailability[data-state=inherit] .ptcPlusSessionStateMark,.ptcPlusSessionCapabilityAvailability[data-state=skip] .ptcPlusBindingToggle{color:var(--dsw-alias-label-secondary)}
+.ptcPlusSessionCapabilityDisclosure[data-state=inherit]{color:var(--dsw-alias-label-secondary)}.ptcPlusSessionCapabilityDisclosure[data-state=inherit] .ptcPlusSelectTrigger{color:var(--dsw-alias-label-secondary)}.ptcPlusSessionCapabilityDisclosure:not([data-state=inherit]):not([data-state=per-member]) .ptcPlusSelectTrigger{color:var(--dsw-alias-label-primary);font-weight:600}
 .ptcPlusCapabilitySurface-inline{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:hidden}
 .ptcPlusCapabilitySurface-inline .ptcPlusSessionCapabilityHead{padding-top:10px;padding-bottom:10px}
 .ptcPlusCapabilityRulesEntry{display:flex;justify-content:flex-end;padding:0 0 8px}
@@ -229,6 +240,11 @@ const CLIENT_CSS = `
 .ptcPlusCapabilityDialogFooter{display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:12px 18px;border-top:1px solid var(--dsw-alias-border-l2)}
 .ptcPlusCapabilityDialogActions{display:flex;flex-direction:column;gap:8px;margin-top:12px}.ptcPlusCapabilityDialogActions>.ptcPlusButton{justify-content:center;width:100%}
 .ptcPlusConfigurationMore.ptcPlusButton{padding:0 10px;font-size:16px;line-height:1}
+.ptcPlusCapabilitySort{appearance:none;display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:0;border:0;background:transparent;color:inherit;font:inherit;text-align:start;cursor:pointer}
+.ptcPlusCapabilitySort:hover{color:var(--dsw-alias-label-primary)}
+.ptcPlusCapabilitySort:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:-2px}
+.ptcPlusCapabilitySortMark{flex:none;font-size:10px;line-height:1;opacity:.55}
+[aria-sort=ascending] .ptcPlusCapabilitySortMark,[aria-sort=descending] .ptcPlusCapabilitySortMark{opacity:1;color:var(--dsw-alias-label-primary)}
 @media(max-width:420px){.ptcPlusCapabilityDialogFooter{flex-wrap:wrap}.ptcPlusCapabilityDialogFooter button{flex:1;min-width:0}}
 
 `

@@ -320,6 +320,46 @@ function sectionDependencies(sections) {
     .map(section => ({ id: section.name, text: section.text }))
 }
 
+/**
+ * One section with the servers no program of this step may name removed from its directory.
+ *
+ * The directory lists the servers a program may name as the `server` argument, so a server
+ * this session closed leaves the list, and so does every server when the step delivers no
+ * member that takes one (`nameable`): the names are the argument of the three resource
+ * operations and of nothing else. A directory this build cannot read is left exactly as the
+ * Host wrote it: an unreadable declaration is no evidence about a closure.
+ */
+function recordKeptServers(decisions, section, nameable = true) {
+  if (section.name !== 'mcp-resource-servers') return [section]
+  if (!nameable) return []
+  if (decisions.servers.size === 0) return [section]
+  let servers
+  try { servers = resourceServers([section]) } catch { return [section] }
+  const kept = servers.filter(server => !decisions.servers.has(server))
+  if (kept.length === servers.length) return [section]
+  return kept.length === 0 ? []
+    : [{ ...section, text: `Use the following MCP resource servers as the server argument: ${JSON.stringify(kept)}.` }]
+}
+
+/** The three Host resource operations a server row can name, in the Host's own order. */
+const RESOURCE_OPERATIONS = Object.freeze(['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'])
+
+/**
+ * The invocation sentence one resource server row states for the operations it still has.
+ *
+ * A saved policy states the operations it delivers. The legacy layer states the whole path in
+ * one sentence while every operation is available and states the remaining ones otherwise, so
+ * an unchanged legacy session reads the bytes it always read and a closure still withdraws the
+ * call it took away. A row may never instruct a call this session closed.
+ */
+function resourceOperationNotice(operations, policyLayer) {
+  if (!policyLayer && operations.length === RESOURCE_OPERATIONS.length) {
+    return 'Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.'
+  }
+  return operations.length ? 'Available operations: ' + operations.map(name => `tools.${name}(${name === 'read_mcp_resource' ? '{server,uri}' : '{server}'})`).join(', ') + '.'
+    : 'No resource operation is available in this session.'
+}
+
 function requiresCapabilityInventory(settings) {
   settings = effectiveCapabilitySettings(settings)
   return settings.enabled || settings.policy && (settings.statistics?.enabled === true || settings.recoveryEnabled)
@@ -393,6 +433,21 @@ function sdkMemberCall(name, callArguments) {
   return SDK_MEMBER_IDENTIFIER.test(name)
     ? `tools.${name}(${callArguments})`
     : `tools[${JSON.stringify(name)}](${callArguments})`
+}
+
+/**
+ * One managed `tools:sdk` render: the members this step declares plus the edit
+ * transport, produced by the Host's own renderer so the bytes are the Host's.
+ *
+ * The direct transport is never a member: it is how a program is called, not
+ * something the model calls against. The edit transport is callable inside every
+ * program and belongs to no disclosure decision, so it is declared whenever the
+ * Host declares it at all.
+ */
+function renderManagedSdk(candidates, members) {
+  const declared = members.filter(schema => !TRANSPORTS.has(schema.name))
+  const editTransport = candidates.find(schema => schema.name === EDIT_TRANSPORT)
+  return renderToolsSdk(editTransport === undefined ? declared : [...declared, editTransport])
 }
 
 function toolCapability(schema, sections) {
@@ -620,10 +675,16 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    * what a view answers, so the caller that observed them decides which view this
    * declaration describes; passing them keeps one declaration path for every view
    * instead of a second inventory that could disagree with this one.
+   *
+   * `admitted` is a narrower statement of the same view: the names a step delivers. It
+   * restricts this environment's own contract view instead of replacing it, because a
+   * contract states the owner's output schema and only the SDK projection carries it — a
+   * capability recorded from a model-facing definition would promise `unknown`.
    */
   async function inventory(agent, sections = [], settings, signal, presentation, frozenIds, skillObservation, access) {
     if (settings) settings = effectiveCapabilitySettings(settings)
-    const schemas = (access?.schemas ?? toolSchemasForAgent(agent)).filter(schema => !TRANSPORTS.has(schema.name))
+    const schemas = (access?.schemas ?? toolSchemasForAgent(agent)).filter(schema => !TRANSPORTS.has(schema.name)
+      && (access?.admitted === undefined || access.admitted.has(schema.name)))
     const capabilities = schemas.map(schema => toolCapability(schema, sections))
     const declaredServers = new Set([...resourceServers(sections),
       ...sections.filter(section => section.name?.startsWith('mcp:')).map(section => section.name.slice(4))])
@@ -640,9 +701,28 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           ? { kind: 'mcp', servers } : { kind: 'host' } })
     }
     if (skillObservation) skillObservation.complete = true
-    const hasOperation = name => (!frozenIds || frozenIds.has(`tools.${name}`)) && capabilities.some(item => item.id === `tools.${name}`
-      && (!settings?.enabled || !settings.policy || capabilityRule(settings.policy, item).availability !== 'closed'))
     const policyPaths = Boolean(settings?.policy)
+    /**
+     * Whether a decision closes this capability.
+     *
+     * A saved rule and a session record answer one question, so both layers are read here:
+     * the layer that states a closure does not change what it means. A plan composed before
+     * the policy generation keeps the legacy settings shape (overrides, no policy), and a
+     * closure recorded into it has to reach the capabilities whose only model path it is.
+     */
+    const closedByDecision = item => Boolean(settings?.enabled) && (settings.policy
+      ? capabilityRule(settings.policy, item).availability === 'closed'
+      : settings.manual.overrides[item.id] === 'closed')
+    /**
+     * Whether this composition delivers one shared operation — the definition exists in the
+     * inventory and no decision closes it. The legacy layer states no availability for a
+     * definition the Host does not declare at all, so that absence is not a closure there;
+     * a decision is a closure in both layers.
+     */
+    const hasOperation = name => (!frozenIds || frozenIds.has(`tools.${name}`))
+      && capabilities.some(item => item.id === `tools.${name}` && !closedByDecision(item))
+    const operationClosed = name => capabilities.some(item => item.id === `tools.${name}` && closedByDecision(item))
+    const operationPath = name => hasOperation(name) || (!policyPaths && !operationClosed(name))
     if (readSkills(ctx)?.snapshot !== undefined) {
       const observed = access?.skills ?? await observeSkills(agent, signal)
       if (skillObservation) {
@@ -653,29 +733,30 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // A partial catalog cannot prove a withdrawal or a new Skill. Preserve only
       // the last complete view; native dispatch still uses the live Host scope.
       if (!observed.complete) capabilities.push(...skillObservation.retained.map(item =>
-        retainedSkillCapability(item, !policyPaths || hasOperation('skill'))))
+        retainedSkillCapability(item, operationPath('skill'))))
       for (const skill of observed.complete ? observed.skills : []) {
-        capabilities.push(skillCapability(skill, !policyPaths || hasOperation('skill')))
+        capabilities.push(skillCapability(skill, operationPath('skill')))
         presentation?.set(`skills.${skill.name}`, { name: skill.name,
           source: { kind: 'skill', bucket: skill.source, provider: skill.provider },
           invocation: { modelInvocable: isModelInvocable(skill), userInvocable: isUserInvocable(skill) } })
       }
     }
     const servers = resourceServers(sections)
-    const resourceOperations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
-      .filter(name => !policyPaths || hasOperation(name))
+    const resourceOperations = RESOURCE_OPERATIONS.filter(name => operationPath(name))
+    const resourceNotice = resourceOperationNotice(resourceOperations, policyPaths)
     for (const server of servers) capabilities.push({ id: `mcp.${server}`, category: CAPABILITY_INVENTORY_CATEGORIES.resource, mcpServer: server,
       revision: digest({ server, instructions: sections.find(section => section.name === `mcp:${server}`)?.text ?? '' }),
-      dependencies: sectionDependencies(sections.filter(section => section.name === `mcp:${server}`)), ...(policyPaths && resourceOperations.length === 0 ? { effectiveAvailability: 'closed' } : {}),
-      contract: !policyPaths ? `MCP resource server ${JSON.stringify(server)}. Use tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); use the listed URI or expand a listed template.`
-        : `MCP resource server ${JSON.stringify(server)}. ${resourceOperations.length ? 'Available operations: ' + resourceOperations.map(name => `tools.${name}(${name === 'read_mcp_resource' ? '{server,uri}' : '{server}'})`).join(', ') + '.' : 'No resource operation is available in this session.'}`,
+      dependencies: sectionDependencies(sections.filter(section => section.name === `mcp:${server}`)),
+      ...(resourceOperations.length === 0 && (policyPaths || RESOURCE_OPERATIONS.some(operationClosed))
+        ? { effectiveAvailability: 'closed' } : {}),
+      contract: `MCP resource server ${JSON.stringify(server)}. ${resourceNotice}`,
       description: `MCP resource access registered by the Host for server ${server}. This records the registered resource layer and the session's resource operations, not a proved list of exposed resources or templates.`,
       selector: { server } })
     for (const server of servers) presentation?.set(`mcp.${server}`, { name: server, source: { kind: 'mcp', server } })
     return capabilities.filter(item => {
       if (item.category !== 'tool') return true
       const category = item.schema.name === 'skill' ? 'skill'
-        : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(item.schema.name) ? 'resource' : undefined
+        : RESOURCE_OPERATIONS.includes(item.schema.name) ? 'resource' : undefined
       return category === undefined || capabilities.some(member => member.category === category
         && (category !== 'skill' || member.invocation.modelInvocable)
         && (!settings?.enabled || (settings.policy ? capabilityRule(settings.policy, member).availability !== 'closed' : settings.manual.overrides[member.id] !== 'closed'))
@@ -683,6 +764,104 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     })
   }
 
+  /**
+   * What this session's log states about capability membership, as of this read.
+   *
+   * The composition is a reading of the record, not the record itself. A decision
+   * written after the last composition is already the session's newest statement, so a
+   * projection that asked only the frozen plan would keep declaring a capability the
+   * user closed until some later step happened to recompose — and in that window the
+   * SDK block, the program members and the explorable metadata answered the same
+   * question from two different inputs. Every projection therefore consults this
+   * reading, and the plan decides only what the record leaves open.
+   *
+   * The log is the record even for an agent no composition exists for yet, which is
+   * what lets a first assembly answer from the log instead of declaring everything.
+   */
+  const NO_DECISIONS = Object.freeze({ closed: new Set(), servers: new Set() })
+  const decisionsBySession = new WeakMap()
+  function recordDecisions(session) {
+    if (session === undefined || session === null) return NO_DECISIONS
+    const events = sessionEvents(session)
+    const cached = decisionsBySession.get(session)
+    // The log is append-only, so its length and its last event identify one reading.
+    if (cached !== undefined && cached.length === events.length
+      && cached.last === events[events.length - 1]) return cached.decisions
+    const closed = new Set()
+    const servers = new Set()
+    let statement
+    try {
+      statement = capabilitySelectionOf(events, String(session.id))
+    } catch {
+      // A torn record states no decision this build can read; the composition reports the
+      // damage on its own path, and a projection must not fail because of it.
+      statement = undefined
+    }
+    if (statement?.state === 'decided') {
+      for (const [id, choice] of Object.entries(statement.selection.choices)) {
+        if (capabilityRuleOfSelection(choice).availability !== 'closed') continue
+        if (id.startsWith('mcpServers.')) servers.add(id.slice('mcpServers.'.length))
+        else closed.add(id)
+      }
+    }
+    const decisions = Object.freeze({ closed, servers })
+    decisionsBySession.set(session, { length: events.length, last: events[events.length - 1], decisions })
+    return decisions
+  }
+  /**
+   * Whether the record closes this capability.
+   *
+   * A server decides its members, so a recorded `mcpServers.<server>` closure reaches
+   * them. The live capability's own server identity answers when it exists; otherwise the
+   * name is the only evidence, which is exactly how the Host names those members.
+   */
+  function recordCloses(decisions, id, capability = undefined) {
+    if (decisions.closed.has(id)) return true
+    if (decisions.servers.size === 0) return false
+    if (capability?.mcpServer !== undefined) return decisions.servers.has(capability.mcpServer)
+    if (id.startsWith('mcp.')) return decisions.servers.has(id.slice('mcp.'.length))
+    if (!id.startsWith('tools.')) return false
+    const name = id.slice('tools.'.length)
+    return [...decisions.servers].some(server => name.startsWith(`mcp__${server}__`))
+  }
+  /**
+   * Whether the record closes one member of the `tools` namespace.
+   *
+   * The two transports are the call channel rather than capabilities: `run_code` is how a
+   * program is called and `edit_run_code` is callable inside every program, so no record
+   * makes either unavailable.
+   */
+  function recordClosesMember(decisions, name) {
+    return !TRANSPORTS.has(name) && recordCloses(decisions, `tools.${name}`)
+  }
+  /**
+   * The record's closures, when capability management is what applies them.
+   *
+   * A paused context or a disabled management switch delegates the Host's capability surface:
+   * this environment composes nothing and filters nothing, so a choice the session recorded
+   * earlier stays a stored choice that applies again once management is on. Reading the record
+   * there would enforce a closure the switch suspended — and only half enforce it, because the
+   * same switch also lets the Host execute that member.
+   *
+   * A session the Host still holds keeps the composition it froze: switching management off does
+   * not rewrite an existing session, so its own snapshot states whether this environment still
+   * applies. An agent with no composition yet answers from the configuration it would compose
+   * under.
+   */
+  function decisionsOf(state, session = state?.session) {
+    const settings = effectiveCapabilitySettings(state?.snapshot.settings ?? capabilityConfiguration(currentConfig))
+    return settings.enabled === true ? recordDecisions(session) : NO_DECISIONS
+  }
+  /**
+   * The same answer for a caller that holds the agent.
+   *
+   * A projection may run before this agent has a composition — a restart, or a step assembled
+   * ahead of one — and the session log is still the record it reads, so the agent is what names
+   * the session here rather than the composition state.
+   */
+  function decisionsFor(agent) {
+    return decisionsOf(stateFor(agent), agent?.session)
+  }
   function stateFor(agent) { return sessions.get(String(agent?.session?.id ?? agent?.id)) }
   function planCommitted(agent, message) {
     return message !== undefined && (sessionEvents(agent.session).some(event =>
@@ -751,6 +930,9 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    * member's identity from the model-visible surface.
    */
   function declaredSelection(state, id) {
+    // A closure the record states is the session's own decision and is already durable;
+    // waiting for the next composition would declare a capability the user closed.
+    if (recordCloses(decisionsOf(state), id, liveCapability(state, id))) return 'closed'
     const planned = selection(state, id)
     if (planned !== undefined || !state?.snapshot.plan.enabled) return planned
     const live = state.liveCapabilities?.get(id)
@@ -761,17 +943,23 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     return overrides[id] === 'closed'
       || (live.mcpServer !== undefined && overrides[`mcpServers.${live.mcpServer}`] === 'closed') ? 'closed' : 'host'
   }
-  function supplied(state, id) {
+  function supplied(state, id, decisions = decisionsOf(state)) {
+    if (recordCloses(decisions, id, liveCapability(state, id))) return false
     if (state?.liveCapabilities && (!state.liveCapabilities.has(id) || state.liveCapabilities.get(id).effectiveAvailability === 'closed')) return false
     if (!state?.snapshot.plan.enabled) return Boolean(state?.liveCapabilities) || !state?.snapshot.settings.policy || selection(state, id) !== 'closed'
     if (!['full', 'on-demand', 'host'].includes(declaredSelection(state, id))) return false
     const capability = liveCapability(state, id)
-    return capability?.category !== 'resource'
-      || resourceServers(state.hostSections).includes(capability.selector.server)
+    if (capability?.category !== 'resource') return true
+    // A resource row is explorable through the operations its contract names, so it is
+    // supplied only while this session still delivers an operation to name — and the
+    // guidance and directory the row owns follow the same answer. A composition can state
+    // the row before a decision takes the last operation away.
+    return resourceServers(state.hostSections).includes(capability.selector.server)
+      && RESOURCE_OPERATIONS.some(name => supplied(state, `tools.${name}`, decisions))
   }
   function sharedMembers(state, name) {
     const category = name === 'skill' ? 'skill'
-      : ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource'].includes(name) ? 'resource' : undefined
+      : RESOURCE_OPERATIONS.includes(name) ? 'resource' : undefined
     return category === undefined ? undefined : [...declaredCapabilities(state).values()]
       .filter(item => item.category === category && supplied(state, item.id)
         && (category !== 'skill' || (state.liveCapabilities?.get(item.id) ?? item).invocation?.modelInvocable !== false))
@@ -779,6 +967,31 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
   }
   function memberSupplied(state, name) {
     return TRANSPORTS.has(name) || (supplied(state, `tools.${name}`) && sharedMembers(state, name)?.length !== 0)
+  }
+  /**
+   * The invocation paths a declared row can state for one step.
+   *
+   * A Skill row is explorable through the shared loader and a resource server row through the
+   * Host's three resource operations, so those four members are the only ones whose contract
+   * *is* a call. `supplied` states what this session still has and the composition states the
+   * paths it was built under; `admitted` is the third input — the definitions this step
+   * delivers — and a caller that observed none keeps the composition's answer, because a
+   * withheld definition is a statement about the step, not about the session.
+   *
+   * A delivered path is therefore the intersection: what the step delivers, what a plan froze
+   * and what the session still has, so a row never gains a path the composition did not state.
+   * Without a plan there is nothing frozen to intersect with — the record is the whole
+   * composition — and `supplied` alone answers it.
+   */
+  function sharedPaths(state, admitted, decisions = decisionsOf(state)) {
+    const shared = name => admitted === undefined || admitted.has(name)
+    const planned = state?.snapshot.plan.enabled === true
+    return {
+      loader: shared('skill') && supplied(state, 'tools.skill', decisions),
+      operations: RESOURCE_OPERATIONS.filter(name => shared(name)
+        && (!planned || selection(state, `tools.${name}`) !== undefined)
+        && supplied(state, `tools.${name}`, decisions)),
+    }
   }
   function statisticsSnapshot(state) {
     if (!state.liveCapabilities) return state.snapshot
@@ -936,8 +1149,14 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
    * session choice never silently adopts a saved configuration the session has not
    * refreshed to. `force` remains the explicit refresh: it recomposes from the
    * saved configuration as it stands now and publishes immediately.
+   *
+   * `delivered` is the step's admitted definition set when the caller observed one. It
+   * is the same set the Host renders its own declaration from, so composing from it
+   * keeps the plan, the declaration and the program members about one capability set;
+   * a composition that has none to offer keeps the admission it already observed,
+   * because a caller with no observation is not asking the Host to declare more.
    */
-  async function prepare(agent, sections, force = false, signal = agent?.signal) {
+  async function prepare(agent, sections, force = false, signal = agent?.signal, delivered = undefined) {
     signal?.throwIfAborted()
     if (agent?.session === undefined) {
       if (!effectiveCapabilitySettings(capabilityConfiguration(currentConfig)).enabled) return undefined
@@ -950,12 +1169,14 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
     const current = sessions.get(id)
     if (!force && current !== undefined) {
       if (sections !== undefined) current.hostSections = sections
+      if (delivered !== undefined) current.hostTools = delivered
       if (sameChoices(sessionOverrides, current.snapshot.sessionOverrides)) return qualifyCapabilities(agent, current, signal)
     }
     // A composition that is rebuilt for a record keeps the Host sections it already
     // observed: a caller that has none to offer is not asking the Host to declare
     // less than it did, only to act on what the session recorded.
     const hostSections = sections ?? current?.hostSections ?? []
+    const hostTools = delivered ?? current?.hostTools
     const pending = operations.get(agent)
     if (pending !== undefined && !force) return pending
     const task = (async () => {
@@ -975,11 +1196,11 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
               const plan = createCapabilityPlan({ ...settings, configurationRevision: digest(settings), capabilities: [], navigationText: NAVIGATION })
               snapshot = deepFreeze({ schema: settings.contextEnabled !== undefined ? 'ptc-capability-environment/v4' : settings.policy ? 'ptc-capability-environment/v3' : 'ptc-capability-environment/v1', ...(settings.policy || settings.contextEnabled !== undefined ? { sourceSettings: settings, sessionOverrides: {} } : {}), navigationText: NAVIGATION, settings, capabilities: [], plan })
               const notice = planMessage(snapshot, id, true)
-              const state = { snapshot, message: notice, hostSections, expanded: new Set(), used: new Map() }
+              const state = { snapshot, message: notice, hostSections, ...(hostTools === undefined ? {} : { hostTools }), expanded: new Set(), used: new Map() }
               return acceptState(agent, state, true, signal)
             }
             if (sameChoices(sessionOverrides, snapshot.sessionOverrides)) {
-              const restored = { snapshot, message: snapshot.settings.contextEnabled !== undefined || snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections, expanded: new Set(), used: new Map() }
+              const restored = { snapshot, message: snapshot.settings.contextEnabled !== undefined || snapshot.plan.enabled || snapshot.settings.policy && (snapshot.settings.statistics?.enabled || snapshot.settings.recoveryEnabled || snapshot.settings.previewEnabled) || recorded.source.refresh ? recorded : undefined, hostSections, ...(hostTools === undefined ? {} : { hostTools }), expanded: new Set(), used: new Map() }
               await qualifyCapabilities(agent, restored, signal)
               signal?.throwIfAborted()
               restoreEvidence(agent, restored)
@@ -1005,7 +1226,14 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
           savedConfiguration(sourceSettings), { allowInvalidStatistics: true }))
       }
       const settings = sessionCapabilitySettings(sourceSettings, sessionOverrides)
-      const capabilities = requiresCapabilityInventory(settings) ? await inventory(agent, hostSections, settings, signal) : []
+      // The admission restricts this composition to the definitions the step delivers, and it
+      // is applied to this environment's own contract view: the step publishes model-facing
+      // schemas, which carry no output schema, so reading them as the contracts would record
+      // a capability whose call promises `unknown`.
+      const capabilities = requiresCapabilityInventory(settings)
+        ? await inventory(agent, hostSections, settings, signal, undefined, undefined, undefined,
+          hostTools === undefined ? undefined : { admitted: new Set(hostTools.map(schema => schema.name)) })
+        : []
       const effective = effectiveCapabilitySettings(settings)
       const coverage = (effective.policy ? effective.enabled && effective.policy.allocation.statistics : effective.statistics?.enabled === true) ? await store?.coverage(agent, capabilities, settings.statistics) : undefined
       const planChannel = planChannelText(currentConfig)
@@ -1035,7 +1263,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       // Initialized sessions commit a refresh and its notification atomically.
       // First-step proposals are accepted through the Host's pre-step messages.
       const state = { snapshot, message: settings.contextEnabled === undefined && !effective.enabled && !force && !(effective.policy && (effective.statistics?.enabled || effective.recoveryEnabled || effective.previewEnabled)) ? undefined : message,
-        hostSections, expanded: new Set(), used: new Map(),
+        hostSections, ...(hostTools === undefined ? {} : { hostTools }), expanded: new Set(), used: new Map(),
         ...(requiresCapabilityInventory(settings) ? { liveCapabilities: new Map(capabilities.map(item => [item.id, item])) } : {}) }
       restoreEvidence(agent, state)
       return acceptState(agent, state, force, signal)
@@ -1046,8 +1274,10 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
 
   function visibleSchemas(agent, schemas) {
     const state = stateFor(agent)
-    if (!state?.snapshot.plan.enabled) return schemas
-    return schemas.filter(schema => memberSupplied(state, schema.name))
+    const decisions = decisionsFor(agent)
+    const declared = schemas.filter(schema => !recordClosesMember(decisions, schema.name))
+    if (!state?.snapshot.plan.enabled) return declared
+    return declared.filter(schema => memberSupplied(state, schema.name))
   }
 
   /**
@@ -1516,14 +1746,55 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
       const state = stateFor(agent)
       return state?.message !== undefined && !planCommitted(agent, state.message) ? state.message : undefined
     },
-    projectSections(agent, sections) {
+    /**
+     * The sections one assembly delivers.
+     *
+     * `delivered` is the step's admitted definitions, as in `sdk`: the declaration, the
+     * program members and the explorable metadata all state that set, so guidance that
+     * instructs a capability must state it too. A composition is not the admission — it
+     * is composed once and reused until the session decides something else — so a
+     * section whose definition the step withholds would otherwise stay after the
+     * capability it describes has left every other surface.
+     *
+     * The resource directory follows the same answer through the rows it names: its servers
+     * are the argument of the three resource operations, so a row that states no delivered
+     * operation is no row of this step and the directory lists no server for it.
+     */
+    projectSections(agent, sections, delivered = undefined) {
       const state = stateFor(agent)
-      if (!state?.snapshot.plan.enabled) return sections
+      const decisions = decisionsFor(agent)
+      const admitted = delivered === undefined ? undefined : new Set(delivered.map(schema => schema.name))
+      // The guidance attached to a capability the session closed goes with the capability,
+      // whether or not a composition states the rest of the environment. Dependency
+      // sections are named after what they belong to, so the record decides them directly.
+      // `tool:<name>` names a capability of this step, so the admission decides it as well;
+      // the two transports are the call channel rather than capabilities and stay exempt.
+      const declared = sections.filter(section => {
+        const name = section.name
+        if (typeof name !== 'string') return true
+        if (name.startsWith('tool:')) {
+          const member = name.slice('tool:'.length)
+          if (TRANSPORTS.has(member)) return true
+          if (admitted !== undefined && !admitted.has(member)) return false
+          return !recordClosesMember(decisions, member)
+        }
+        if (name.startsWith('mcp:') && name !== 'mcp-resource-servers') return !decisions.servers.has(name.slice('mcp:'.length))
+        return true
+      })
+      if (!state?.snapshot.plan.enabled) {
+        return declared.flatMap(section => recordKeptServers(decisions, section,
+          sharedPaths(state, admitted, decisions).operations.length !== 0))
+      }
+      const paths = sharedPaths(state, admitted, decisions)
       const inventory = [...declaredCapabilities(state).values()]
-      const retained = inventory.filter(item => declaredSelection(state, item.id) === 'host' && supplied(state, item.id))
+      // A resource row is explorable through the operations its contract names, so it is a
+      // row of this step only while one of them is delivered; a Skill row keeps its own
+      // answer because it may still state the user's path when the loader is withheld.
+      const retained = inventory.filter(item => declaredSelection(state, item.id) === 'host' && supplied(state, item.id)
+        && (item.category !== CAPABILITY_INVENTORY_CATEGORIES.resource || paths.operations.length > 0))
       const retainedSections = new Set(retained.flatMap(item => item.dependencies ?? []).map(item => item.id))
       const ownedSections = new Set(inventory.flatMap(item => item.dependencies ?? []).map(item => item.id))
-      return sections.flatMap(section => {
+      return declared.flatMap(section => {
         if (section.name === 'mcp-resource-servers') {
           const servers = retained.filter(item => item.category === 'resource').map(item => item.selector.server)
           return servers.length ? [{ ...section, text: `Use the following MCP resource servers as the server argument: ${JSON.stringify(servers)}.` }] : []
@@ -1534,32 +1805,88 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
         return [section]
       })
     },
-    sdk(agent, nativeSdk) {
+    /**
+     * The declarations one assembly delivers.
+     *
+     * `delivered` is the step's admitted definitions — what the Host rendered its own
+     * `tools:sdk` block from and what it builds the program's `tools` members from. A
+     * declaration computed from the registry view instead would name a member this step
+     * does not deliver, which the program then cannot call. Absent an observation, the
+     * registry view is the only evidence there is.
+     *
+     * The edit transport is read from the registry either way: it is this plugin's own
+     * installed tool and stays declared in every managed render, including the step on
+     * which it was installed — an admission resolved before that install cannot state it.
+     */
+    sdk(agent, nativeSdk, delivered = undefined) {
       const state = stateFor(agent)
-      if (!state?.snapshot.plan.enabled) return nativeSdk
+      const decisions = decisionsFor(agent)
       const candidates = toolSchemasForAgent(agent)
-      const schemas = candidates.filter(schema => !TRANSPORTS.has(schema.name))
-      const host = schemas.filter(schema => declaredSelection(state, `tools.${schema.name}`) === 'host'
+      // The admission is a restriction of this view of the registry, so one registry read
+      // answers both: which definitions exist, and which of them this step delivers.
+      const admitted = delivered === undefined ? undefined : new Set(delivered.map(schema => schema.name))
+      const reached = admitted === undefined ? candidates : candidates.filter(schema => admitted.has(schema.name))
+      const declared = reached.filter(schema => !recordClosesMember(decisions, schema.name))
+      const unchanged = declared.length === reached.length
+      if (!state?.snapshot.plan.enabled) {
+        // No composition to state the environment: the Host's own text is the delivered
+        // declaration, and the record's closures are the only thing it may not carry.
+        return unchanged ? nativeSdk : renderManagedSdk(candidates, declared)
+      }
+      const members = declared.filter(schema => !TRANSPORTS.has(schema.name))
+      const host = members.filter(schema => declaredSelection(state, `tools.${schema.name}`) === 'host'
         && memberSupplied(state, schema.name))
-      if (host.length === schemas.length) return nativeSdk
-      // The edit transport is callable inside every program and is not part of
-      // the managed disclosure, so its Host schema stays declared in every
-      // managed render. The direct transport is never an SDK member.
-      const editTransport = candidates.find(schema => schema.name === EDIT_TRANSPORT)
-      return renderToolsSdk(editTransport === undefined ? host : [...host, editTransport])
+      // The edit transport is callable inside every program and is not part of the
+      // managed disclosure, so its Host schema stays declared in every managed render.
+      // The direct transport is never an SDK member.
+      if (unchanged && host.length === members.length) return nativeSdk
+      return renderManagedSdk(candidates, host)
     },
     projectMembers(agent, members) {
       const state = stateFor(agent)
-      if (!state?.snapshot.plan.enabled) return members
-      return members.filter(name => memberSupplied(state, name))
+      const decisions = decisionsFor(agent)
+      const declared = members.filter(name => !recordClosesMember(decisions, name))
+      if (!state?.snapshot.plan.enabled) return declared
+      return declared.filter(name => memberSupplied(state, name))
     },
-    metadata(agent) {
+    /**
+     * The capabilities this session can explore.
+     *
+     * A row states an invocation path, and a composition states the one it was built under. A
+     * decision recorded afterwards is already the session's newest statement — `change` writes a
+     * record, never a plan — so a row whose path that decision took away may state only what
+     * remains: a shared loader's Skill row keeps the user path or leaves entirely, and a
+     * resource row states only the operations this session still delivers. Serving the frozen
+     * path would hand the model a call the program no longer has, in the one window where the
+     * declaration and the program members already answer the decision.
+     *
+     * `delivered` is the step's admitted definitions, as in `sdk` and `projectSections`, and it
+     * asks the same question of the other input a composition cannot answer: a composition is
+     * built once and reused while a step may deliver less — this session decided nothing, so
+     * nothing recomposes — and every other projection already states that step. The shared
+     * operations a row can name are exactly the ones this step delivers, so a row whose loader
+     * or operation the step withholds states the path that remains instead of a call the
+     * program lacks. Absent an observation the composition's answer stands: a caller with no
+     * admission is not asking to state less than the session was composed from.
+     *
+     * A row only ever loses a path here. Absence of evidence is not an addition: an operation
+     * the plan never froze is not one this composition stated, so no row starts stating it.
+     */
+    metadata(agent, delivered = undefined) {
       const state = stateFor(agent)
       if (!state?.snapshot.plan.enabled) return []
+      const policyLayer = Boolean(effectiveCapabilitySettings(state.snapshot.settings)?.policy)
+      const admitted = delivered === undefined ? undefined : new Set(delivered.map(schema => schema.name))
+      const paths = sharedPaths(state, admitted, decisionsFor(agent))
       const capabilities = declaredCapabilities(state)
       return ['skill', 'resource'].map(category => ({ namespace: category === 'skill' ? 'skills' : 'mcp',
         members: [...capabilities.values()].filter(item => item.category === category && supplied(state, item.id))
           .map(item => state.liveCapabilities?.get(item.id) ?? item)
+          .flatMap(item => category === 'skill'
+            ? [paths.loader ? item : retainedSkillCapability(item, false)]
+            : paths.operations.length === 0 ? []
+              : [{ ...item, contract: `MCP resource server ${JSON.stringify(item.selector.server)}. ${resourceOperationNotice(paths.operations, policyLayer)}` }])
+          .filter(item => item.effectiveAvailability !== 'closed')
           .map(item => ({ name: item.id.slice(item.id.indexOf('.') + 1), description: item.description,
             contract: item.contract, dependencies: item.dependencies ?? [], revision: item.revision, parameters: {}, returns: {},
             ...(item.invocation === undefined ? {} : { invocation: item.invocation }),

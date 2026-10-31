@@ -42,7 +42,7 @@ await capabilities.inspect({ symbols: ["repl.state", "code.run"], budget: 2 })
 
 当前 replay 分类为 `recorded-value`：PTC journal 会在 cold replay 返回已记录的 canonical value，不重新 dispatch tool。它不表示外部 effect 被撤销、重做或验证。`owner-replay`、`volatile` 与 `unknown` 已属于 metadata vocabulary，但只有 owner/DSH 提供证据后才能声明。
 
-explorer 不调用 capability、不提升 authority、不读取隐藏服务、不触发辅助模型请求。`tools` metadata 来自执行时 agent scope 的 live schemas；`repl.state` 与 `code.run` metadata 由插件自身契约提供。模型若要根据探索结果决定下一步，仍会发生正常的后续 turn。当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 token，因此定义变化不能被描述成原子 snapshot。
+explorer 不调用 capability、不提升 authority、不读取隐藏服务、不触发辅助模型请求。`tools` metadata 来自执行时 agent scope 的 live schemas，并且只取本 cell 程序绑定里真实可调用的成员：metadata 与可调用的 `tools.*` 是同一个集合，所以本会话记录关闭的能力和这一步没有交付的注册定义都不在其中——「探索得到」与「调用得到」不会分叉。`skills` 与 `mcp` 两个命名空间是派生行：它们的契约本身就是一句「怎么调」，所以除了组合交付过、记录没关掉，还要问这一步的程序真的拿到了那个共享操作——桥把本 cell 的成员集交给 `metadata`，共享加载器不在这份成员集里时 Skill 行只保留用户入口或整行离开，资源 server 行只陈述这一步交付的操作、一个都不剩时不再是这一步的能力；没有观察过准入的调用方读到的是组合（`internal/capability-environment.js` 的 `metadata`，装配侧在 `internal/runtime-bridge-owner.js`）。`repl.state` 与 `code.run` metadata 由插件自身契约提供。模型若要根据探索结果决定下一步，仍会发生正常的后续 turn。当前公共扩展面没有跨 prompt assembly 与 runtime dispatch 的冻结 token，因此定义变化不能被描述成原子 snapshot。
 
 能力管理开启时，同一冻结方案拥有启用与披露选择，当前宿主契约拥有首轮说明、按需检索及编译前实际成员投影。可用性与说明分别选择；host 项继续保留原说明路径，只有完整或按需项由方案替代其 SDK 说明。分配、统计采集、恢复与预览各自独立；见 [ADR 0043](adr/0043-compose-capability-and-context-policies.md)。配置保存不重排已有会话；`/capabilities refresh` 同步环境并提交持久通知。search 的字节边界不能独自证明完整任务 token 降低；接入证据见[公共接口覆盖](context-public-interface-coverage.md)，格式和恢复路径见[组件说明](capability-planning-components.md)。
 

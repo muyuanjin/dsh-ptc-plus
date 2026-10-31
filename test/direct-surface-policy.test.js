@@ -837,6 +837,86 @@ test('an in-flight SDK assembly retains its selected language across reconfigura
   assert.deepEqual(protectedAssembly.tools, first.tools)
 })
 
+test('the assembly states the step admission to the capability projection', async t => {
+  // The delivered capability set is the step's admission: the Host renders `tools:sdk`
+  // and builds a program's `tools` members from it. An assembly that let the projection
+  // read the registered-definitions view would declare a member this step cannot call,
+  // so the admission is the input every projection of that assembly receives.
+  const delivered = [{ name: 'probe', description: 'Owner contract for probe.',
+    parameters: { type: 'object' }, output: { type: 'string' } }]
+  const registry = [...delivered, { name: 'undelivered', description: 'Not delivered.',
+    parameters: { type: 'object' }, output: { type: 'string' } }]
+  const observed = {}
+  const owner = createOwner({
+    toolSchemasForAgent: (agent, toolSet) => toolSet === undefined ? registry : delivered,
+    capabilityEnvironment: {
+      async prepare(agent, sections, force, signal, admitted) { observed.prepared = admitted },
+      projectSections: (agent, sections) => sections,
+      sdk: (agent, text, admitted) => { observed.declared = admitted; return text },
+      visibleSchemas: (agent, schemas) => schemas,
+    },
+  })
+  t.after(() => owner.dispose())
+  const agent = { id: 'admission-projection' }
+  const input = () => ({ ...assembly(), sections: [{ name: 'tools:sdk', text: renderToolsSdk(delivered) }] })
+  const assembled = await owner.assemble(input(), { agent, toolSet: { view: () => new Map() } },
+    async () => input())
+  assert.deepEqual(observed.prepared, delivered, 'the composition states the step it observes')
+  assert.deepEqual(observed.declared, delivered, 'the declaration states the same step')
+  assert.match(assembled.sections[0].text, /\n {2}probe: /u)
+  assert.doesNotMatch(assembled.sections[0].text, /undelivered/u,
+    'a registered definition this step does not admit is declared nowhere')
+})
+
+test('the call repair states the same admission as the declaration', async t => {
+  // Repairing a top-level call into a program call claims the live schema proves that
+  // member, so the repair map is the delivered set as well: a registered definition this
+  // step does not admit stays a top-level call the Host rejects as unknown, instead of
+  // becoming a `tools.*` call no member answers and no declaration states.
+  const delivered = [{ name: 'probe', description: 'Owner contract for probe.',
+    parameters: { type: 'object' }, output: { type: 'string' } }]
+  const registry = [...delivered, { name: 'undelivered', description: 'Not delivered.',
+    parameters: { type: 'object' }, output: { type: 'string' } }]
+  const owner = createOwner({
+    canonicalizeToolCalls: true,
+    toolSchemasForAgent: (agent, toolSet) => toolSet === undefined ? registry : delivered,
+    capabilityEnvironment: {
+      async prepare() {},
+      projectSections: (agent, sections) => sections,
+      sdk: (agent, text) => text,
+      visibleSchemas: (agent, schemas) => schemas,
+    },
+  })
+  t.after(() => owner.dispose())
+  const agent = { id: 'admission-repair' }
+  const signal = new AbortController().signal
+  const input = () => ({ ...assembly(), sections: [{ name: 'tools:sdk', text: renderToolsSdk(delivered) }] })
+  const projected = await owner.assemble(input(), { agent, signal, toolSet: { view: () => new Map() } },
+    async () => input())
+  const repaired = async name => {
+    const chunks = [
+      { type: 'tool-call-delta', index: 0, id: `call-${name}`, name, argumentsDelta: '{}' },
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: `call-${name}`, name, arguments: '{}' } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
+    ]
+    const streamed = await collect(owner.stream({ sessionId: agent.id, signal, tools: projected.tools },
+      async function* () { yield* chunks }))
+    return streamed.find(chunk => chunk.type === 'block-end').block
+  }
+  const admitted = await repaired('probe')
+  assert.equal(admitted.name, 'run_code', 'a delivered member is repaired into the program call')
+  assert.match(admitted.arguments, /tools\.probe\(/u)
+  const withheld = await repaired('undelivered')
+  assert.equal(withheld.name, 'undelivered', 'a definition this step does not deliver is not repaired')
+  assert.doesNotMatch(JSON.stringify(withheld), /tools\.undelivered/u)
+  // A request the Host published no admission for falls back to the registry view, which
+  // is the only evidence that step left.
+  await owner.assemble(input(), { agent, signal }, async () => input())
+  assert.equal((await repaired('undelivered')).name, 'run_code',
+    'without an admission the registry is the only view there is')
+})
+
+
 test('concurrent requests keep their own captured policy', async (t) => {
   const owner = createOwner()
   t.after(() => owner.dispose())

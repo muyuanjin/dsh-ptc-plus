@@ -637,7 +637,15 @@ export function createDirectSurfaceOwner({
       if (!isCurrent()) return assembly
       const sessionPtc = presentation !== 'native' && id !== undefined
       const sessionPtcProjection = presentation === 'ptc' && id !== undefined
-      if (sessionPtc) await capabilityEnvironment?.prepare(agent, assembly.sections)
+      // The step's admission is the delivered capability set: the Host renders its own
+      // `tools:sdk` block from it and builds a program's `tools` members from it, so a
+      // declaration composed from the registered-definitions view can name a member this
+      // step does not deliver. Reading it here keeps the declaration, the plan and the
+      // program about one set; a host that publishes no admission states no set, and the
+      // registry view is then the only evidence left.
+      const delivered = sessionPtc && context?.toolSet !== undefined
+        ? toolSchemasForAgent(agent, context.toolSet) : undefined
+      if (sessionPtc) await capabilityEnvironment?.prepare(agent, assembly.sections, false, undefined, delivered)
       const userBindings = sessionPtc ? await userBindingsForAgent(agent) : undefined
       if (!isCurrent()) return assembly
       const runCode = tools?.find(tool => tool?.name === RUN_CODE)
@@ -668,9 +676,9 @@ export function createDirectSurfaceOwner({
         && assembly.sections.some(section => section?.name === 'tools:sdk'
           || (sessionPtcProjection && section?.name === completedState.collapseSectionName))
       const sections = projectsSections
-        ? (capabilityEnvironment?.projectSections(agent, assembly.sections) ?? assembly.sections).map(section => {
+        ? (capabilityEnvironment?.projectSections(agent, assembly.sections, delivered) ?? assembly.sections).map(section => {
             if (section?.name === 'tools:sdk') {
-              return { ...section, text: capabilitySdk(capabilityEnvironment?.sdk(agent, section.text) ?? section.text,
+              return { ...section, text: capabilitySdk(capabilityEnvironment?.sdk(agent, section.text, delivered) ?? section.text,
                 userBindings !== undefined, languageSemantics) }
             }
             if (sessionPtcProjection && section?.name === completedState.collapseSectionName) {
@@ -680,8 +688,13 @@ export function createDirectSurfaceOwner({
           })
         : assembly.sections
       if (id !== undefined) {
+        // A top-level call is repaired into a program call only for a member this step
+        // delivers: the admission is what the declaration and the program state, so a
+        // name the registry merely carries is a call no member answers and no schema
+        // proves. A step that published no admission keeps the registry view.
+        const callable = delivered ?? toolSchemasForAgent(agent)
         const nativeSchemas = presentation === 'ptc'
-          ? new Map((capabilityEnvironment?.visibleSchemas(agent, toolSchemasForAgent(agent)) ?? toolSchemasForAgent(agent))
+          ? new Map((capabilityEnvironment?.visibleSchemas(agent, callable) ?? callable)
             .filter(schema => typeof schema?.name === 'string'
               && schema.name !== RUN_CODE && schema.name !== EDIT_RUN_CODE)
             .map(schema => [schema.name, schema]))

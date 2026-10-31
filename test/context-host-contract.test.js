@@ -417,6 +417,452 @@ test('PTC Plus starts a model turn with empty tool and MCP instructions', async 
     .map(event => event.data.reason.kind), ['completed', 'completed'])
 })
 
+test('a real step admits one capability set and every model-visible projection states it', { timeout: 20000 }, async t => {
+  // The defect at the level the Host runs it. A step resolves its admission
+  // (`tools.resolve`), renders its own `tools:sdk` from those definitions and builds the
+  // program's `tools` members from the same admission, so a registered definition this
+  // step does not deliver may reach no model-visible projection — and one session record
+  // must withdraw a delivered capability from all of them at once.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await settleService(ctx.agents)
+  await ctx.plugin(SessionQueryEngine).await()
+  // `withheld_capability` is registered and in the registered-definitions view, but the
+  // step resolves its activation away, so no step delivers it. That difference between the
+  // registry view and the admission is what the declaration must not paper over.
+  let activated = false
+  ctx.effect(() => ctx.tools.register(echo('kept_capability')))
+  ctx.effect(() => ctx.tools.register(echo('withheld_capability'), { when: () => activated }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'tool:kept_capability', order: 10, text: 'Kept guidance.' }))
+  // The program reads the two surfaces a cell really has: the `tools` members it can call
+  // and the metadata `capabilities.tree()` really states.
+  const PROBE_PROGRAM = [
+    'const tree = await capabilities.tree()',
+    'return JSON.stringify({ members: Object.keys(tools).sort(), tree: tree.map(entry => [entry.namespace, entry.members]) })',
+  ].join('\n')
+  const requests = []
+  const errors = []
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  // Two steps per turn: the first asks for a cell, the second stops. The cell runs under
+  // the admission the first step resolved, which is the only way to observe the delivered
+  // set rather than the registry.
+  async function* stream(options) {
+    const index = requests.push(options) - 1
+    if (index % 2 === 0) {
+      const call = { id: `probe-cell-${index}`, type: 'tool-call', name: 'run_code',
+        arguments: JSON.stringify({ code: PROBE_PROGRAM, description: 'Probe the delivered set' }) }
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments }
+      yield { type: 'block-end', index: 0, block: call }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    // Both definitions keep the Host's own presentation, which is the disclosure the
+    // reported session used: the declaration keeps their Host signatures instead of
+    // replacing them with session contracts.
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {},
+      items: { 'tools.kept_capability': { disclosure: 'host' }, 'tools.withheld_capability': { disclosure: 'host' } },
+      allocation: { baseline: true, statistics: false, budget: true } }),
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  // The Host's own rendering of the declaration, before this plugin projects it. Only a
+  // request that carries an admission states a delivered set; the composition a pre-step
+  // asks for carries none.
+  const hostDeclarations = []
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    const host = await next()
+    if (context?.toolSet !== undefined) {
+      hostDeclarations.push(named(sdkNames(host.sections.find(section => section.name === 'tools:sdk')?.text ?? '')))
+    }
+    return host
+  })
+  const owner = await ctx.agents.create({ sessionId: 'admitted-capability-set', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const agent = owner.agent
+  const turn = async value => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: value }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  // The two call transports are the channel a program is called through, not
+  // capabilities, so they are left out of the set comparison.
+  const transports = new Set(['run_code', 'edit_run_code'])
+  const named = names => new Set([...names].filter(name => !transports.has(name)))
+  /** The members a rendered `tools:sdk` block declares, one entry per top-level member. */
+  const sdkNames = value => new Set([...value.matchAll(/^ {2}([A-Za-z_$][A-Za-z0-9_$]*):/gmu)].map(match => match[1]))
+  // The program's own answer for the turn that just ran: the members it can call and the
+  // namespaces the explorer states. A cell is the only place both are real.
+  const probes = []
+  const readProbe = () => JSON.parse(agent.session.snapshotEvents().filter(event => event.type === 'tool/result')
+    .at(-1).data.message.content.map(block => block.text).join(''))
+  /** The system text the model reads on one request, section by section. */
+  const systemText = index => (requests[index].messages.find(message => message.role === 'system')?.content ?? [])
+    .map(block => block.text ?? '').join('\n')
+  /** What one step states on each of the three surfaces. */
+  const stated = step => ({
+    declared: named(sdkNames(systemText(step * 2))),
+    members: named(probes[step].members),
+    explorable: named(probes[step].tree.find(entry => entry[0] === 'tools')?.[1] ?? []),
+  })
+  const planEntries = () => agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
+    .at(-1)?.data.source.snapshot.plan.entries?.map(entry => entry.id) ?? []
+  await turn('first')
+  probes.push(readProbe())
+  assert.deepEqual(errors, [])
+  // The registry view still names the withheld definition: the equality below is a claim
+  // about the admission, not about a registry that happened to be small.
+  assert.equal(ctx.tools.schemas(agent).some(schema => schema.name === 'withheld_capability'), true,
+    'the registered-definitions view names the definition no step delivers')
+  const first = stated(0)
+  assert.deepEqual(hostDeclarations[0], new Set(['kept_capability']),
+    'the Host declares the definitions its own admission delivers')
+  assert.deepEqual(first.declared, new Set(['kept_capability']), 'the declaration states the delivered member only')
+  assert.deepEqual(first.members, new Set(['kept_capability']), 'the program exposes the delivered member only')
+  assert.deepEqual(first.explorable, new Set(['kept_capability']), 'the explorer states the delivered member only')
+  assert.deepEqual(first.declared, first.members, 'the declared set and the callable set are one set')
+  assert.deepEqual(first.explorable, first.members, 'the explorable set and the callable set are one set')
+  assert.equal(planEntries().includes('tools.withheld_capability'), false,
+    'the composition states the capabilities this step delivers')
+  assert.match(systemText(0), /Kept guidance\./u)
+  // The user closes the delivered capability for this session. The record is the newest
+  // statement, so the next step states it on no surface — and the re-render that the
+  // closure forces must not pull back the definition this step withholds.
+  agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'tools.kept_capability': { availability: 'closed', disclosure: 'on-demand' } } }), { surfaceOp: 'append' })
+  await turn('second')
+  probes.push(readProbe())
+  assert.deepEqual(errors, [])
+  const second = stated(1)
+  assert.deepEqual(second.declared, new Set(), 'the declaration states no capability this session closed')
+  assert.deepEqual(second.members, new Set(), 'the program exposes no capability this session closed')
+  assert.deepEqual(second.explorable, new Set(), 'the explorer states no capability this session closed')
+  assert.equal(second.declared.has('withheld_capability'), false, 'the re-render does not declare a definition this step withholds')
+  assert.equal(second.members.has('withheld_capability'), false)
+  assert.equal(second.explorable.has('withheld_capability'), false)
+  assert.doesNotMatch(systemText(2), /kept_capability/u, 'the closed capability leaves the model-visible text')
+  assert.doesNotMatch(systemText(2), /Kept guidance\./u, 'its guidance section leaves with it')
+  assert.equal(planEntries().includes('tools.withheld_capability'), false)
+  // The delivered plans and their navigation text are a declaration too. What may still
+  // name the closed capability is the record that closed it and the messages delivered
+  // while it was open; a plan composed after the closure states the set that remains.
+  const planTexts = agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
+    .map(event => event.data.content.map(block => block.text).join(''))
+  assert.equal(planTexts.length, 2, 'each composition delivers its own plan')
+  assert.equal(planTexts.some(text => /withheld_capability/u.test(text)), false,
+    'no delivered plan names a definition its step withholds')
+  assert.doesNotMatch(planTexts.at(-1), /kept_capability/u,
+    'the plan delivered after the closure states no capability this session closed')
+  assert.equal(requests.length, 4, 'two steps per turn: the cell, then the stop')
+})
+
+test('the guidance section for a definition follows the step admission, not the registered definitions', { timeout: 20000 }, async t => {
+  // A `tool:<name>` section is model-visible text about a capability: it tells the model what
+  // to do with that tool. The declaration, the program members and the explorer state the
+  // step's admission, and the composition is not rebuilt when the session decides nothing, so
+  // a section taken from the composition stays after the capability left every other surface.
+  // The same section has to come back on the step that delivers the definition: this is a
+  // statement about the step, not a section deleted once.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await settleService(ctx.agents)
+  await ctx.plugin(SessionQueryEngine).await()
+  let activated = false
+  ctx.effect(() => ctx.tools.register(echo('always_capability')))
+  ctx.effect(() => ctx.tools.register(echo('withheld_capability'), { when: () => activated }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'tool:always_capability', order: 10, text: 'Always guidance.' }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'tool:withheld_capability', order: 11, text: 'Withheld guidance.' }))
+  const requests = []
+  const errors = []
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  async function* stream(options) {
+    const index = requests.push(options) - 1
+    if (index % 2 === 0) {
+      const call = { id: `guidance-cell-${index}`, type: 'tool-call', name: 'run_code',
+        arguments: JSON.stringify({ code: 'return 1', description: 'Run a cell' }) }
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments }
+      yield { type: 'block-end', index: 0, block: call }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {},
+      items: { 'tools.always_capability': { disclosure: 'host' }, 'tools.withheld_capability': { disclosure: 'host' } },
+      allocation: { baseline: true, statistics: false, budget: true } }),
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: 'admitted-capability-guidance', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const agent = owner.agent
+  const turn = async value => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: value }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  /** The system text the model reads on one request. */
+  const systemText = index => (requests[index].messages.find(message => message.role === 'system')?.content ?? [])
+    .map(block => block.text ?? '').join('\n')
+  /** The members a rendered `tools:sdk` block declares, one entry per top-level member. */
+  const sdkNames = value => new Set([...value.matchAll(/^ {2}([A-Za-z_$][A-Za-z0-9_$]*):/gmu)].map(match => match[1]))
+  const transports = new Set(['run_code', 'edit_run_code'])
+  const named = names => new Set([...names].filter(name => !transports.has(name)))
+  await turn('first')
+  assert.deepEqual(errors, [])
+  // The registry still carries the definition; the step does not deliver it.
+  assert.equal(ctx.tools.schemas(agent).some(schema => schema.name === 'withheld_capability'), true,
+    'the registered-definitions view names the definition this step withholds')
+  // Both steps of the turn, because the observation of the registry narrows and widens between
+  // them: a later step must not state guidance the earlier step's admission withdrew.
+  for (const step of [0, 1]) {
+    assert.match(systemText(step), /Always guidance\./u, 'the guidance of a delivered capability stays')
+    assert.doesNotMatch(systemText(step), /Withheld guidance\./u,
+      `the guidance of a definition this step withholds leaves the model-visible text (step ${step + 1})`)
+    assert.deepEqual(named(sdkNames(systemText(step))), new Set(['always_capability']),
+      'the declaration states the delivered member only')
+  }
+  // The next step delivers the definition. The section returns because the step states it,
+  // not because a composition or a record changed.
+  activated = true
+  await turn('second')
+  assert.deepEqual(errors, [])
+  for (const step of [2, 3]) {
+    assert.match(systemText(step), /Withheld guidance\./u,
+      'the guidance of a capability the step delivers is stated on that step')
+    assert.match(systemText(step), /Always guidance\./u)
+    assert.deepEqual(named(sdkNames(systemText(step))), new Set(['always_capability', 'withheld_capability']),
+      'the declaration states every member the step delivers')
+  }
+  assert.equal(requests.length, 4, 'two steps per turn: the cell, then the stop')
+})
+
+test('the resource server directory states the operations the step delivers, not the composition', { timeout: 20000 }, async t => {
+  // The `mcp-resource-servers` section names the servers a program may pass as the `server`
+  // argument, and the three Host resource operations are the only members that take one. A
+  // step may deliver less than the registry resolves — the Host admits a definition per step
+  // — and the composition recorded while they were admitted is not rebuilt, because the
+  // session decided nothing. The declaration, the program members and the explorer state that
+  // step, so the directory — the one model-visible text that still lists the servers — states
+  // it too, and returns on the step that delivers the operations again.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await settleService(ctx.agents)
+  await ctx.plugin(SessionQueryEngine).await()
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  let activated = true
+  for (const name of operations) ctx.effect(() => ctx.tools.register(echo(name), { when: () => activated }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp-resource-servers', order: 20, interpolate: false,
+    text: '## MCP resource servers\n\nUse list_mcp_resources, list_mcp_resource_templates, or read_mcp_resource '
+      + 'with one of these names as the server argument: ["probe"].' }))
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp:probe', order: 21, interpolate: false, text: 'Probe server instructions.' }))
+  const requests = []
+  const errors = []
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  async function* stream(options) {
+    const index = requests.push(options) - 1
+    if (index % 2 === 0) {
+      const call = { id: `resource-directory-cell-${index}`, type: 'tool-call', name: 'run_code',
+        arguments: JSON.stringify({ code: 'return 1', description: 'Run a cell' }) }
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments }
+      yield { type: 'block-end', index: 0, block: call }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {}, items: {},
+      allocation: { baseline: true, statistics: false, budget: true } }),
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: 'admitted-resource-directory', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const agent = owner.agent
+  const turn = async value => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: value }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  const systemText = index => (requests[index].messages.find(message => message.role === 'system')?.content ?? [])
+    .map(block => block.text ?? '').join('\n')
+  const sdkNames = value => new Set([...value.matchAll(/^ {2}([A-Za-z_$][A-Za-z0-9_$]*):/gmu)].map(match => match[1]))
+  const declares = index => [...sdkNames(systemText(index))].some(name => operations.includes(name))
+  const planEntries = () => agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
+    .at(-1)?.data.source.snapshot.plan.entries?.map(entry => entry.id) ?? []
+  await turn('first')
+  assert.deepEqual(errors, [])
+  for (const step of [0, 1]) {
+    assert.match(systemText(step), /as the server argument: \["probe"\]/u,
+      `the directory names the server the step may name (step ${step + 1})`)
+    assert.equal(declares(step), true, 'the declaration states the resource operations')
+  }
+  // The step's own answer: the Host admits no definition that takes a server name.
+  activated = false
+  await turn('second')
+  assert.deepEqual(errors, [])
+  assert.equal(ctx.tools.schemas(agent).some(schema => operations.includes(schema.name)), true,
+    'the registered-definitions view still names the operations this step withholds')
+  assert.equal(planEntries().includes('mcp.probe'), true,
+    'the composition this session recorded still states the server row')
+  // Both steps of the turn, because the registry re-read between them widens what the
+  // session observed: a later step must not state a directory the earlier step withdrew.
+  for (const step of [2, 3]) {
+    assert.doesNotMatch(systemText(step), /as the server argument/u,
+      `no operation of this step takes a server name, so the directory lists none (step ${step + 1})`)
+    assert.equal(declares(step), false, 'the declaration states no operation this step withholds')
+  }
+  activated = true
+  await turn('third')
+  assert.deepEqual(errors, [])
+  for (const step of [4, 5]) {
+    assert.match(systemText(step), /as the server argument: \["probe"\]/u,
+      `the directory returns on the step that delivers the operations (step ${step + 1})`)
+    assert.equal(declares(step), true)
+  }
+  assert.equal(requests.length, 6, 'two steps per turn: the cell, then the stop')
+})
+
+test('a recorded server closure withdraws the rows, the guidance and the directory the server owns', { timeout: 20000 }, async t => {
+  // One decision, four owners on the model-visible surface: a server's tool members
+  // (`mcp__<server>__*`), the derived `mcp.<server>` row, the `mcp:<server>` instructions that
+  // row depends on, and the `mcp-resource-servers` directory that names the server as the
+  // argument of the three resource operations. None of them is a composition of its own, so
+  // the record must reach all four in the same read — and the record names a *server*, not
+  // those members, which is what makes the id resolution part of the invariant.
+  const { ctx } = host(t, 'ptc')
+  new AgentRegistry(ctx)
+  new SessionStore(ctx)
+  new SessionProjectionRegistry(ctx)
+  await settleService(ctx.agents)
+  await ctx.plugin(SessionQueryEngine).await()
+  ctx.effect(() => ctx.tools.register(createMcpToolDefinition(ctx, {
+    name: 'mcp__probe__read', rawName: 'probe', description: 'Probe upstream MCP description.',
+    inputSchema: { type: 'object' },
+    async call() { return { content: [{ type: 'text', text: 'mcp reply' }] } },
+  })))
+  await ctx.plugin(McpResourceRuntime).await()
+  ctx.mcpResources.register('probe', { async request(request) {
+    return { method: request.method, resources: [{ uri: 'probe://item', name: 'Probe' }] }
+  } })
+  // The server's own instructions are the section its row depends on; the Host owns that text.
+  ctx.effect(() => ctx.systemPrompt.section({ name: 'mcp:probe', order: 21, interpolate: false,
+    text: 'Probe server instructions.' }))
+  const requests = []
+  const errors = []
+  ctx.on('agent/error', payload => errors.push(payload.error))
+  const PROBE_PROGRAM = [
+    'const tree = (await capabilities.tree()).map(entry => [entry.namespace, entry.members])',
+    'return JSON.stringify({',
+    '  members: Object.keys(tools).sort(),',
+    '  tools: tree.find(entry => entry[0] === "tools")?.[1] ?? [],',
+    '  mcp: tree.find(entry => entry[0] === "mcp")?.[1] ?? [],',
+    '})',
+  ].join('\n')
+  async function* stream(options) {
+    const index = requests.push(options) - 1
+    if (index % 2 === 0) {
+      const call = { id: `server-closure-cell-${index}`, type: 'tool-call', name: 'run_code',
+        arguments: JSON.stringify({ code: PROBE_PROGRAM, description: 'Probe the delivered set' }) }
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments }
+      yield { type: 'block-end', index: 0, block: call }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    yield { type: 'text-delta', index: 0, text: 'done' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }
+  ctx.effect(() => ctx.provide('llm', { async prepareCall(config) { return { config, stream, adapterDefaults: {} } }, stream }))
+  await ctx.plugin(AgentLoop, { agents: [] }).await()
+  await ctx.plugin(ptcPlus, { userBindingsEnabled: false, cordisToolsEnabled: false, capabilityManagementEnabled: true,
+    capabilityPolicy: JSON.stringify({ schema: 'ptc-capability-policy/v1',
+      defaults: { availability: 'enabled', disclosure: 'host' }, categories: {}, mcpServers: {}, items: {},
+      allocation: { baseline: true, statistics: false, budget: true } }),
+    capabilityStatistics: '{"enabled":false,"windowSize":10,"minimumSamples":1,"fullThreshold":0.5}' }).await()
+  const owner = await ctx.agents.create({ sessionId: 'recorded-server-closure', meta: { cwd: process.cwd() },
+    agentOptions: { provider: 'fixture', model: 'fixture' } })
+  t.after(() => owner.dispose())
+  const agent = owner.agent
+  const turn = async value => {
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: value }] }), 'next-turn', true)
+    await agent.whenIdle()
+  }
+  const systemText = index => (requests[index].messages.find(message => message.role === 'system')?.content ?? [])
+    .map(block => block.text ?? '').join('\n')
+  const sdkNames = value => new Set([...value.matchAll(/^ {2}([A-Za-z_$][A-Za-z0-9_$]*):/gmu)].map(match => match[1]))
+  const transports = new Set(['run_code', 'edit_run_code'])
+  const named = names => new Set([...names].filter(name => !transports.has(name)))
+  const probes = []
+  const readProbe = () => JSON.parse(agent.session.snapshotEvents().filter(event => event.type === 'tool/result')
+    .at(-1).data.message.content.map(block => block.text).join(''))
+  const stated = (step, probe) => ({
+    declared: named(sdkNames(systemText(step))),
+    members: named(probe.members),
+    explorable: named(probe.tools),
+  })
+  const deliveredPlan = () => agent.session.snapshotEvents().filter(event => event.data?.source?.form === 'capability-plan')
+    .at(-1)?.data
+  /** What the delivered plan states for one identity. */
+  const planRow = id => deliveredPlan()?.source.snapshot.plan.entries?.find(entry => entry.id === id)
+  await turn('first')
+  probes.push(readProbe())
+  assert.deepEqual(errors, [])
+  const before = stated(0, probes[0])
+  assert.equal(before.members.has('mcp__probe__read'), true, 'the program can call the server member before the closure')
+  assert.deepEqual(before.declared, before.members, 'the declared set and the callable set are one set')
+  assert.deepEqual(before.explorable, before.members, 'the explorable set and the callable set are one set')
+  assert.deepEqual(probes[0].mcp, ['probe'], 'the explorer states the server row while the session has it')
+  assert.match(systemText(0), /as the server argument: \["probe"\]/u, 'the directory names the server')
+  assert.match(systemText(0), /Probe server instructions\./u, 'the server guidance is delivered with its row')
+  assert.equal(planRow('mcp.probe')?.selection, 'host', 'the composition states the server row while the session has it')
+  assert.equal(planRow('tools.mcp__probe__read')?.selection, 'host')
+  // The user closes the server, not its members: every surface has to resolve the same name.
+  agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+    choices: { 'mcpServers.probe': { availability: 'closed' } } }), { surfaceOp: 'append' })
+  await turn('second')
+  probes.push(readProbe())
+  assert.deepEqual(errors, [])
+  assert.equal(ctx.tools.schemas(agent).some(schema => schema.name === 'mcp__probe__read'), true,
+    'the registered-definitions view still names the member this session closed')
+  const after = stated(2, probes[1])
+  assert.equal(after.declared.has('mcp__probe__read'), false,
+    'the declaration states no member of a server this session closed')
+  assert.equal(after.members.has('mcp__probe__read'), false,
+    'the program exposes no member of a server this session closed')
+  assert.equal(after.explorable.has('mcp__probe__read'), false,
+    'the explorer states no member of a server this session closed')
+  assert.deepEqual(after.declared, after.members, 'the declared set and the callable set are one set after the closure')
+  assert.deepEqual(after.explorable, after.members, 'the explorable set and the callable set are one set after the closure')
+  assert.deepEqual(probes[1].mcp, [], 'no server row survives the closure of its only server')
+  assert.doesNotMatch(systemText(2), /mcp__probe__read/u, 'the closed server member leaves the model-visible text')
+  assert.doesNotMatch(systemText(2), /as the server argument/u, 'the directory names no server this session closed')
+  assert.doesNotMatch(systemText(2), /Probe server instructions\./u, 'the server guidance leaves with the row that owned it')
+  assert.doesNotMatch(systemText(3), /as the server argument|Probe server instructions\./u,
+    'the following step of the same turn states the same closure')
+  // The plan keeps the row the record decided about — that is what a refresh and the panel
+  // read — and states the decision there instead of forgetting the row.
+  assert.equal(planRow('mcp.probe')?.selection, 'closed',
+    'the plan composed after the closure states the decision instead of forgetting the row')
+  assert.equal(planRow('tools.mcp__probe__read')?.selection, 'closed')
+  assert.equal(requests.length, 4, 'two steps per turn: the cell, then the stop')
+})
+
 test('capability commands advertise refresh input and apply through the public human-command runtime without model requests', async t => {
   const { ctx } = host(t, 'ptc')
   new CommandRuntime(ctx)

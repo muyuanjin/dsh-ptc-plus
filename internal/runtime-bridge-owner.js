@@ -347,7 +347,11 @@ export function createRuntimeBridgeOwner({
     )))
     const metadata = Object.freeze([
       ...(capabilityEnvironment?.toolMetadata(executionToken?.agent, toolCapabilityMetadata(schemas, annotations), schemas) ?? toolCapabilityMetadata(schemas, annotations)),
-      ...(capabilityEnvironment?.metadata(executionToken?.agent) ?? []),
+      // The same set, as the third argument's own evidence: a derived row (`skills.*`,
+      // `mcp.*`) states the invocation path it still has, and the operations it can name
+      // are the members this program was handed — not the ones the composition froze when
+      // the session was last composed, which a step that delivers less does not rewrite.
+      ...(capabilityEnvironment?.metadata(executionToken?.agent, schemas) ?? []),
       ...PROGRAM_CAPABILITY_METADATA.map(entry => entry.namespace === 'code'
         && cellConfig.userBindingsEnabled === true
         ? { ...entry, members: [...entry.members, BINDING_SUBMISSION] }

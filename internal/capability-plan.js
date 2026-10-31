@@ -83,11 +83,19 @@ function createLegacyCapabilityPlan(input) {
   if (!Array.isArray(options.capabilities)) throw new TypeError('ptc-plus: capabilities must be an array')
   const ids = new Set()
   const excluded = []
+  // Ids whose own invocation path the inventory could not reach. The planner states
+  // availability from the recorded choices, so a row the inventory already proved
+  // unreachable is closed here too — otherwise a baseline full contract keeps instructing
+  // a call the composition does not deliver. The policy generation states the same fact as
+  // `availabilitySource: 'invocation-path'`; a recorded v1/v2 inventory carries no such
+  // field, so its recomposition is unchanged.
+  const pathClosed = new Set()
   const capabilities = options.capabilities.map(raw => {
     const value = record(raw, 'capability')
     const id = text(value.id, 'capability id')
     if (ids.has(id)) throw new TypeError(`ptc-plus: duplicate capability identity ${id}`)
     ids.add(id)
+    if (value.effectiveAvailability === 'closed') pathClosed.add(id)
     const revision = text(value.revision, 'capability revision')
     if (EXCLUDED_CATEGORIES.has(value.category)) {
       excluded.push({ id, revision, category: value.category })
@@ -148,8 +156,10 @@ function createLegacyCapabilityPlan(input) {
       throw new TypeError(`ptc-plus: cannot determine the MCP server owner of ${capability.id}; conflicting namespaces: ${capability.mcpServerCandidates.join(', ')}`)
     }
     const serverClosed = capability.mcpServer !== undefined && overrides[`mcpServers.${capability.mcpServer}`] === 'closed'
-    const explicit = serverClosed ? 'closed' : Object.hasOwn(overrides, capability.id) ? overrides[capability.id] : undefined
-    const entry = { id: capability.id, revision: capability.revision, category: capability.category, selection: explicit ?? 'on-demand', reason: serverClosed ? 'mcp-server-disabled' : explicit ? 'manual-override' : 'baseline-not-selected' }
+    const unreachable = pathClosed.has(capability.id)
+    const explicit = serverClosed || unreachable ? 'closed' : Object.hasOwn(overrides, capability.id) ? overrides[capability.id] : undefined
+    const entry = { id: capability.id, revision: capability.revision, category: capability.category, selection: explicit ?? 'on-demand',
+      reason: serverClosed ? 'mcp-server-disabled' : unreachable ? 'invocation-path' : explicit ? 'manual-override' : 'baseline-not-selected' }
     entries.push(entry)
     selections.set(capability.id, entry)
     if (explicit === 'full') full.push(capability)
@@ -235,6 +245,12 @@ function createLegacyCapabilityPlan(input) {
     schema, enabled: true, configurationRevision, entries,
     excluded: excluded.sort(compareIds), catalogText, directoryText, directoryCategories,
     budgets: { unit: 'utf8-bytes', budgetBytes, directoryBudgetBytes, contractBytes: bytes(catalogText), directoryBytes: bytes(directoryText), overageBytes: Math.max(0, bytes(catalogText) - budgetBytes) },
+    // Configured ids this composition resolved no definition for. The composition is built
+    // from the step's admission, so a configured capability that step does not deliver is
+    // listed here beside one that no longer exists at all — the field states what this
+    // plan could not resolve, not what this session may call, and no model-visible text is
+    // rendered from it. Reading it as the capability list would name a closed capability
+    // as available and an absent one as configured.
     unresolvedConfigurationIds: [...new Set([...baseline, ...Object.keys(overrides)])].filter(id => !capabilities.some(entry => entry.id === id)).sort(),
     statisticsStatus: settings.usable ? 'enabled' : settings.reason,
   })

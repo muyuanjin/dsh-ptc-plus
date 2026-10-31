@@ -1278,3 +1278,42 @@ test('a refresh before the first accepted step carries its composition in the re
   assert.equal(receipt.proposal.rawInput, 'refresh')
   assert.equal(receipt.proposal.message.source.form, CAPABILITY_PLAN_FORM)
 })
+
+test('the explorer states the shared operations the cell program has, not the ones the composition froze', async t => {
+  // The bridge is the one place a program's `tools` members and the explorable rows are made
+  // of one set, and a derived row states an invocation path. Only the program the cell runs
+  // can say which calls it has: the composition is built from the definitions the Host
+  // resolves for the scope, and a cell handed less may not be told to call what it lacks.
+  // This asserts that the third argument reaches `capabilities.*` — the reader of that set —
+  // rather than that some layer filters it a second time.
+  const schemas = ['run_code', 'skill', 'list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+    .map(name => ({ name, description: `${name} complete contract`, parameters: { type: 'object' }, output: { type: 'string' } }))
+  const state = fixture({ capabilityManagementEnabled: true, capabilityBaseline: '[]',
+    capabilityStatistics: '{"enabled":false}' }, { schemas })
+  t.after(() => state.dispose())
+  state.ctx.skills = { snapshot: async () => ({ complete: true, skills: [
+    { name: 'algebra', description: 'Algebra instructions', provider: 'test', source: 'test',
+      invocation: { modelInvocable: true, userInvocable: true } },
+  ] }) }
+  const session = appendOnlySession('explored-delivered-operations')
+  const agent = ptcAgent(session.id, session)
+  const signal = new AbortController().signal
+  await state.assembleStep({ sections: [
+    { name: 'tools:sdk', text: 'full native SDK' },
+    { name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs guidance.' },
+  ], contexts: [], variables: {}, tools: [state.runCodeDefinition] }, { agent, scope: agent, signal })
+  const observed = await state.executeRun(session.id, `
+const tree = await capabilities.tree()
+const inspected = await capabilities.inspect({ symbols: ['skills.algebra', 'mcp.docs'] })
+return { tree: tree.map(entry => [entry.namespace, entry.members]), contracts: inspected.symbols.map(item => item.contract) }
+`, { list_mcp_resources: async () => ({}), list_mcp_resource_templates: async () => ({}) }, { session, recordSession: true })
+  assert.equal(observed.raw.error, undefined)
+  const [skillContract, resourceContract] = observed.raw.value.contracts
+  assert.match(skillContract, /User-only Skill: the user can invoke \/algebra/u,
+    'the Skill row states the path this program still has')
+  assert.doesNotMatch(skillContract, /await tools\.skill\(/u, 'the row names no loader this program lacks')
+  assert.equal(resourceContract, 'MCP resource server "docs". Available operations: '
+    + 'tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}).',
+  'the resource row names the operations this program was handed')
+})

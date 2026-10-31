@@ -1815,6 +1815,32 @@ test('SDK output contracts use only public scoped schemas and definitions with d
   assert.throws(() => toolSdkSchemas({ schemas: () => [schema('missing')], get: () => undefined }), /output schema must be lossless JSON/)
 })
 
+test('SDK contracts state the step admission when one is given, and the registry only when none is', async t => {
+  // The Host renders `tools:sdk` and builds a program's `tools` members from the step's
+  // admitted definitions. A contract list read from the registered-definitions view
+  // names members no step delivers, which is the leak one declaration surface had while
+  // the program and the explorable metadata agreed with each other.
+  const ctx = new Context()
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  new ToolRuntime(ctx); attachNativeExecutor(ctx)
+  const agent = agentFor(Session.create('admitted-sdk-contract'))
+  t.after(() => ctx.fiber.dispose())
+  for (const name of ['probe', 'undelivered']) {
+    ctx.effect(() => ctx.tools.register(defineTool({
+      name, description: `Owner contract for ${name}.`, parameters: {},
+      output: { schema: { type: 'string' }, render: () => [] }, execute: async () => undefined,
+    })))
+  }
+  const names = schemas => schemas.map(schema => schema.name)
+  assert.deepEqual(names(toolSdkSchemas(ctx.tools, agent)).sort(), ['probe', 'undelivered'])
+  const admission = new Map([['probe', ctx.tools.get('probe', agent)]])
+  const toolSet = { view: scope => (scope === agent ? admission : new Map()) }
+  assert.deepEqual(names(toolSdkSchemas(ctx.tools, agent, toolSet)), ['probe'],
+    'a contract list follows the step admission exactly as the Host does')
+  assert.deepEqual(names(toolSdkSchemas(ctx.tools, agent, { view: () => new Map() })), [],
+    'an admission that delivers nothing declares nothing')
+})
+
 test('settings catalog states the named session\'s Skill eligibility from its scope and from its record', async t => {
   // The settings list is one supply read, so it states one workspace's answer. A
   // caller names the session whose directory it wants; which sessions happen to be
@@ -3636,6 +3662,106 @@ for (const userInvocable of [true, false]) test(`closing the model Skill loader 
   else assert.equal(env.describe(agent).effective.entries.find(entry => entry.id === 'skills.algebra').selection, 'closed')
 })
 
+for (const userInvocable of [true, false]) test(`a closure the legacy layer states withdraws the same Skill invocation path with user entry ${userInvocable}`, async t => {
+  // The layer that states a closure is not the relationship. A saved rule and a session
+  // record answer one question, and a session whose plan was frozen before the policy
+  // generation keeps the legacy settings shape — overrides, no policy — across a restart,
+  // because the restored composition is that recorded plan and the closure is recorded into
+  // it. Closing `tools.skill` there withdrew it from the declaration and the program
+  // members while the Skill row still told the model to load its body through that member:
+  // the reported symptom read through `capabilities.tree()` instead of `tools:sdk`.
+  const ctx = { skills: { snapshot: async () => ({ complete: true, skills: [
+    { name: 'algebra', description: 'Algebra instructions', provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable } },
+  ] }) } }
+  const schemas = () => [schema('run_code'), schema('skill')]
+  // The Skill is a baseline full contract, so a composition that keeps stating it after the
+  // loader is closed would deliver its contract in the plan text as well.
+  const legacyConfig = { ...config(), capabilityBaseline: '["skills.algebra"]' }
+  const composed = agentFor(Session.create(`legacy-closed-skill-loader-${userInvocable}`))
+  composed.runMaintenance = operation => operation(composed.signal)
+  const env = createCapabilityEnvironment({ ctx, config: legacyConfig, toolSchemasForAgent: schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, composed, [])
+  assert.equal(env.stateFor(composed).snapshot.schema, 'ptc-capability-environment/v1',
+    'a configuration that saves no policy composes the legacy record, which carries no policy settings')
+  const recorded = structuredClone(composed.session.snapshotEvents())
+  // A restart restores that recorded plan instead of recomposing from today's saved inputs,
+  // so the session keeps the legacy layer for its choices.
+  const agent = agentFor(Session.create(composed.session.id, recorded, composed.session.header))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const restored = createCapabilityEnvironment({ ctx, config: legacyConfig, toolSchemasForAgent: schemas })
+  t.after(() => restored.dispose())
+  await acceptPreparation(restored, agent, [])
+  assert.equal(restored.stateFor(agent).snapshot.settings.policy, undefined,
+    'this session states its choices in the legacy layer, so no policy document holds the closure')
+  assert.match(restored.metadata(agent).find(entry => entry.namespace === 'skills').members[0].contract,
+    /Load instructions: await tools\.skill\(/u, 'the open loader is the path the row states')
+  assert.match(restored.describe(agent).effective.catalogText, /### skills\.algebra/u,
+    'the baseline states the open capability as a full contract')
+  await restored.change(agent, { scope: 'session', id: 'tools.skill', selection: 'closed' }, agent.signal)
+  await settle(restored, agent)
+  assert.deepEqual(restored.projectMembers(agent, ['run_code', 'skill']), ['run_code'],
+    'the closed loader is no program member')
+  assert.equal(restored.describe(agent).effective.entries.some(entry => entry.id === 'tools.skill'), false,
+    'a loader whose selector domain has no model path is no capability of this composition')
+  const skills = restored.metadata(agent).find(entry => entry.namespace === 'skills')
+  const catalogText = restored.describe(agent).effective.catalogText
+  if (userInvocable) {
+    // A user still invokes this Skill, so the row stays explorable and states the path that
+    // remains — never the member this session closed, in the metadata or in the plan.
+    assert.match(skills.members[0].contract, /user can invoke \/algebra/u)
+    assert.doesNotMatch(skills.members[0].contract, /await tools\.skill\(/u)
+    assert.match(catalogText, /### skills\.algebra/u, 'the row a user can still invoke stays a capability')
+    assert.doesNotMatch(catalogText, /await tools\.skill\(/u, 'the delivered plan names no closed member either')
+  } else {
+    assert.deepEqual(skills.members, [],
+      'with no model path and no user path the row is no capability of this session')
+    assert.doesNotMatch(catalogText, /skills\.algebra/u,
+      'the delivered plan states no contract for a capability with no invocation path left')
+  }
+  // The composition that states the closure is itself replayable: a restart recomputes the
+  // plan from the inventory it recorded instead of reporting it as damage.
+  const warnings = []
+  const replayed = createCapabilityEnvironment({ ctx: { ...ctx, logger: { warn: message => warnings.push(message) } },
+    config: legacyConfig, toolSchemasForAgent: schemas })
+  t.after(() => replayed.dispose())
+  const cold = agentFor(Session.create(agent.session.id, structuredClone(agent.session.snapshotEvents()), agent.session.header))
+  await acceptPreparation(replayed, cold, [])
+  assert.deepEqual(warnings, [], 'a plan this composition recorded replays without a damage diagnostic')
+  assert.deepEqual(replayed.describe(cold).effective.entries, restored.describe(agent).effective.entries,
+    'the recomposed plan states the entries the delivered plan states')
+})
+
+test('a closure the legacy layer states withdraws the resource operation its contract names', async t => {
+  // A resource server row is explorable through the operations its contract names, so a
+  // closure stated in the legacy layer has to leave that sentence too. The legacy layer
+  // states the whole path in one sentence while every operation is available, and the row
+  // is no capability at all once no operation remains.
+  const agent = agentFor(Session.create('legacy-closed-resource-operation'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs guidance.' }]
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  const env = createCapabilityEnvironment({ ctx: {}, config: config(),
+    toolSchemasForAgent: () => ['run_code', ...operations].map(schema) })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const contract = () => env.metadata(agent).find(entry => entry.namespace === 'mcp').members[0].contract
+  assert.equal(contract(), 'MCP resource server "docs". Use tools.list_mcp_resources({server}), '
+    + 'tools.list_mcp_resource_templates({server}), and tools.read_mcp_resource({server,uri}); '
+    + 'use the listed URI or expand a listed template.', 'the open path is the sentence the row states')
+  await env.change(agent, { scope: 'session', id: 'tools.read_mcp_resource', selection: 'closed' }, agent.signal)
+  await settle(env, agent)
+  assert.deepEqual(env.projectMembers(agent, ['run_code', ...operations]), ['run_code', ...operations.slice(0, 2)],
+    'the closed operation is no program member')
+  assert.doesNotMatch(contract(), /read_mcp_resource/u, 'the row names no call this session closed')
+  assert.match(contract(), /tools\.list_mcp_resources/u)
+  for (const name of operations.slice(0, 2)) await env.change(agent, { scope: 'session', id: `tools.${name}`, selection: 'closed' }, agent.signal)
+  await settle(env, agent)
+  assert.deepEqual(env.metadata(agent).find(entry => entry.namespace === 'mcp').members, [],
+    'with no operation left the server row is no capability of this session')
+})
+
 test('MCP resource contracts expose only selected available operations without restoring closed tools', async t => {
   const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
   policy.items['tools.read_mcp_resource'] = { availability: 'closed' }
@@ -4176,4 +4302,532 @@ test('a v5 snapshot of a policy-managed plan replays its own plan', async t => {
   assert.deepEqual(snapshot.plan.entries, [],
     'a plan with no deliverable capability is the closed-plan case')
   assert.equal(capabilityPlanTextFromMessage(state.message, agents[0].id), state.message.content[0].text)
+})
+
+
+// ── One delivered capability set, every model-visible projection agrees ────────
+//
+// A capability this session closed, or one the step does not deliver, is stated by
+// no model-visible surface: not in the `tools:sdk` declaration, not as a `tools.*`
+// member the program can call, not in the explorable `capabilities.*` metadata. The
+// three sets are compared with each other rather than each one filtered on its own,
+// because the defect this guards against is one question answered from two inputs:
+// the projections used to be filtered independently, so any input the other two did
+// not see (a record newer than the composition, a registry view broader than the
+// step's admission) declared a capability the program could not call.
+
+/** The members a rendered `tools:sdk` block declares, one entry per top-level member. */
+const sdkMembers = value => new Set([...value.matchAll(/^ {2}([A-Za-z_$][A-Za-z0-9_$]*):/gmu)].map(match => match[1]))
+/** Capabilities proper: the two transports are the call channel, not capabilities. */
+const capabilityNames = names => new Set([...names].filter(name => name !== 'run_code' && name !== 'edit_run_code'))
+/**
+ * The explorable tool metadata, derived the way the program bridge derives it: the
+ * visible schemas limited to the names this step actually delivers.
+ */
+const explorableNames = (env, agent, schemas, callable) => capabilityNames(
+  toolCapabilityMetadata(env.visibleSchemas(agent, schemas), {}).flatMap(entry => entry.members.map(member => member.name))
+    .filter(name => callable.has(name)))
+
+test('a capability the session closed leaves the SDK, the program members and the explorable metadata before the composition catches up', async t => {
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:probe', text: 'Probe guidance.' }]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'other'].map(schema)
+  const delivered = ['edit_run_code', 'probe', 'other']
+  const nativeSdk = renderToolsSdk(schemas.filter(item => item.name !== 'run_code'))
+  const agents = [agentFor(Session.create('record-closure-before-composition'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  await acceptPreparation(env, agent, hostSections)
+  assert.equal(env.stateFor(agent).snapshot.plan.entries.find(entry => entry.id === 'tools.probe').selection, 'host',
+    'the composition declares probe before the session decides anything about it')
+  assert.deepEqual(env.projectSections(agent, hostSections).map(section => section.name),
+    ['tools:sdk', 'tool:probe'], 'the composition delivers the capability guidance while it is open')
+  await env.change(agent, { scope: 'session', id: 'tools.probe', selection: 'closed' }, agent.signal)
+  // The record is durable and no composition has run since. This is the window in
+  // which the three surfaces used to disagree: the record is the session's newest
+  // statement, so it decides membership even though the plan has not caught up.
+  assert.equal(env.describe(agent).sessionOverrides['tools.probe'], 'closed')
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, nativeSdk, delivered.map(name => schemas.find(item => item.name === name)))))
+  const members = capabilityNames(env.projectMembers(agent, delivered))
+  const explorable = explorableNames(env, agent, schemas, new Set(delivered))
+  assert.deepEqual(declared, new Set(['other']), 'the SDK may not declare a capability the session closed')
+  assert.deepEqual(members, new Set(['other']), 'the program may not expose a capability the session closed')
+  assert.deepEqual(explorable, new Set(['other']), 'the explorable metadata may not name a capability the session closed')
+  assert.deepEqual(declared, members, 'the declared set and the callable set are one set')
+  assert.deepEqual(explorable, members, 'the explorable set and the callable set are one set')
+  assert.deepEqual(env.projectSections(agent, hostSections).map(section => section.name), ['tools:sdk'],
+    'the guidance that belongs to the closed capability leaves with it')
+})
+
+test('a policy closure leaves a registry view broader than the step with nothing to leak', async t => {
+  const policy = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  policy.items['tools.probe'] = { availability: 'closed' }
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }]
+  // `undelivered` is a registered definition this step does not admit: the host
+  // renders its own `tools:sdk` from the admitted definitions, so a declaration
+  // computed from the registry view would name a member the program cannot call.
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'other', 'undelivered'].map(schema)
+  const admitted = ['edit_run_code', 'probe', 'other'].map(name => schemas.find(item => item.name === name))
+  const nativeSdk = renderToolsSdk(admitted)
+  const agents = [agentFor(Session.create('policy-closure-admission'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(policy), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  await env.prepare(agent, hostSections, false, agent.signal, admitted)
+  assert.equal(env.stateFor(agent).snapshot.plan.entries.some(entry => entry.id === 'tools.undelivered'), false,
+    'the composition states the step it observes, so an unadmitted definition is not a capability of this session')
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, nativeSdk, admitted)))
+  const members = capabilityNames(env.projectMembers(agent, admitted.map(item => item.name)))
+  const explorable = explorableNames(env, agent, schemas, new Set(admitted.map(item => item.name)))
+  assert.deepEqual(declared, new Set(['other']), 'the SDK declares neither the closed nor the unadmitted capability')
+  assert.deepEqual(members, new Set(['other']))
+  assert.deepEqual(explorable, new Set(['other']))
+  assert.deepEqual(declared, members, 'the declared set and the callable set are one set')
+  assert.deepEqual(explorable, members, 'the explorable set and the callable set are one set')
+})
+
+test('a definition this step withholds withdraws its guidance section with the other three surfaces', async t => {
+  // A definition owns more than its signature: a host that registers guidance for a tool
+  // states it as `tool:<name>`, and that text tells the model what to do with a capability.
+  // A step that does not admit the definition delivers no member for the guidance to
+  // instruct, so the section leaves with the declaration, the program member and the
+  // explorable metadata — otherwise the model reads instructions for a call the program
+  // cannot make. This is the window in which the composition is broader than the step:
+  // it was composed from the registry, and a step that delivers less does not recompose it
+  // because the session decided nothing. The guidance section is not exempt from that.
+  const hostSections = [
+    { name: 'tools:sdk', text: 'native sdk' },
+    { name: 'tool:probe', text: 'Probe guidance.' },
+    { name: 'tool:withheld', text: 'Withheld guidance.' },
+  ]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'withheld'].map(schema)
+  const admitted = ['edit_run_code', 'probe'].map(name => schemas.find(item => item.name === name))
+  const agents = [agentFor(Session.create('withheld-guidance-section'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  // No admission observed yet, so the composition states the registry view — including the
+  // definition the step will not deliver, and the guidance that belongs to it.
+  await env.prepare(agent, hostSections)
+  assert.equal(env.stateFor(agent).snapshot.plan.entries.some(entry => entry.id === 'tools.withheld'), true,
+    'the composition states the registry view before a step states its admission')
+  assert.deepEqual(env.projectSections(agent, hostSections).map(section => section.name),
+    ['tools:sdk', 'tool:probe', 'tool:withheld'],
+    'a caller with no admission observed keeps the registry view: it is the only evidence it has')
+  // The step observes its admission. It states a narrower set than the composition, and the
+  // record decides nothing, so the composition is not rebuilt — every projection states the
+  // admission it observed while the plan stays as delivered.
+  await env.prepare(agent, hostSections, false, agent.signal, admitted)
+  assert.equal(env.stateFor(agent).snapshot.plan.entries.some(entry => entry.id === 'tools.withheld'), true,
+    'the delivered plan is not rewritten; the projections answer from the admission instead')
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, renderToolsSdk(admitted), admitted)))
+  const members = capabilityNames(env.projectMembers(agent, admitted.map(item => item.name)))
+  const explorable = explorableNames(env, agent, schemas, new Set(admitted.map(item => item.name)))
+  assert.deepEqual(declared, new Set(['probe']))
+  assert.deepEqual(members, declared)
+  assert.deepEqual(explorable, members)
+  assert.deepEqual(env.projectSections(agent, hostSections, admitted).map(section => section.name),
+    ['tools:sdk', 'tool:probe'], 'the guidance of a definition this step withholds leaves with it')
+  // The same composition and the same sections under the admission that delivers the
+  // definition: the filter states the step, not a policy about guidance sections.
+  assert.deepEqual(env.projectSections(agent, hostSections, schemas).map(section => section.name),
+    ['tools:sdk', 'tool:probe', 'tool:withheld'], 'a step that delivers the definition keeps its guidance')
+})
+
+test('a configured capability this step withholds is unresolved in the plan, not available on a surface', async t => {
+  // The frozen plan's `unresolvedConfigurationIds` states which configured ids this
+  // composition resolved no definition for. A capability the step withholds is one of
+  // them: configuration names a capability, the admission decides what the step has, and
+  // the difference stays visible where a reader diagnoses a missing row instead of being
+  // smoothed away as "never configured". Nothing renders that field, so it is not a leak.
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'withheld'].map(schema)
+  const admitted = ['edit_run_code', 'probe'].map(name => schemas.find(item => item.name === name))
+  const agents = [agentFor(Session.create('configured-but-withheld'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const configured = JSON.parse(CONFIG_DEFAULTS.capabilityPolicy)
+  configured.items['tools.withheld'] = { disclosure: 'full' }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(configured),
+    toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  const prepared = await env.prepare(agent, hostSections, false, agent.signal, admitted)
+  assert.deepEqual(prepared.snapshot.plan.unresolvedConfigurationIds, ['tools.withheld'],
+    'the plan states the configured capability it could not resolve')
+  assert.equal(prepared.snapshot.plan.entries.some(entry => entry.id === 'tools.withheld'), false)
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, renderToolsSdk(admitted), admitted)))
+  const members = capabilityNames(env.projectMembers(agent, admitted.map(item => item.name)))
+  assert.deepEqual(declared, new Set(['probe']))
+  assert.deepEqual(members, declared)
+  assert.equal(explorableNames(env, agent, schemas, new Set(admitted.map(item => item.name))).has('withheld'), false)
+})
+
+test('a host-declared surface with nothing closed keeps the host bytes and still equals the program members', async t => {
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'other'].map(schema)
+  const admitted = ['edit_run_code', 'probe', 'other'].map(name => schemas.find(item => item.name === name))
+  const nativeSdk = renderToolsSdk(admitted)
+  const agents = [agentFor(Session.create('host-declared-surface-equality'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  await env.prepare(agent, hostSections, false, agent.signal, admitted)
+  assert.equal(env.sdk(agent, nativeSdk, admitted), nativeSdk,
+    'a fully host-declared surface reuses the Host text byte for byte')
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, nativeSdk, admitted)))
+  const members = capabilityNames(env.projectMembers(agent, admitted.map(item => item.name)))
+  const explorable = explorableNames(env, agent, schemas, new Set(admitted.map(item => item.name)))
+  assert.deepEqual(declared, new Set(['probe', 'other']))
+  assert.deepEqual(declared, members)
+  assert.deepEqual(explorable, members)
+})
+
+test('a record that closes a server withdraws its members and its resource directory before the composition catches up', async t => {
+  // A server decides its members, so one recorded server closure has to reach the
+  // declaration, the program members and the resource directory the same way a member
+  // choice does — including the guidance sections that belong to it.
+  const hostSections = [
+    { name: 'tools:sdk', text: 'native sdk' },
+    { name: 'mcp:docs', text: 'Docs guidance.' },
+    { name: 'mcp:other', text: 'Other guidance.' },
+    { name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs","other"].' },
+  ]
+  const schemas = ['run_code', 'edit_run_code', 'mcp__docs__search', 'mcp__other__search', 'read_mcp_resource'].map(schema)
+  const delivered = ['edit_run_code', 'mcp__docs__search', 'mcp__other__search', 'read_mcp_resource']
+  const agents = [agentFor(Session.create('record-server-closure'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const agent = agents[0]
+  agent.runMaintenance = operation => operation(agent.signal)
+  await acceptPreparation(env, agent, hostSections)
+  assert.equal(env.stateFor(agent).snapshot.capabilities.find(item => item.id === 'tools.mcp__docs__search').mcpServer, 'docs',
+    'the composition proves which server owns each member before the session decides')
+  await env.change(agent, { scope: 'session', id: 'mcpServers.docs', selection: 'closed' }, agent.signal)
+  const declared = capabilityNames(sdkMembers(env.sdk(agent, renderToolsSdk(schemas.filter(item => item.name !== 'run_code')),
+    delivered.map(name => schemas.find(item => item.name === name)))))
+  const members = capabilityNames(env.projectMembers(agent, delivered))
+  assert.deepEqual(declared, new Set(['mcp__other__search', 'read_mcp_resource']))
+  assert.deepEqual(members, declared)
+  const sections = env.projectSections(agent, hostSections)
+  assert.deepEqual(sections.map(section => section.name), ['tools:sdk', 'mcp:other', 'mcp-resource-servers'])
+  assert.equal(sections.at(-1).text, 'Use the following MCP resource servers as the server argument: ["other"].',
+    'the directory names the servers a program may still ask for')
+})
+
+test('a session that closed a capability before its first composition declares nothing it cannot call', async t => {
+  // The degenerate path the report came from: a Host that composes no state for this
+  // agent yet (a restart, or a step assembled before the composition) still holds a
+  // session log whose newest record closed `probe`. The log is the record, so the
+  // answer is derived from it; withholding only the closed member is what keeps the
+  // surfaces equal, and "declare everything" is exactly the leak this guards.
+  const hostSections = [{ name: 'tools:sdk', text: 'native sdk' }, { name: 'tool:probe', text: 'Probe guidance.' }]
+  const schemas = ['run_code', 'edit_run_code', 'probe', 'other'].map(schema)
+  const delivered = ['edit_run_code', 'probe', 'other']
+  const admitted = delivered.map(name => schemas.find(item => item.name === name))
+  const nativeSdk = renderToolsSdk(admitted)
+  const agents = [agentFor(Session.create('record-closure-without-composition'))]
+  const ctx = { agents: { list: () => agents }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } }
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  const first = agents[0]
+  first.runMaintenance = operation => operation(first.signal)
+  await acceptPreparation(env, first, hostSections)
+  await env.change(first, { scope: 'session', id: 'tools.probe', selection: 'closed' }, first.signal)
+  const recorded = JSON.parse(JSON.stringify(first.session.snapshotEvents()))
+  const restarted = createCapabilityEnvironment({ ctx: { agents: { list: () => [] }, systemPrompt: { assemble: async () => ({ sections: hostSections }) } },
+    config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => restarted.dispose())
+  const cold = agentFor(Session.create(first.session.id, recorded, first.session.header))
+  assert.equal(restarted.stateFor(cold), undefined, 'this agent has no composition: the surfaces must answer from the record')
+  const declared = capabilityNames(sdkMembers(restarted.sdk(cold, nativeSdk, admitted)))
+  const members = capabilityNames(restarted.projectMembers(cold, delivered))
+  const explorable = explorableNames(restarted, cold, schemas, new Set(delivered))
+  assert.deepEqual(declared, new Set(['other']))
+  assert.deepEqual(members, new Set(['other']))
+  assert.deepEqual(explorable, new Set(['other']))
+  assert.deepEqual(declared, members)
+  assert.deepEqual(explorable, members)
+  assert.deepEqual(restarted.projectSections(cold, hostSections).map(section => section.name), ['tools:sdk'],
+    'with no composition to state the environment, the record alone still withdraws the guidance')
+})
+
+for (const userInvocable of [true, false]) test(`a loader closed after the composition leaves the Skill row only the path it still has with user entry ${userInvocable}`, async t => {
+  // A row states an invocation path, and the composition states the one it was built under.
+  // A decision recorded afterwards is already the session's newest statement, so the row a
+  // session can still explore may state only what that decision left: the contract the
+  // composition froze tells the model to load the body through a member the program no
+  // longer has, and with no path left the row is no capability of this session at all.
+  const ctx = { skills: { snapshot: async () => ({ complete: true, skills: [
+    { name: 'algebra', description: 'Algebra instructions', provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable } },
+  ] }) } }
+  const schemas = ['run_code', 'skill'].map(schema)
+  const agent = agentFor(Session.create(`record-closed-loader-row-${userInvocable}`))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const rows = () => env.metadata(agent).find(entry => entry.namespace === 'skills').members
+  assert.match(rows()[0].contract, /Load instructions: await tools\.skill\(/u,
+    'the composition states the loader path while the loader is open')
+  await env.change(agent, { scope: 'session', id: 'tools.skill', selection: 'closed' }, agent.signal)
+  assert.deepEqual(env.projectMembers(agent, ['run_code', 'skill']), ['run_code'],
+    'no composition has folded the decision yet, and the program member already answers it')
+  const contract = rows()[0]?.contract ?? ''
+  if (userInvocable) {
+    assert.match(contract, /User-only Skill: the user can invoke \/algebra/u, 'the row states the path that remains')
+    assert.doesNotMatch(contract, /await tools\.skill\(/u, 'the row names no call this session closed')
+    assert.deepEqual(rows()[0].invocation, { modelInvocable: false, userInvocable: true })
+  } else {
+    assert.deepEqual(rows(), [], 'with no path left the row is no capability of this session')
+  }
+})
+
+test('an operation closed after the composition leaves the resource row only the calls it still has', async t => {
+  // The same window on the resource side: the row is explorable through the operations its
+  // contract names, so an operation this session closed after the composition may not stay
+  // in that sentence, and a server with no operation left is no capability of this session.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs guidance.' }]
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  const agent = agentFor(Session.create('record-closed-resource-row'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(),
+    toolSchemasForAgent: () => ['run_code', ...operations].map(schema) })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const rows = () => env.metadata(agent).find(entry => entry.namespace === 'mcp').members
+  assert.equal(rows()[0].contract, 'MCP resource server "docs". Available operations: '
+    + 'tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}), '
+    + 'tools.read_mcp_resource({server,uri}).', 'the composition states the whole path while it is open')
+  await env.change(agent, { scope: 'session', id: 'tools.read_mcp_resource', selection: 'closed' }, agent.signal)
+  assert.deepEqual(env.projectMembers(agent, ['run_code', ...operations]), ['run_code', ...operations.slice(0, 2)],
+    'no composition has folded the decision yet, and the program member already answers it')
+  assert.doesNotMatch(rows()[0].contract, /read_mcp_resource/u, 'the row names no call this session closed')
+  assert.equal(rows()[0].contract, 'MCP resource server "docs". Available operations: '
+    + 'tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}).',
+  'the row states the operations that remain, in the Host order')
+  for (const name of operations.slice(0, 2)) await env.change(agent, { scope: 'session', id: `tools.${name}`, selection: 'closed' }, agent.signal)
+  assert.deepEqual(env.metadata(agent).find(entry => entry.namespace === 'mcp').members, [],
+    'with no operation left the server row is no capability of this session')
+  assert.deepEqual(env.projectSections(agent, hostSections).map(section => section.name), [],
+    'the guidance the composed row owned leaves with it, and so does the directory that named the server')
+})
+
+for (const userInvocable of [true, false]) test(`a step that withholds the shared loader leaves the Skill row only the path it has with user entry ${userInvocable}`, async t => {
+  // The composition states the environment it was built under, and a step that delivers
+  // less than the composition does not rebuild it: the session decided nothing. The other
+  // three projections already answer that step — the declaration filters by the admission,
+  // the program members are the functions it installs, the tool metadata is their
+  // intersection — so the Skill row's contract, which is the only thing that tells the
+  // model how to load the body, may not keep instructing a loader this program lacks.
+  const ctx = { skills: { snapshot: async () => ({ complete: true, skills: [
+    { name: 'algebra', description: 'Algebra instructions', provider: 'test', source: 'test', invocation: { modelInvocable: true, userInvocable } },
+  ] }) } }
+  const schemas = ['run_code', 'skill'].map(schema)
+  const admitted = [schema('run_code')]
+  const agent = agentFor(Session.create(`admission-withheld-loader-row-${userInvocable}`))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx, config: composedConfig(), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [])
+  const rows = delivered => env.metadata(agent, delivered).find(entry => entry.namespace === 'skills').members
+  assert.match(rows()[0].contract, /Load instructions: await tools\.skill\(/u,
+    'a caller that observed no admission keeps the composition: it states the loader path')
+  // The step's own answer: no loader function, so no member to call.
+  assert.deepEqual(env.projectMembers(agent, ['run_code']), ['run_code'],
+    'the program of this step has no loader')
+  const contract = rows(admitted)[0]?.contract ?? ''
+  if (userInvocable) {
+    assert.match(contract, /User-only Skill: the user can invoke \/algebra/u, 'the row states the path this step still has')
+    assert.doesNotMatch(contract, /await tools\.skill\(/u, 'the row names no call this step withholds')
+    assert.deepEqual(rows(admitted)[0].invocation, { modelInvocable: false, userInvocable: true })
+  } else {
+    assert.deepEqual(rows(admitted), [], 'with no path left the row is no capability of this step')
+  }
+  // The composition itself is unchanged: an unobserved admission is not an observation
+  // that the capability left, and the row returns with the loader on the step that
+  // delivers it again.
+  assert.match(rows(schemas)[0].contract, /Load instructions: await tools\.skill\(/u)
+})
+
+test('a step that withholds a shared resource operation leaves the resource row only the calls the program has', async t => {
+  // The resource row is explorable through the operations its contract names, so the
+  // sentence states the intersection of what the composition delivered and what this step
+  // delivers — the same two-resource row the record closure leaves, asked from the other
+  // input. A server with no operation left is no capability of this step: it names no call.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' },
+    { name: 'mcp:docs', text: 'Docs guidance.' }]
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  const registry = ['run_code', ...operations].map(schema)
+  const agent = agentFor(Session.create('admission-withheld-resource-row'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(),
+    toolSchemasForAgent: () => registry })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const rows = delivered => env.metadata(agent, delivered).find(entry => entry.namespace === 'mcp').members
+  const open = 'MCP resource server "docs". Available operations: tools.list_mcp_resources({server}), '
+    + 'tools.list_mcp_resource_templates({server}), tools.read_mcp_resource({server,uri}).'
+  assert.equal(rows()[0].contract, open, 'a caller that observed no admission keeps the composition')
+  const partial = [schema('run_code'), ...operations.slice(0, 2).map(schema)]
+  assert.deepEqual(env.projectMembers(agent, ['run_code', ...operations.slice(0, 2)]),
+    ['run_code', ...operations.slice(0, 2)], 'the program of this step has no third operation')
+  assert.equal(rows(partial)[0].contract, 'MCP resource server "docs". Available operations: '
+    + 'tools.list_mcp_resources({server}), tools.list_mcp_resource_templates({server}).',
+  'the row states the operations this step delivers, in the Host order')
+  assert.deepEqual(rows([schema('run_code')]), [], 'with no operation left the server row is no capability of this step')
+  assert.equal(rows(registry)[0].contract, open, 'a step that delivers the operations keeps the whole path')
+})
+
+test('a step that delivers no resource operation leaves the server directory nothing to name', async t => {
+  // The `mcp-resource-servers` section lists the names a program may pass as the `server`
+  // argument, and the only members that take one are the three resource operations. The
+  // composition states the servers it was built under, so a step that delivers none of those
+  // operations has no call that takes a server name — while the section, its server
+  // instructions and the explorer row would otherwise still instruct one. A restriction
+  // (`agent.ctx.tools.restrict`) is the reachable form of that step: the operations leave the
+  // admission and the provider keeps serving.
+  const hostSections = [
+    { name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs","other"].' },
+    { name: 'mcp:docs', text: 'Docs instructions.' },
+    { name: 'mcp:other', text: 'Other instructions.' },
+  ]
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  const registry = ['run_code', ...operations].map(schema)
+  const agent = agentFor(Session.create('admission-withheld-resource-directory'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx: {}, config: composedConfig(),
+    toolSchemasForAgent: () => registry })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  const projected = delivered => env.projectSections(agent, hostSections, delivered)
+  // A caller with no admission keeps the composition: it is not an observation that the
+  // step delivers less.
+  assert.deepEqual(projected().map(section => section.name), ['mcp-resource-servers', 'mcp:docs', 'mcp:other'])
+  assert.deepEqual(projected([schema('run_code')]), [],
+    'a step that delivers no operation taking a server name states no server')
+  assert.deepEqual(env.metadata(agent, [schema('run_code')]).find(entry => entry.namespace === 'mcp').members, [],
+    'the explorer already states that answer: the prompt states the same one')
+  // One delivered operation still takes a server name, so the directory stays and the row
+  // states the operation this step really has.
+  const partial = [schema('run_code'), schema('list_mcp_resources')]
+  assert.deepEqual(projected(partial).map(section => section.name), ['mcp-resource-servers', 'mcp:docs', 'mcp:other'],
+    'one delivered operation still names the servers')
+  assert.equal(projected(partial)[0].text,
+    'Use the following MCP resource servers as the server argument: ["docs","other"].',
+  'the directory the composition stated is served unchanged while a server is still nameable')
+  assert.deepEqual(projected(registry).map(section => section.name), ['mcp-resource-servers', 'mcp:docs', 'mcp:other'],
+    'a step that delivers the operations keeps every section')
+})
+
+test('a directory this step cannot use leaves even when no composition states the environment', async t => {
+  // With management disabled no plan states the environment, so the record and the admission
+  // are the only inputs — and the same statement holds: a server name is the argument of three
+  // members this step may not deliver, so the Host's own directory is withdrawn rather than
+  // served because nothing composed.
+  const hostSections = [{ name: 'mcp-resource-servers', text: 'Use the following MCP resource servers as the server argument: ["docs"].' }]
+  const operations = ['list_mcp_resources', 'list_mcp_resource_templates', 'read_mcp_resource']
+  const registry = ['run_code', ...operations].map(schema)
+  const agent = agentFor(Session.create('unmanaged-resource-directory'))
+  agent.runMaintenance = operation => operation(agent.signal)
+  const env = createCapabilityEnvironment({ ctx: {},
+    config: { ...config(), capabilityManagementEnabled: false }, toolSchemasForAgent: () => registry })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, hostSections)
+  assert.equal(env.stateFor(agent)?.snapshot.plan.enabled, false, 'no composition states the environment')
+  assert.deepEqual(env.projectSections(agent, hostSections).map(section => section.name), ['mcp-resource-servers'],
+    'a caller that observed no admission keeps the Host directory')
+  assert.deepEqual(env.projectSections(agent, hostSections, registry).map(section => section.name), ['mcp-resource-servers'])
+  assert.deepEqual(env.projectSections(agent, hostSections, [schema('run_code')]), [],
+    'a step that delivers no operation taking a server name states no server')
+})
+
+test('a step admission states contracts and revisions through this owner\'s view, not the model-facing schemas', async t => {
+  // The admission the Host publishes is its model-facing projection: `tools.schemas()` returns
+  // name, description and parameters and no output schema, because the output contract is the
+  // SDK projection's job. A composition that read those definitions as the capability contracts
+  // recorded `Promise<unknown>` for every full-disclosure capability and a revision no live
+  // inventory agrees with — the model then read a wrong signature in the plan, and the next step
+  // sent a contract update for a change that never happened.
+  const sdk = name => ({ name, description: `Owner contract for ${name}.`,
+    parameters: { type: 'object', properties: {} }, output: { type: 'string' } })
+  const modelFacing = name => ({ name, description: `Owner contract for ${name}.`, parameters: { type: 'object', properties: {} } })
+  const baseline = { ...config(), capabilityBaseline: '["tools.probe"]' }
+  const host = [sdk('probe'), sdk('other')]
+  const make = agent => {
+    const ctx = { agents: { list: () => [agent] }, systemPrompt: { assemble: async () => ({ sections }) } }
+    return createCapabilityEnvironment({ ctx, config: baseline, toolSchemasForAgent: () => host })
+  }
+  const registryAgent = agentFor(Session.create('contract-from-registry'))
+  registryAgent.runMaintenance = operation => operation(registryAgent.signal)
+  const registry = make(registryAgent)
+  t.after(() => registry.dispose())
+  await registry.prepare(registryAgent, sections)
+  const admissionAgent = agentFor(Session.create('contract-from-admission'))
+  admissionAgent.runMaintenance = operation => operation(admissionAgent.signal)
+  const admission = make(admissionAgent)
+  t.after(() => admission.dispose())
+  await admission.prepare(admissionAgent, sections, false, admissionAgent.signal,
+    [modelFacing('probe'), modelFacing('other')])
+  const entry = env => env.describe(env === registry ? registryAgent : admissionAgent).effective.entries
+    .find(item => item.id === 'tools.probe')
+  assert.match(registry.describe(registryAgent).effective.catalogText, /tools\.probe\([^\n]*Promise<string>/u,
+    'a composition that observed no admission reads the contract view')
+  assert.match(admission.describe(admissionAgent).effective.catalogText, /tools\.probe\([^\n]*Promise<string>/u,
+    'the admission restricts the same contract view instead of replacing it')
+  assert.doesNotMatch(admission.describe(admissionAgent).effective.catalogText, /Promise<unknown>/u,
+    'no delivered capability promises an unknown result')
+  assert.deepEqual(entry(admission), entry(registry),
+    'one definition has one revision, whether or not the step admission narrowed the view')
+  assert.deepEqual(admission.stateFor(admissionAgent).snapshot.plan.entries.map(item => item.id),
+    ['tools.other', 'tools.probe'], 'the admission still decides which definitions are capabilities')
+})
+
+test('a switch that is off delegates the Host surface, so a recorded closure is retained but not applied', async t => {
+  // A paused context and a disabled management switch both delegate the Host's capability
+  // surface: the environment composes nothing and filters nothing, so a session choice stays a
+  // stored choice that applies again once management is on. Reading the record there would
+  // enforce a closure the switch suspended — and only half enforce it, because the same switch
+  // also lets the Host execute the member.
+  const host = [schema('probe'), schema('other')]
+  const record = agent => {
+    agent.session.append('user/message', capabilitySelectionMessage({ schema: CAPABILITY_SELECTION_SCHEMA,
+      choices: { 'tools.probe': { availability: 'closed' } } }), { surfaceOp: 'append' })
+  }
+  const delegated = async (label, overrides) => {
+    const agent = agentFor(Session.create(label))
+    agent.runMaintenance = operation => operation(agent.signal)
+    const env = createCapabilityEnvironment({ ctx: {}, config: { ...config(), ...overrides }, toolSchemasForAgent: () => host })
+    t.after(() => env.dispose())
+    await acceptPreparation(env, agent, sections)
+    record(agent)
+    assert.deepEqual(env.projectMembers(agent, ['probe', 'other']), ['probe', 'other'],
+      `${label}: the member the Host admits stays a program member`)
+    assert.equal(env.sdk(agent, 'native sdk'), 'native sdk', `${label}: the Host declaration is delivered unchanged`)
+    assert.deepEqual(env.visibleSchemas(agent, host).map(item => item.name), ['probe', 'other'])
+    assert.equal(env.describe(agent).sessionOverrides['tools.probe'], 'closed',
+      `${label}: the choice is retained for the composition that applies it again`)
+    return env
+  }
+  await delegated('management-off-record', { capabilityManagementEnabled: false })
+  await delegated('paused-context-record', { capabilityContextEnabled: false })
+  // The same record under management: the closure is what this environment applies.
+  const managed = agentFor(Session.create('managed-record-applies'))
+  managed.runMaintenance = operation => operation(managed.signal)
+  const env = createCapabilityEnvironment({ ctx: {}, config: config(), toolSchemasForAgent: () => host })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, managed, sections)
+  record(managed)
+  assert.deepEqual(env.projectMembers(managed, ['probe', 'other']), ['other'],
+    'with management on the same record is applied')
 })

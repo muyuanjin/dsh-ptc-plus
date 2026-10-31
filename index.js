@@ -749,11 +749,16 @@ export const apply = (ctx, config = {}) => {
 function applyWithExecutionSeam(ctx, resolvedConfig, seam, volatileHost, volatileConfig) {
   let settingsWriter
   const sessionLog = createSessionLogOwner(ctx)
-  const toolSchemasForAgent = agent => typeof ctx.tools.schemas === 'function'
-    ? ctx.tools.schemas(agent)
+  // The second argument is the step's admission. Naming it is how a caller states the set
+  // the Host actually delivers for that step; omitting it reads every definition
+  // registered at this scope, which is the only view a call outside a model step has.
+  const toolSchemasForAgent = (agent, toolSet = undefined) => typeof ctx.tools.schemas === 'function'
+    ? ctx.tools.schemas(agent, toolSet)
     : []
-  // SDK contracts include output schemas; model-facing schemas remain unchanged.
-  const toolSdkSchemasForAgent = agent => toolSdkSchemas(ctx.tools, agent)
+  // SDK contracts include output schemas; model-facing schemas remain unchanged. The
+  // admission is read through the same registry, so a contract describes the definition
+  // this step delivers rather than one the registry would resolve.
+  const toolSdkSchemasForAgent = (agent, toolSet = undefined) => toolSdkSchemas(ctx.tools, agent, toolSet)
   const sessionId = agent => {
     const id = agent?.session?.id ?? agent?.id
     return id === undefined ? undefined : String(id)

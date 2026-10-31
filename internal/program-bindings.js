@@ -3,10 +3,19 @@ import { record, text } from './record-utils.js'
 import { createHash } from 'node:crypto'
 import { snapshotJsonValue } from '@deepseek-ai/dsh-util-values'
 
-/** Derive SDK contracts from the public, scope-qualified tool registry. */
-export function toolSdkSchemas(tools, scope) {
-  return tools.schemas(scope).filter(schema => schema.name !== 'run_code').map(schema => {
-    const definition = tools.get(schema.name, scope)
+/**
+ * Derive SDK contracts from the public, scope-qualified tool registry.
+ *
+ * `toolSet` is the step's admission, and passing it is how a caller states the set the
+ * Host actually delivers for that step: the Host renders its own `tools:sdk` block and
+ * builds a program's `tools` members from the admitted definitions, so a contract list
+ * read from the registered-definitions view can name a member no step delivers.
+ */
+export function toolSdkSchemas(tools, scope, toolSet = undefined) {
+  return tools.schemas(scope, toolSet).filter(schema => schema.name !== 'run_code').map(schema => {
+    // The definition is read through the same admission, so a contract describes the
+    // definition this step delivers rather than one the registry would resolve.
+    const definition = tools.get(schema.name, scope, toolSet)
     const output = snapshotJsonValue(definition?.output?.schema)
     if (output === undefined) {
       throw new TypeError(`ptc-plus: tool "${schema.name}" output schema must be lossless JSON before SDK projection`)

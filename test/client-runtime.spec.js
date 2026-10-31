@@ -8569,6 +8569,43 @@ test('the settings entrance states a server row with its own rule control and no
   expect(within(probe).getByRole('checkbox')).not.toBeNull()
 })
 
+test('the settings capability page owns one scroll surface and clips every cell to one line', async () => {
+  // The page, not the section, owns the vertical wheel: the inline surface only clips its corners,
+  // the list inside it never becomes a scroll container, and the strips this surface scrolls
+  // sideways contain only that axis, so a wheel over the table cannot stall the page under the
+  // pointer. Every cell clips to one line and keeps its full text as a title, so no row grows with
+  // the length of its words; a display name that differs from the id is the one remaining
+  // difference between two rows, and it adds the id line below the name.
+  const catalog = [{ id: 'tools.probe', name: 'probe' }, { id: 'skills.same_name' }]
+  const { view } = await capabilityWorkbenchFixture({ catalog })
+  const surface = view.container.querySelector('.ptcPlusCapabilitySurface-inline')
+  expect(surface).not.toBeNull()
+  expect(surface.querySelector('.ptcPlusSessionCapabilityList')).not.toBeNull()
+  const rows = [...surface.querySelectorAll('.ptcPlusCapabilityItem')]
+  expect(rows.length).toBeGreaterThan(1)
+  for (const row of rows) {
+    // One text block per row: it exists even when there is no separate id line, and every cell
+    // keeps its full text reachable as a title while it clips.
+    expect(row.querySelector('.ptcPlusCapabilityIdentityText')).not.toBeNull()
+    expect(row.querySelector('.ptcPlusSessionCapabilityName').getAttribute('title')).toBeTruthy()
+    expect(row.querySelector('.ptcPlusCapabilitySource').getAttribute('title')).toBeTruthy()
+  }
+  expect(surface.querySelector('[data-capability-id="tools.probe"] .ptcPlusCapabilityIdentityText code')
+    .getAttribute('title')).toBe('tools.probe')
+  expect(surface.querySelector('[data-capability-id="skills.same_name"] .ptcPlusCapabilityIdentityText code'))
+    .toBeNull()
+  // The declarations that make those two facts true, pinned where a later restyle must read them.
+  expect(CLIENT_CSS).toContain('.ptcPlusCapabilitySurface-inline{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;overflow:clip}')
+  expect(CLIENT_CSS).toContain('.ptcPlusCapabilitySurface-inline .ptcPlusSessionCapabilityList{flex:none;max-height:none;overflow:visible;overscroll-behavior:auto}')
+  expect(CLIENT_CSS).toContain('overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain')
+  expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilityColumns.ptcPlusCapabilityColumns{display:flex;gap:4px 12px;overflow-x:auto;overscroll-behavior-x:contain;padding-block:4px}')
+  expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilityToolbar{display:flex;gap:6px;overflow-x:auto;overscroll-behavior-x:contain;padding-block:1px}')
+  expect(CLIENT_CSS).toContain('.ptcPlusCapabilityItem{box-sizing:border-box;min-height:54px;')
+  expect(CLIENT_CSS).toContain('.ptcPlusCapabilityIdentityText{display:flex;flex-direction:column;justify-content:center;gap:3px;min-width:0;min-height:32px}')
+  expect(CLIENT_CSS).toContain('.ptcPlusCapabilityIdentityText>span,.ptcPlusCapabilityIdentityText>code{display:block;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}')
+  expect(CLIENT_CSS).toContain('white-space:nowrap;overflow:hidden;text-overflow:ellipsis}')
+})
+
 test('capability tabs move with the arrow keys and Home and End', async () => {
   // The workbench is plugin-owned settings, so its tab strip owns keyboard movement: an arrow moves
   // focus to the next tab and selects it, Home and End go to the ends. Nothing else pins this since

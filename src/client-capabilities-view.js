@@ -1638,10 +1638,16 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
           disabled: savedDisabled(), options: choiceOptions(SAVED_DISCLOSURE),
           onChange: value => writeSaved(row, 'disclosure', value) }))
       : h('span', { className: 'ptcPlusSessionCapabilitySavedDisclosure' }, savedDisclosure(row))
+    // Every cell states one clipped line and keeps its full text as the title, so no row grows
+    // with the length of its words. A display name that differs from the id is the one remaining
+    // difference between two rows: it adds the id line below the name.
+    const identityName = row => h('span', { className: 'ptcPlusSessionCapabilityName',
+      title: row.name ?? row.id }, row.name ?? row.id)
+    const identityId = row => row.name && row.name !== row.id
+      ? h('code', { title: row.id }, row.id) : null
     const identityCell = row => row.kind === 'binding'
       ? h('span', { className: 'ptcPlusCapabilityIdentity' },
-        h('span', { className: 'ptcPlusSessionCapabilityName' }, row.name ?? row.id),
-        row.name && row.name !== row.id ? h('code', null, row.id) : null)
+        h('span', { className: 'ptcPlusCapabilityIdentityText' }, identityName(row), identityId(row)))
       : h('div', { className: 'ptcPlusCapabilityIdentity' },
         // Only a capability row takes part in a batch: a server row's saved cell edits the scope's
         // `mcpServers.<server>` rule on its own, and a binding row writes the bindings document.
@@ -1650,14 +1656,12 @@ export function createCapabilitySurfaceView(React, { commands, bindingCommands, 
           disabled: writable === false,
           onChange: () => setPicked(current => current.includes(row.id)
             ? current.filter(id => id !== row.id) : [...current, row.id]) }),
-        h('div', { className: 'ptcPlusCapabilityIdentityText' },
-          h('span', { className: 'ptcPlusSessionCapabilityName' }, row.name ?? row.id),
-          row.name && row.name !== row.id ? h('code', null, row.id) : null))
+        h('div', { className: 'ptcPlusCapabilityIdentityText' }, identityName(row), identityId(row)))
     const cellsOf = row => {
       const cells = {
         object: identityCell(row),
         type: h('span', { className: 'ptcPlusCapabilityBadge', 'data-kind': badgeOf(row) }, t(`capabilities.type.${badgeOf(row)}`)),
-        source: h('span', { className: 'ptcPlusCapabilitySource' }, sourceText(row)),
+        source: h('span', { className: 'ptcPlusCapabilitySource', title: sourceText(row) }, sourceText(row)),
         savedEnabled: savedEnabledCell(row),
         savedDisclosure: savedDisclosureCell(row),
         sessionEnabled: sessionAvailabilityCell(row),

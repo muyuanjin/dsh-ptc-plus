@@ -2364,7 +2364,7 @@ test('the session capability panel states the seven contract columns and the rec
   // rule and no case observes would state nothing.
   expect(row('tools.probe').querySelector('.ptcPlusSessionCapabilitySavedDisclosure').hasAttribute('data-state'))
     .toBe(false)
-  // Each state owns declared styling for the stripe, the mark and the word, so the difference
+  // Each state owns declared styling for the stripe, the mark and the cell, so the difference
   // survives the theme: a colour alone in one rule would leave two states looking alike.
   for (const state of ['enabled', 'closed', 'automatic', 'inherit', 'skip']) {
     expect(CLIENT_CSS).toContain(`[data-session-state=${state}]`)
@@ -2373,6 +2373,26 @@ test('the session capability panel states the seven contract columns and the rec
   expect(CLIENT_CSS).toContain('.ptcPlusSessionStateMark{')
   expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilitySaved[data-state=enabled]')
   expect(CLIENT_CSS).toContain('.ptcPlusSessionCapabilitySaved[data-state=closed]')
+  // The state is carried by the control's own fill and border, not by colouring its label: a
+  // trigger whose word was tinted read as text emphasis rather than as a state, and the word
+  // inside it already states the state.
+  for (const [state, token] of [['enabled', 'success'], ['closed', 'error'], ['automatic', 'business']]) {
+    expect(CLIENT_CSS).toMatch(new RegExp(`\\.ptcPlusSessionCapabilityAvailability\\[data-state=${state}\\] \\.ptcPlusSelectTrigger[,{][^}]*background:color-mix\\(in srgb,var\\(--dsw-alias-state-${token}-primary[^)]*\\) 10%,transparent\\)`))
+    expect(CLIENT_CSS).toMatch(new RegExp(`\\.ptcPlusSessionCapabilitySaved\\[data-state=${state}\\] \\.ptcPlusSelectTrigger[,{][^}]*background:color-mix\\(`))
+  }
+  // The adoption column speaks the tone its own mark and row stripe speak: `use` is the success
+  // tone and `damaged` the error tone, so the two groups cannot swap without a case failing.
+  expect(CLIENT_CSS).toMatch(/\.ptcPlusSessionCapabilityAvailability\[data-state=use\] \.ptcPlusBindingToggle[^{]*\{[^}]*background:color-mix\(in srgb,var\(--dsw-alias-state-success-primary/)
+  expect(CLIENT_CSS).toMatch(/\.ptcPlusSessionCapabilityAvailability\[data-state=damaged\] \.ptcPlusBindingToggle[^{]*\{[^}]*background:color-mix\(in srgb,var\(--dsw-alias-state-error-primary/)
+  expect(CLIENT_CSS).not.toMatch(/\.ptcPlusSessionCapabilityAvailability\[data-state=use\] \.ptcPlusBindingToggle[^{]*\{[^}]*--dsw-alias-state-error-primary/)
+  // No state rule colours or weights the word itself; a text colour reaches these cells only as
+  // the secondary label colour that states precedence, which names a layer and no state. The
+  // match rejects `color:` at any declaration position while leaving `border-color` and
+  // `background-color` alone, so a state word tinted as a rule's first declaration still fails.
+  expect(CLIENT_CSS).not.toMatch(/\[data-state=(?:enabled|closed|automatic|use|damaged)\] \.ptcPlusSelectTrigger[^{]*\{[^}]*(?<![-\w])color:/)
+  // A cell that states a word instead of holding a control states the same state as a chip.
+  expect(CLIENT_CSS).toContain('span.ptcPlusSessionCapabilitySaved[data-state=enabled],span.ptcPlusSessionCapabilitySaved[data-state=automatic],span.ptcPlusSessionCapabilitySaved[data-state=closed]{')
+  expect(CLIENT_CSS).not.toMatch(/\.ptcPlusSessionCapabilitySaved\[data-state=(?:enabled|closed|automatic)\]\{[^}]*(?<![-\w])color:/)
   // Nothing on the panel is disabled: every row states a decision it can record.
   expect(panel.querySelectorAll('[disabled], [aria-disabled="true"]')).toHaveLength(0)
 })

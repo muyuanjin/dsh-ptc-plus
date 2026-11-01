@@ -423,6 +423,11 @@ export function isHostServicePackageName(name) {
  * Validate an installed host graph against its lock, including nested copies.
  * A consumer install decides its own cohort, so the lock it produced is the only
  * record of what was asked for; this proves the tree matches it.
+ *
+ * A lock entry marked optional states a member of the cohort, not a file every
+ * platform holds: an `os`/`cpu` restricted package is legitimately absent from an
+ * install on another platform and is reported as not installed here. Every other
+ * missing entry is drift and fails the way a stale version does.
  * @param {string} root - installation root containing `package.json` and `package-lock.json`.
  * @param {object} [lock] - parsed lock, read from the root when omitted.
  * @returns {Promise<object[]>} the verified entries.
@@ -433,11 +438,21 @@ export async function verifyInstalledHostGraph(root, lock) {
   for (const [packagePath, entry] of Object.entries(lock.packages ?? {})) {
     const match = /(?:^|\/)node_modules\/(@[^/]+\/[^/]+)$/.exec(packagePath)
     if (!match || !isHostServicePackageName(match[1])) continue
-    const installed = JSON.parse(await readFile(join(root, packagePath, 'package.json'), 'utf8'))
+    const installed = await readFile(join(root, packagePath, 'package.json'), 'utf8').then(JSON.parse, error => {
+      if (error.code !== 'ENOENT') throw error
+      return undefined
+    })
+    if (installed === undefined) {
+      if (entry.optional === true) {
+        verified.push({ packagePath, name: match[1], version: entry.version, installed: false })
+        continue
+      }
+      throw new Error(`installed Host ${packagePath} is missing; run npm ci`)
+    }
     if (installed.name !== match[1] || installed.version !== entry.version) {
       throw new Error(`installed Host ${packagePath} differs from its frozen lock; run npm ci`)
     }
-    verified.push({ packagePath, name: installed.name, version: installed.version })
+    verified.push({ packagePath, name: installed.name, version: installed.version, installed: true })
   }
   return verified
 }

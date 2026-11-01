@@ -4,6 +4,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session } from '@deepseek-ai/dsh-session'
 import {
   BINDING_ADOPTION_FORM,
+  BINDING_ADOPTION_RECORD,
   BINDING_ADOPTION_SCHEMA,
   bindingAdoptionMessage,
   bindingAdoptionOf,
@@ -14,6 +15,7 @@ import {
   latestBindingAdoption,
   normalizeBindingAdoption,
   readBindingAdoption,
+  readBindingAdoptionRecord,
   withBindingAdoption,
 } from '../internal/binding-adoption.js'
 import { readRuntimeMessage } from '../internal/runtime-messages.js'
@@ -89,6 +91,19 @@ test('the newest adoption record is the session decision', () => {
   assert.equal(latestBindingAdoption(undefined), undefined)
   assert.equal(latestBindingAdoption([{ form: 'catalog' }]), undefined)
   assert.equal(latestBindingAdoption([{ form: BINDING_ADOPTION_FORM, declined: ['bad id'] }]), undefined)
+})
+
+test('a committed adoption record this build cannot read reads as no record', () => {
+  // A record states a decision only while its payload is this vocabulary, so a damaged one
+  // reads as no record here and no reader can turn it into a withdrawal the session made.
+  const readable = { seq: 1, type: BINDING_ADOPTION_RECORD, ignorable: true, data: adoption(['alpha']) }
+  assert.deepEqual(readBindingAdoptionRecord(readable), adoption(['alpha']))
+  assert.equal(readBindingAdoptionRecord({ ...readable,
+    data: { schema: BINDING_ADOPTION_SCHEMA, declined: 'alpha' } }), undefined)
+  // The record type alone is no decision either: a node the fold does not carry as ignorable,
+  // or a different carrier, states nothing about this session's adoption.
+  assert.equal(readBindingAdoptionRecord({ ...readable, ignorable: false }), undefined)
+  assert.equal(readBindingAdoptionRecord({ ...readable, type: 'user/message' }), undefined)
 })
 
 test('a newest adoption record this build cannot read is a state, not a fallback', () => {

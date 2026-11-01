@@ -275,6 +275,31 @@ test('reused frozen Host rejects installed service drift despite unchanged lock 
   }
 })
 
+test('a platform-optional Host package this install cannot hold is stated, not required', async t => {
+  // A frozen graph names the cohort, and an `os`-restricted member is absent from an install on
+  // another platform by design: requiring the file would make every release smoke fail on a
+  // platform the package does not target. A missing entry the lock does not mark optional is
+  // still drift, so the tolerance cannot hide an incomplete install.
+  const root = await mkdtempUnderTmp('ptc-optional-host-')
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const packages = {
+    'node_modules/@deepseek-ai/dsh': { version: '8.0.0' },
+    'node_modules/@deepseek-ai/dsh-experimental-cua-macos': { version: '8.0.0', optional: true, os: ['darwin'] },
+  }
+  await mkdir(join(root, 'node_modules/@deepseek-ai/dsh'), { recursive: true })
+  await writeFile(join(root, 'node_modules/@deepseek-ai/dsh/package.json'),
+    JSON.stringify({ name: '@deepseek-ai/dsh', version: '8.0.0' }))
+  const verified = await verifyInstalledHostGraph(root, { packages })
+  assert.deepEqual(verified, [
+    { packagePath: 'node_modules/@deepseek-ai/dsh', name: '@deepseek-ai/dsh', version: '8.0.0', installed: true },
+    { packagePath: 'node_modules/@deepseek-ai/dsh-experimental-cua-macos',
+      name: '@deepseek-ai/dsh-experimental-cua-macos', version: '8.0.0', installed: false },
+  ])
+  delete packages['node_modules/@deepseek-ai/dsh-experimental-cua-macos'].optional
+  await assert.rejects(() => verifyInstalledHostGraph(root, { packages }),
+    /installed Host node_modules\/@deepseek-ai\/dsh-experimental-cua-macos is missing; run npm ci/)
+})
+
 test('generates one channel manifest from dist-tags and installs it on demand', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))

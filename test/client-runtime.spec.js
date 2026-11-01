@@ -1815,8 +1815,62 @@ function capabilityRecordNotice(locale, record, { args = 'set session tools.prob
     name: 'capabilities', args,
     outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'record-session', undefined, undefined, record) } },
   { locale })
-  return container.querySelector('.ptcPlusCapabilityCommandNotice').textContent
+  return container.querySelector('.ptcPlusCapabilityCommandNoticeRow').textContent
 }
+
+test('a written receipt survives the first human message and one run states one card', () => {
+  // The reader saw the row appear while the session was blank and disappear the moment the
+  // first message gave the window a start. A write is this session's own record, so it stays;
+  // and two writes that arrive together are one event, stated once, in one card.
+  const first = { seq: 3, commandId: 'write-a', name: 'capabilities',
+    args: 'set session tools.web_search availability enabled',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'write-session', undefined, undefined,
+      { scope: 'session', id: 'tools.web_search', dimension: 'availability', selection: 'enabled' }) } }
+  const second = { seq: 4, commandId: 'write-b', name: 'capabilities',
+    args: 'set session tools.web_fetch availability enabled',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'write-session', undefined, undefined,
+      { scope: 'session', id: 'tools.web_fetch', dimension: 'availability', selection: 'enabled' }) } }
+  const nodes = new Map([['a', first], ['b', second], ['human', humanMessageNode(9)]])
+  const alone = renderCapabilityCard(first, { nodes })
+  // The earlier member of the run draws nothing: the card belongs to the run, not to the row.
+  expect(alone.querySelector('.ptcPlusCapabilityCommandNotice')).toBeNull()
+  const card = renderCapabilityCard(second, { nodes })
+  const notices = card.querySelectorAll('.ptcPlusCapabilityCommandNotice')
+  expect(notices).toHaveLength(1)
+  expect(notices[0].getAttribute('data-kind')).toBe('writes')
+  const rows = [...card.querySelectorAll('.ptcPlusCapabilityCommandNoticeRow')].map(row => row.textContent)
+  expect(rows).toHaveLength(2)
+  expect(rows[0]).toContain('tools.web_search')
+  expect(rows[1]).toContain('tools.web_fetch')
+  expect(card.querySelector('.ptcPlusCapabilityCommandNoticeHead').textContent)
+    .toBe(receiptCopy('en', 'capabilities.card.writes', { count: '2' }))
+  // A message between two writes ends the run: the later write states its own card with one
+  // row, so writes from different moments are never counted as one event.
+  const later = { ...second, seq: 6, commandId: 'write-c' }
+  const split = renderCapabilityCard(later, {
+    nodes: new Map([['a', first], ['human', humanMessageNode(5)], ['c', later]]) })
+  expect([...split.querySelectorAll('.ptcPlusCapabilityCommandNotice')]).toHaveLength(1)
+  expect([...split.querySelectorAll('.ptcPlusCapabilityCommandNoticeRow')]).toHaveLength(1)
+  expect(split.querySelector('.ptcPlusCapabilityCommandNoticeHead').textContent)
+    .toBe(receiptCopy('en', 'capabilities.card.writes', { count: '1' }))
+  // The same node before the conversation opens still states its own card, and a refresh
+  // receipt keeps the conversation-start rule it had.
+  const blank = renderCapabilityCard(second, { blank: true })
+  expect(blank.querySelector('.ptcPlusCapabilityCommandNotice')).toBeNull()
+  const refresh = renderCapabilityCard({ seq: 3, commandId: 'earlier', args: 'refresh',
+    outcome: { kind: 'success', text: capabilityCommandReceipt('recorded', 'earlier-session') } },
+  { nodes: new Map([['human', humanMessageNode(9)]]) })
+  expect(refresh.textContent).toBe('')
+})
+
+test('the REPL tab trails the Host tabs instead of sorting between them', async () => {
+  const { runtime } = await fixture({ bindings: false, repl: true })
+  const [entry] = runtime.slots.entries('conversation.view')
+  expect(entry.options.id).toBe('ptc-plus-repl')
+  // The Host registers chat at 0 and the experimental statistics tab at 40; a plugin tab
+  // that sorts before any of them pushes a Host tab to the right of ours.
+  expect(entry.options.order).toBeGreaterThan(40)
+})
 
 test('a capability command notice states the record it wrote and no degree of proof', () => {
   const record = { scope: 'session', id: 'tools.probe', dimension: 'availability', selection: 'closed' }
@@ -8336,7 +8390,7 @@ test('the capability page states its columns in exactly one renderer export', ()
   // list and the contract's §6 are changed together.
   expect([...view.matchAll(/^export (?:async )?function ([A-Za-z0-9_]+)/gm)].map(match => match[1]).sort())
     .toEqual(['capabilityCommandText', 'capabilityPlanReason', 'capabilityReceiptNotice', 'capabilityReceiptVisible',
-      'createCapabilityCommandCard', 'createCapabilityRefreshView', 'createCapabilitySettingsViews',
+      'capabilityWriteRun', 'createCapabilityCommandCard', 'createCapabilityRefreshView', 'createCapabilitySettingsViews',
       'createCapabilitySurfaceView', 'firstHumanMessageSeq'])
   // One column table, in one file, once.
   for (const key of SURFACE_COLUMN_KEYS) {

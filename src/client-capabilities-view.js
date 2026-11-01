@@ -209,15 +209,65 @@ export function firstHumanMessageSeq(nodes) {
 
 /**
  * A capability receipt belongs to chat only after the conversation has opened.
- * A blank Session has nothing to announce, and a receipt recorded before the
- * first human message describes a previous attempt's publication. A truncated
- * Chat window cannot prove where the conversation opened, so its earliest
- * loaded message must not hide a receipt the session may still own.
+ * A blank Session has nothing to announce, and a publication receipt recorded
+ * before the first human message describes a previous attempt's publication. A
+ * truncated Chat window cannot prove where the conversation opened, so its
+ * earliest loaded message must not hide a receipt the session may still own.
+ *
+ * A receipt that carries the record of a write is different: the user asked for
+ * that change through this session's own panel or command, so it stays visible
+ * wherever the conversation currently starts. Hiding it once is what made the
+ * row appear while the session was blank and vanish the moment a first message
+ * gave the window a starting point.
  */
-export function capabilityReceiptVisible(node, { blank = false, firstUserSeq = null, windowComplete = true } = {}) {
+export function capabilityReceiptVisible(node, { blank = false, firstUserSeq = null, windowComplete = true,
+  written = false } = {}) {
   if (blank === true) return false
+  if (written === true) return true
   if (windowComplete !== true) return true
   return !(Number.isSafeInteger(node?.seq) && Number.isSafeInteger(firstUserSeq) && node.seq < firstUserSeq)
+}
+
+/**
+ * One run of capability writes, as the card states it.
+ *
+ * The chat store is read once per node and the answer is a string, because a
+ * selector must return the same value for the same store: a fresh array would
+ * make every notification re-render. `node` names the member whose card this is;
+ * a store that does not contain it (a single-node render, or a window that does
+ * not reach it) still answers with that node's own row.
+ */
+export function capabilityWriteRun(nodes, node, t) {
+  const own = writeReceiptOf(node)
+  if (own === undefined) return ''
+  const ownRow = capabilityReceiptNotice(t, own, 'card')
+  const list = orderedChatNodes(nodes)
+  const index = list.findIndex(item => item === node
+    || (node?.commandId !== undefined && item?.commandId === node.commandId))
+  if (index < 0) return JSON.stringify({ last: true, rows: [ownRow] })
+  let start = index
+  let end = index
+  while (start > 0 && writeReceiptOf(list[start - 1]) !== undefined) start -= 1
+  while (end + 1 < list.length && writeReceiptOf(list[end + 1]) !== undefined) end += 1
+  const rows = list.slice(start, end + 1).map(item => capabilityReceiptNotice(t, writeReceiptOf(item), 'card'))
+  return JSON.stringify({ last: end === index, rows })
+}
+
+function parseWriteRun(signature, fallback) {
+  if (typeof signature !== 'string' || signature === '') return fallback === '' ? { last: true, rows: [] } : JSON.parse(fallback)
+  try { return JSON.parse(signature) } catch { return { last: true, rows: [] } }
+}
+
+function orderedChatNodes(nodes) {
+  if (nodes === null || nodes === undefined) return []
+  if (typeof nodes.values === 'function') return [...nodes.values()]
+  return Array.isArray(nodes) ? nodes : []
+}
+
+function writeReceiptOf(node) {
+  if (typeof node?.args !== 'string' || !String(node.args).trim().startsWith('set ')) return undefined
+  const receipt = readCapabilityCommandReceipt(node?.outcome?.text)
+  return receipt?.state === 'recorded' && receipt.record !== undefined ? receipt : undefined
 }
 
 export function createCapabilityCommandCard(React) {
@@ -238,15 +288,33 @@ export function createCapabilityCommandCard(React) {
     // not chat, so a node without that submitted input is not a user command and
     // renders no notice: a fresh session has no change to announce.
     if (typeof node.args !== 'string') return null
-    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete })) return null
-    const command = `/${node.name ?? 'capabilities'}${node.args ? ` ${String(node.args).trim()}` : ''}`
     const text = node.outcome?.text
     const receipt = readCapabilityCommandReceipt(text)
+    // A write is this session's own record, so it is visible wherever the window
+    // starts; a publication receipt keeps the conversation-start rule.
+    const written = receipt?.state === 'recorded' && receipt.record !== undefined
+    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete, written })) return null
+    const command = `/${node.name ?? 'capabilities'}${node.args ? ` ${String(node.args).trim()}` : ''}`
     // Pending is the plan's publication state, not an outcome: it becomes true
     // only at the next accepted model step, so a durable notice would state a
     // future that a historical row can no longer verify.
     if (receipt?.state === 'pending') return null
     const legacyRefresh = text === 'Session capability environment refreshed; the model-visible notification is recorded.'
+    if (written) {
+      // Writes that arrive together are one event for the reader: the runs are
+      // counted once and stated as one card, and the last row of a run draws it so
+      // the card does not repeat per command. The signature is a string because a
+      // selector has to answer the same value for the same store.
+      const signature = readChat(snapshot => capabilityWriteRun(snapshot?.nodes, node, t))
+      const run = parseWriteRun(signature, capabilityWriteRun(undefined, node, t))
+      if (run.last !== true) return null
+      return h('section', { className: 'ptcPlusCapabilityCommandNotice', 'data-kind': 'writes',
+        role: node.outcome?.kind === 'error' ? 'alert' : 'status' },
+      h('p', { className: 'ptcPlusCapabilityCommandNoticeHead' },
+        t('capabilities.card.writes', { count: run.rows.length })),
+      h('ul', { className: 'ptcPlusCapabilityCommandNoticeList' },
+        run.rows.map((row, index) => h('li', { key: `${index}`, className: 'ptcPlusCapabilityCommandNoticeRow' }, row))))
+    }
     if (receipt || String(node.args ?? '').trim() === 'refresh' || legacyRefresh) {
       // The notice a command leaves in chat is the same receipt the composer toast
       // and the panel's footer state, so no surface keeps its own account of a write.

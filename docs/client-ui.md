@@ -43,7 +43,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 
 工作台的绑定组列出全局目录供给的绑定条目和本会话对每条的取用状态，每行一个控件，只有三种读法：“使用”“不使用”“记录损坏”，三种都可点击；某一行提交中时只有那一行标 `aria-busy`，其余行照常可点，每次写入各自持有取消信号，互不打断已经提交的命令（`src/client-capabilities-view.js` 的 `record`、`sessionAvailabilityCell` 与 `sessionDisclosureCell`；`test/client-runtime.spec.js` 的「binding rows record their adoption through the `/binding` command, including a damaged record」与「a session capability write in flight leaves every other control usable」）。控件不另开写通道：点击提交的就是人类输入的同一条 `/binding use|skip <id>` 命令，之后按同一份会话能力目录回读。绑定组恒在：行可以为零，零行就是空表，不配一句解释（`src/client-capabilities-view.js` 的绑定组 section；`test/client-runtime.spec.js` 的「the binding group is always rendered, with the same columns and possibly no rows」）。`/binding` 未在本会话的命令目录列出时，行仍照常列出，控件照样可点：命令通道自己报出的拒绝原因成为底栏回执（`src/client-transport.js` 的 `createCommandAccess` 在命令不可用时抛出 `/${name} is unavailable in this session`，`src/client-capabilities-view.js` 的 `record` 把它渲染成 `capabilities.quick.writeError`），面板不预先禁用任何控件——控件没有失败分支，见 [§5 写通道](panel-concept.md#5-写通道)。提交后 `/binding` 命令返回的回执原文渲染在面板底栏（`src/client-capabilities-view.js` 的 `.ptcPlusSessionCapabilityFooter`，经 `capabilityCommandText` 保持原文），其中 `Whether the worker installed the entries this session still uses is reported with the next accepted cell, not by this receipt.` 照原文显示，不被丢弃（该回执是 `/binding` 返回的英文原文，面板不翻译）。
 
-`/capabilities refresh` 与结构化状态回执使用独立的 13px/20px 单行提示，只显示当前界面的结果文案，不显示命令标题、重复状态或原始结果入口。运行、待生效、能力关闭和失败保留各自的真实文案，长错误可以换行；历史刷新回执的已记录通知文本同样转换为简短提示。能力查询保留命令卡片。`ptc-capability-catalog/v1` 结果默认显示条目数，展开后以有高度上限的可滚动表格显示列表；两列逐行重述面板的保存列与本会话的启用、披露两列（能力行两维、服务行只有启用；记录没写下的维度，保存列写 `automatic`、本会话列写 `inherit`），0.5.4 及更早的单选择词与独立规则形态仍按原样可读，词表外的形态不渲染表格；其他 JSON 显示详情入口，不直接铺在正文里。查询的原始结果单独折叠，在展开时显示完整原文，既不改写历史结果也不把成功回执当作完整值或模型投递的新证明。
+`/capabilities refresh` 与不带写入记录的状态回执使用独立的 13px/20px 单行提示，只显示当前界面的结果文案，不显示命令标题、重复状态或原始结果入口。运行、待生效、能力关闭和失败保留各自的真实文案，长错误可以换行；历史刷新回执的已记录通知文本同样转换为简短提示。带写入记录的回执（`/capabilities set …`）不是一条单行提示，而是一张卡片（`.ptcPlusCapabilityCommandNotice[data-kind=writes]`）：抬头按这次运行的条数陈述（`capabilities.card.writes`），下面逐行列出每条记录；同一窗口内相邻的写入只在最后一条上画这一张卡，中间隔着别的消息就各自成卡，找不到邻居的那一条仍画自己那一行。写入回执不受「首条人类消息之前隐藏」约束，刷新与发表类回执仍受它约束，空会话两类都不显示。能力查询保留命令卡片。`ptc-capability-catalog/v1` 结果默认显示条目数，展开后以有高度上限的可滚动表格显示列表；两列逐行重述面板的保存列与本会话的启用、披露两列（能力行两维、服务行只有启用；记录没写下的维度，保存列写 `automatic`、本会话列写 `inherit`），0.5.4 及更早的单选择词与独立规则形态仍按原样可读，词表外的形态不渲染表格；其他 JSON 显示详情入口，不直接铺在正文里。查询的原始结果单独折叠，在展开时显示完整原文，既不改写历史结果也不把成功回执当作完整值或模型投递的新证明。
 
 ## 可用设置
 
@@ -145,7 +145,7 @@ PTC session 的头部弹窗在功能启用时增加 Session 与 Global 页签。
 
 ## REPL 顶级页签
 
-Client 通过公开 `conversation.view` 注册 `ptc-plus-repl`（标签 `REPL`，order 20），与对话、轨迹同级。注册作用域订阅 `sessions.list` 的当前会话及其 `agentPreset` projection face：插件与 `replViewEnabled` 开启且当前 preset 为 `ptc` 或 `code` 时注册，其余情况注销。会话切换、preset 改变、设置关闭和 provider/plugin 释放都会清理对应订阅与注册。DSH 拥有页签选择与注销后的回退；列表属于当前 browser Client，插件不创建多会话导航器。空会话的页签可见性仍由宿主 shell 决定。
+Client 通过公开 `conversation.view` 注册 `ptc-plus-repl`（标签 `REPL`，order 50，排在宿主自己的页签之后：宿主对话为 0、实验性统计为 40，插件页签因此落在它们之后，不再插在原生页签之间）。注册作用域订阅 `sessions.list` 的当前会话及其 `agentPreset` projection face：插件与 `replViewEnabled` 开启且当前 preset 为 `ptc` 或 `code` 时注册，其余情况注销。会话切换、preset 改变、设置关闭和 provider/plugin 释放都会清理对应订阅与注册。DSH 拥有页签选择与注销后的回退；列表属于当前 browser Client，插件不创建多会话导航器。空会话的页签可见性仍由宿主 shell 决定。
 
 REPL 根元素使用官方轨迹页同样的 `data-conversation-composer-overlay` 布局标记，由宿主提供满高视口并禁用对话宽度拖拽条；工作区内部滚动。仅在该页挂载期间，通过公开 `conversation.composer` chain 注册当前 session 专属的空替代项，隐藏普通消息输入框。宿主 overlay 保留原输入框与草稿，离开 REPL、关闭插件或释放 provider 时恢复。存在 `pendingInteraction` 时替代项不参与选择，审批、提问等宿主交互保持优先。插件不查询或改写宿主 DOM，不覆盖宿主 CSS。
 

@@ -330,7 +330,10 @@ export function createClientPlugin(require) {
             isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), 'replView')
               && sessionUsesPtcPreset(preset),
             register: () => viewScope.slots.register({
-              name: 'conversation.view', id: 'ptc-plus-repl', label: 'REPL', order: 20,
+              // A plugin contribution trails the Host's own tabs: chat is 0 and the
+              // experimental statistics tab is 40, and a REPL tab that sorts before them
+              // pushes a Host tab to the right of a plugin's.
+              name: 'conversation.view', id: 'ptc-plus-repl', label: 'REPL', order: 50,
               locale: LOCALE_NS, inject: () => ({ ...settingsProps(), hideComposer, observeRepl }),
             }, props => typeof props.useProjection === 'function' ? h(ReplConsole, props) : null),
           })

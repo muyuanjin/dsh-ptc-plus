@@ -10442,10 +10442,48 @@ function firstHumanMessageSeq(nodes) {
   }
   return first;
 }
-function capabilityReceiptVisible(node, { blank = false, firstUserSeq = null, windowComplete = true } = {}) {
+function capabilityReceiptVisible(node, {
+  blank = false,
+  firstUserSeq = null,
+  windowComplete = true,
+  written = false
+} = {}) {
   if (blank === true) return false;
+  if (written === true) return true;
   if (windowComplete !== true) return true;
   return !(Number.isSafeInteger(node?.seq) && Number.isSafeInteger(firstUserSeq) && node.seq < firstUserSeq);
+}
+function capabilityWriteRun(nodes, node, t2) {
+  const own2 = writeReceiptOf(node);
+  if (own2 === void 0) return "";
+  const ownRow = capabilityReceiptNotice(t2, own2, "card");
+  const list = orderedChatNodes(nodes);
+  const index2 = list.findIndex((item) => item === node || node?.commandId !== void 0 && item?.commandId === node.commandId);
+  if (index2 < 0) return JSON.stringify({ last: true, rows: [ownRow] });
+  let start = index2;
+  let end = index2;
+  while (start > 0 && writeReceiptOf(list[start - 1]) !== void 0) start -= 1;
+  while (end + 1 < list.length && writeReceiptOf(list[end + 1]) !== void 0) end += 1;
+  const rows = list.slice(start, end + 1).map((item) => capabilityReceiptNotice(t2, writeReceiptOf(item), "card"));
+  return JSON.stringify({ last: end === index2, rows });
+}
+function parseWriteRun(signature, fallback) {
+  if (typeof signature !== "string" || signature === "") return fallback === "" ? { last: true, rows: [] } : JSON.parse(fallback);
+  try {
+    return JSON.parse(signature);
+  } catch {
+    return { last: true, rows: [] };
+  }
+}
+function orderedChatNodes(nodes) {
+  if (nodes === null || nodes === void 0) return [];
+  if (typeof nodes.values === "function") return [...nodes.values()];
+  return Array.isArray(nodes) ? nodes : [];
+}
+function writeReceiptOf(node) {
+  if (typeof node?.args !== "string" || !String(node.args).trim().startsWith("set ")) return void 0;
+  const receipt = readCapabilityCommandReceipt(node?.outcome?.text);
+  return receipt?.state === "recorded" && receipt.record !== void 0 ? receipt : void 0;
 }
 function createCapabilityCommandCard(React32) {
   const h = React32.createElement;
@@ -10457,12 +10495,36 @@ function createCapabilityCommandCard(React32) {
     const readChat = typeof useChat === "function" ? useChat : noSnapshot;
     const firstUserSeq = readChat((snapshot2) => firstHumanMessageSeq(snapshot2?.nodes));
     if (typeof node.args !== "string") return null;
-    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete })) return null;
-    const command2 = `/${node.name ?? "capabilities"}${node.args ? ` ${String(node.args).trim()}` : ""}`;
     const text = node.outcome?.text;
     const receipt = readCapabilityCommandReceipt(text);
+    const written = receipt?.state === "recorded" && receipt.record !== void 0;
+    if (!capabilityReceiptVisible(node, { blank, firstUserSeq, windowComplete, written })) return null;
+    const command2 = `/${node.name ?? "capabilities"}${node.args ? ` ${String(node.args).trim()}` : ""}`;
     if (receipt?.state === "pending") return null;
     const legacyRefresh = text === "Session capability environment refreshed; the model-visible notification is recorded.";
+    if (written) {
+      const signature = readChat((snapshot2) => capabilityWriteRun(snapshot2?.nodes, node, t2));
+      const run = parseWriteRun(signature, capabilityWriteRun(void 0, node, t2));
+      if (run.last !== true) return null;
+      return h(
+        "section",
+        {
+          className: "ptcPlusCapabilityCommandNotice",
+          "data-kind": "writes",
+          role: node.outcome?.kind === "error" ? "alert" : "status"
+        },
+        h(
+          "p",
+          { className: "ptcPlusCapabilityCommandNoticeHead" },
+          t2("capabilities.card.writes", { count: run.rows.length })
+        ),
+        h(
+          "ul",
+          { className: "ptcPlusCapabilityCommandNoticeList" },
+          run.rows.map((row, index2) => h("li", { key: `${index2}`, className: "ptcPlusCapabilityCommandNoticeRow" }, row))
+        )
+      );
+    }
     if (receipt || String(node.args ?? "").trim() === "refresh" || legacyRefresh) {
       const outcome2 = receipt ? capabilityReceiptNotice(t2, receipt, "card") : legacyRefresh ? t2("capabilities.card.recorded") : node.outcome ? (typeof text === "string" && !text.trim() ? void 0 : capabilityCommandText(t2, text)) ?? t2(node.outcome.kind === "error" ? "capabilities.commandFailed" : "capabilities.refreshAcknowledged") : t2("capabilities.refreshing");
       return h("p", {
@@ -41329,6 +41391,10 @@ var CLIENT_CSS = `
 .ptcPlusFallbackModalHead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.ptcPlusFallbackModalHead h2{margin:0;font-size:17px;line-height:24px}
 
 .ptcPlusCapabilityCommandNotice{box-sizing:border-box;min-width:0;margin:8px 0;padding:0;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityCommandNotice[data-state=error]{color:var(--dsw-alias-state-error-primary)}
+.ptcPlusCapabilityCommandNotice[data-kind=writes]{display:flex;flex-direction:column;gap:6px;margin:8px 0;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.ptcPlusCapabilityCommandNoticeHead{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.ptcPlusCapabilityCommandNoticeList{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.ptcPlusCapabilityCommandNoticeRow{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;overflow-wrap:anywhere}
 
 .ptcPlusCapabilityReceipt{box-sizing:border-box;min-width:0;margin:8px 0;padding:12px 14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:13px/20px var(--dsw-font-family,system-ui,sans-serif);overflow-wrap:anywhere}.ptcPlusCapabilityReceiptHead{display:flex;align-items:center;gap:12px;justify-content:space-between}.ptcPlusCapabilityReceiptHead>code{min-width:0;font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);font-weight:500}.ptcPlusCapabilityReceiptState{flex:none;font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusCapabilityReceiptState[data-state=error]{color:var(--dsw-alias-state-error-primary)}.ptcPlusCapabilityReceipt p{margin:6px 0 0}.ptcPlusCapabilityReceiptSummary{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.ptcPlusCapabilityReceipt details{margin-top:8px}.ptcPlusCapabilityReceipt summary{width:fit-content;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer}.ptcPlusCapabilityReceipt summary:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}.ptcPlusCapabilityReceipt pre{box-sizing:border-box;max-height:280px;overflow:auto;overscroll-behavior:contain;margin:8px 0 0;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-layer-1);font:12px/18px var(--ds-font-family-code,ui-monospace,SFMono-Regular,Consolas,monospace);white-space:pre-wrap;overflow-wrap:anywhere}.ptcPlusCapabilityReceiptTable{max-height:320px;overflow:auto;overscroll-behavior:contain;margin-top:8px}.ptcPlusCapabilityReceipt table{width:100%;min-width:480px;table-layout:fixed;border-collapse:collapse;font:12px/18px var(--dsw-font-family,system-ui,sans-serif)}.ptcPlusCapabilityReceipt th,.ptcPlusCapabilityReceipt td{padding:8px;text-align:start;vertical-align:top;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityReceipt th{position:sticky;top:0;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-weight:500}.ptcPlusCapabilityReceipt th:first-child{width:44%}.ptcPlusCapabilityReceipt td strong{display:block;font-weight:500}.ptcPlusCapabilityReceipt td small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:3px;color:var(--dsw-alias-label-secondary);font-size:11px}.ptcPlusAllocationEvidence,.ptcPlusConfigurationProfiles{min-width:0;margin-top:20px;padding-top:16px;border-top:1px solid var(--dsw-alias-border-l2)}.ptcPlusAllocationEvidence h4,.ptcPlusConfigurationProfiles h4{margin:0;font-size:14px}.ptcPlusAllocationMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:16px 0}.ptcPlusAllocationMetrics>div{display:flex;min-width:0;flex-direction:column;gap:4px;padding:12px;border-radius:8px;background:var(--dsw-alias-bg-layer-2)}.ptcPlusAllocationMetrics strong{font-size:18px;overflow-wrap:anywhere}.ptcPlusAllocationMetrics span{font-size:11px;color:var(--dsw-alias-label-secondary)}.ptcPlusAllocationEvidence progress{width:100%;height:6px;accent-color:var(--dsw-alias-brand-primary)}.ptcPlusCapabilityEvidenceTable{max-height:440px;overflow:auto;overscroll-behavior:contain;margin-top:12px}.ptcPlusCapabilityEvidenceTable table{width:100%;table-layout:fixed;border-collapse:collapse;font-size:12px}.ptcPlusCapabilityEvidenceTable td,.ptcPlusCapabilityEvidenceTable th{padding:10px 6px;text-align:start;overflow-wrap:anywhere;border-bottom:1px solid var(--dsw-alias-border-l2)}.ptcPlusCapabilityEvidenceTable th{color:var(--dsw-alias-label-secondary);font-weight:500}
 @container ptcPlusCapabilities (max-width:600px){.ptcPlusAllocationMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
@@ -42038,6 +42104,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.card.usage": "\u547D\u4EE4\u672A\u6267\u884C\uFF0C\u8BF7\u68C0\u67E5\u53C2\u6570\u3002",
     "capabilities.card.catalogCount": "{count} \u9879\u80FD\u529B",
     "capabilities.card.details": "\u4F1A\u8BDD\u80FD\u529B\u8BE6\u60C5",
+    "capabilities.card.writes": "\u8BB0\u5F55\u4E86 {count} \u9879\u80FD\u529B\u53D8\u66F4",
     "capabilities.card.browse": "\u67E5\u770B\u80FD\u529B\u5217\u8868",
     "capabilities.card.source": "\u67E5\u770B\u539F\u59CB\u7ED3\u679C",
     "capabilities.card.running": "\u6267\u884C\u4E2D",
@@ -42673,6 +42740,7 @@ var CHROME_COPY = Object.freeze({
     "capabilities.card.usage": "Command not executed; check its arguments.",
     "capabilities.card.catalogCount": "{count} capabilities",
     "capabilities.card.details": "Session capability details",
+    "capabilities.card.writes": "Recorded {count} capability change(s)",
     "capabilities.card.browse": "Browse capabilities",
     "capabilities.card.source": "View original result",
     "capabilities.card.running": "Running",
@@ -44443,10 +44511,13 @@ function createClientPlugin(require2) {
           },
           isEnabled: () => featureEnabled(preferenceScope.getSnapshot(), "replView") && sessionUsesPtcPreset(preset),
           register: () => viewScope.slots.register({
+            // A plugin contribution trails the Host's own tabs: chat is 0 and the
+            // experimental statistics tab is 40, and a REPL tab that sorts before them
+            // pushes a Host tab to the right of a plugin's.
             name: "conversation.view",
             id: "ptc-plus-repl",
             label: "REPL",
-            order: 20,
+            order: 50,
             locale: LOCALE_NS,
             inject: () => ({ ...settingsProps(), hideComposer, observeRepl })
           }, (props) => typeof props.useProjection === "function" ? h(ReplConsole, props) : null)

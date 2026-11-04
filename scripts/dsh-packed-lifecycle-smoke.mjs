@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { hostSessionPersistencePlugin } from './dsh-host-contract.mjs'
+import { executeHostTool, hostSessionPersistencePlugin, ptcPresentation } from './dsh-host-contract.mjs'
 
 // All imports resolve from the extracted npm consumer, never the source checkout.
 const require = createRequire(join(process.cwd(), 'package.json'))
@@ -34,11 +34,16 @@ const { readSessionLog } = await import(pathToFileURL(
 const baseRequire = createRequire(require.resolve('@deepseek-ai/dsh/package.json'))
 const base = dirname(baseRequire.resolve('@deepseek-ai/dsh-base/package.json'))
 const official = composeEntries([loadOverlayPatches('dsh', join(base, 'cordis.patch.yml'))])
-const publicOwners = ['subprocess', 'sandbox', 'sandbox-policy', 'working-directory', 'ptc-runtime']
+const presentation = ptcPresentation(ToolRuntime)
+const publicOwners = ['subprocess', 'sandbox', 'sandbox-policy', 'working-directory', 'ptc-runtime',
+  ...(presentation.kind === 'executor' ? ['tool-executor-ptc'] : [])]
 const selected = publicOwners.map(id => {
   const row = official.find(entry => entry.id === id)
   assert.ok(row, `official base composition lacks ${id}`)
-  return { ...row, ...(id === 'sandbox-policy' ? { config: { ...row.config, mode: 'danger-full-access' } } : {}) }
+  return { ...row,
+    ...(id === 'sandbox-policy' ? { config: { ...row.config, mode: 'danger-full-access' } } : {}),
+    ...(id === 'tool-executor-ptc' ? { disabled: false } : {}),
+  }
 })
 const patch = loadOverlayPatches('dsh', join(dirname(pluginManifest), manifest.dsh.bundle.patch))
 const profile = await mkdtemp(join(tmpdir(), 'ptc-packed-lifecycle-'))
@@ -49,7 +54,7 @@ const record = (name, details) => { reports.push({ name, ...details }); console.
 try {
   root.effect(() => root.provide('agents', { list: () => [] }))
   new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: true, persona: '' })
-  new ToolRuntime(root, { mode: 'ptc' })
+  new ToolRuntime(root, presentation.kind === 'registry' ? { mode: presentation.mode } : {})
   for (const service of [SessionStore, SessionQueryEngine, SessionProjectionRegistry]) await root.plugin(service).await()
   await root.plugin(hostSessionPersistencePlugin(jsonl), { root: join(profile, 'sessions'), compression: 'none' }).await()
   await root.plugin(Loader, { baseUrl: pathToFileURL(process.cwd() + '/').href }).await()
@@ -131,7 +136,7 @@ try {
         { type: 'chunk', time: 2, chunk: { type: 'tool-call-end', index: 0, id: callId } }],
     }, { surfaceOp: 'append' })
     const call = session.append('tool/call', { turn, step, name, callId, arguments: encoded })
-    const result = await root.get('tools').execute({ agent, signal: agent.signal, name, callId, arguments: args })
+    const result = await executeHostTool(root.get('tools'), { agent, signal: agent.signal, name, callId, arguments: args })
     session.append('tool/result', { turn, step,
       message: createToolResultMessage({ callId, content: result.content, isError: result.isError }),
       ...(result.meta === undefined ? {} : { meta: result.meta }), ...(result.error === undefined ? {} : { error: result.error }),

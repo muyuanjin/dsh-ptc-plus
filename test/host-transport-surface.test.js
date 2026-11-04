@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
+import { SystemPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { ToolRuntime, defineTool } from '@deepseek-ai/dsh-tools'
 import {
   dispatchToolCall,
   hostToolExecutor,
@@ -205,4 +208,53 @@ test('dispatch submits one accepted call on a registry host and one batch on an 
 
   const emptyBatch = { selectExecutor: () => undefined, execute: async () => ({ results: [] }) }
   await assert.rejects(() => dispatchToolCall(emptyBatch, execution), /no result for the requested call/)
+})
+
+test('nested executor dispatch preserves the real parent, root and step admission through Host policy', async t => {
+  const ctx = new Context()
+  t.after(() => ctx.fiber.dispose())
+  new SystemPrompt(ctx, { includeHarnessIdentity: false })
+  new ToolRuntime(ctx)
+  const parent = Symbol('active-root')
+  const toolSet = {}
+  const seen = []
+  let executions = 0
+  const transport = defineTool({ name: RUN_CODE, description: 'Run a derived cell.', parameters: {},
+    output: { schema: { type: 'number' }, render: (_args, value) => [{ type: 'text', text: String(value) }] },
+    execute(_args, exec) { executions++; seen.push(exec); return 42 },
+  })
+  ctx.effect(() => ctx.tools.setExecutor({ describe: () => ({ schemas: [], knownNames: [RUN_CODE] }),
+    requirePtcTransport: () => transport,
+    execute() { throw new Error('a nested execution must not become a root batch') },
+  }))
+  ctx.on('tools/pre-execute', (exec, next) => { seen.push(exec); return next() })
+  ctx.on('tools/result', exec => { seen.push(exec) })
+  const execution = { callId: 'derived', rootCallId: 'original-root', parent, name: RUN_CODE,
+    arguments: {}, toolSet, signal: new AbortController().signal }
+  const result = await dispatchToolCall(ctx.tools, execution, ctx)
+  assert.equal(result.isError, false)
+  assert.equal(result.value, 42)
+  assert.equal(seen.length, 3)
+  for (const exec of seen) {
+    assert.equal(exec.callId, execution.callId)
+    assert.equal(exec.rootCallId, execution.rootCallId)
+    assert.equal(exec.parent, parent)
+    assert.equal(exec.toolSet, toolSet)
+    assert.equal(typeof exec.token, 'symbol')
+    assert.notEqual(exec.token, parent)
+  }
+  assert.equal(seen[0], seen[1])
+  assert.equal(seen[1], seen[2])
+  const disposeDenial = ctx.on('tools/pre-execute', () => ({ kind: 'deny', reason: 'derived policy denied' }))
+  const denied = await dispatchToolCall(ctx.tools, { ...execution, callId: 'denied' }, ctx)
+  assert.equal(denied.isError, true)
+  assert.match(JSON.stringify(denied), /derived policy denied/)
+  assert.equal(executions, 1)
+  disposeDenial()
+  const controller = new AbortController()
+  controller.abort()
+  const cancelled = await dispatchToolCall(ctx.tools, { ...execution, callId: 'cancelled', signal: controller.signal }, ctx)
+  assert.equal(cancelled.isError, true)
+  assert.equal(executions, 1)
+  await assert.rejects(() => dispatchToolCall(ctx.tools, execution), /requires its owning context/)
 })

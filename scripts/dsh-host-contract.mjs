@@ -109,6 +109,17 @@ export function ptcPresentationRows(presentation) {
       ]
 }
 
+/** Dispatch one acceptance call through the installed Host's public execution contract. */
+export async function executeHostTool(registry, { name, callId, arguments: args, agent, signal }) {
+  if (typeof registry.selectExecutor !== 'function') {
+    return registry.execute({ name, callId, arguments: args, agent, signal })
+  }
+  const batch = await registry.execute({
+    calls: [{ id: callId, name, arguments: JSON.stringify(args) }], agent, signal,
+  })
+  return batch.results.find(entry => entry.callId === callId).result
+}
+
 /**
  * Render the composition rows of {@link ptcPresentationRows} as profile patch
  * lines.

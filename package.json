@@ -43,7 +43,7 @@
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": ">=0.2.1-0 <0.2.3"
+    "dsh": "*"
   },
   "allowScripts": {
     "esbuild": false
@@ -52,7 +52,7 @@
     "@babel/code-frame": "^7.29.7",
     "@babel/parser": "^7.29.0",
     "@deepseek-ai/dsh-util-values": "^0.2.2-alpha.2",
-    "@deepseek-ai/schemastery": "~3.18.6-alpha.1",
+    "@deepseek-ai/schemastery": "~3.18.6-alpha.2",
     "@jridgewell/trace-mapping": "^0.3.31",
     "acorn": "^8.15.0"
   },
@@ -174,12 +174,12 @@
     "@codemirror/language": "^6.12.4",
     "@codemirror/state": "^6.7.4",
     "@codemirror/view": "^6.43.11",
-    "@deepseek-ai/cordis": "4.0.6-alpha.1",
-    "@deepseek-ai/cordis-plugin-group": "1.0.6-alpha.1",
-    "@deepseek-ai/cordis-plugin-include": "1.0.11-alpha.1",
-    "@deepseek-ai/cordis-plugin-loader": "1.0.7-alpha.1",
-    "@deepseek-ai/cordis-plugin-timer": "1.1.8-alpha.1",
-    "@deepseek-ai/cosmokit": "1.8.7-alpha.1",
+    "@deepseek-ai/cordis": "4.0.6-alpha.2",
+    "@deepseek-ai/cordis-plugin-group": "1.0.6-alpha.2",
+    "@deepseek-ai/cordis-plugin-include": "1.0.11-alpha.2",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.7-alpha.2",
+    "@deepseek-ai/cordis-plugin-timer": "1.1.8-alpha.2",
+    "@deepseek-ai/cosmokit": "1.8.7-alpha.2",
     "@deepseek-ai/dsh": "alpha",
     "@deepseek-ai/dsh-agent-loop": "alpha",
     "@deepseek-ai/dsh-agent-loop-testkit": "alpha",

@@ -25,7 +25,7 @@ import {
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
 import { adaptRunCodeSchema } from './direct-surface-owner.js'
-import { hostTransportDefinition, isBatchSubmission } from './host-tool-sdk.js'
+import { hostTransportDefinition } from './host-tool-sdk.js'
 import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { POST_EDIT_KEY } from './session-journal-schema.js'
@@ -702,17 +702,13 @@ function applyEditableSlots(definition, promptText, slotPatches) {
   /**
    * Whether this execution is the derived execution the edit transport submitted.
    *
-   * A registry host runs the very object the plugin built, so the call id, the root
-   * call and the parent token it carries all prove the relation. The batch contract
-   * assigns its own identity instead: the parent token is the host's own and the
-   * root call is whichever call that host treats as direct. What survives there is
-   * the call id this plugin chose, which the host matched the batch result back to,
-   * together with the dispatch record; the derived source is compared beside it.
+   * Both Host invocation contracts preserve the submitted call id, enclosing
+   * root and actual parent token. All three must match; a root batch submission
+   * cannot establish a nested execution merely by choosing the same call id.
    */
   const isDerivedExecution = (derived, exec) => {
     if (derived === null || typeof derived !== 'object' || exec === null || typeof exec !== 'object') return false
     if (derived.callId !== exec.callId) return false
-    if (isBatchSubmission(derived)) return true
     return exec.parent !== undefined
       && derived.rootCallId === exec.rootCallId && derived.parent === exec.parent
   }

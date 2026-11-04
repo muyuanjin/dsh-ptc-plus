@@ -171,6 +171,7 @@ test('execution smoke rejects a plugin that never installs the entry and accepts
 
 test('keeps host-owned DSH service packages out of plugin dependencies', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(manifest.engines.dsh, '*', 'Host admission follows public capabilities instead of a release range')
   for (const packageName of DSH_RUNTIME_PEERS) {
     assert.equal(manifest.dependencies?.[packageName], undefined)
     assert.equal(manifest.peerDependencies?.[packageName], '*')

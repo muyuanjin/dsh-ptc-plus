@@ -29,7 +29,7 @@ PTC Plus provides a stateful TypeScript computation environment for DSH's **PTC 
 
 ## Quick start
 
-Requires Node.js `^22.19.0 || >=24.0.0` and the latest available official DSH release:
+Requires the latest available official DSH release and a Node.js runtime satisfying both the plugin's `^22.19.0 || >=24.0.0` range and the selected DSH release's requirements:
 
 ```sh
 dsh plugin --profile <profile> add dsh-ptc-plus

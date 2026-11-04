@@ -35,10 +35,12 @@ const resolveClientTarget = (name) => {
 const prefix = '\0ptc-client-test:'
 const renderer = '@deepseek-ai/dsh-client-ui-renderer'
 const sessionController = '@deepseek-ai/dsh-api-session-controller'
+const contextMenu = '@deepseek-ai/dsh-client-ui-context-menu'
 const supportExports = {
   [`${renderer}/src/client/bind.ts`]: [renderer, 'bindSnapshotSelector'],
   [`${renderer}/src/client/scoped-slots.tsx`]: [renderer, 'createSlotRenderer'],
   [`${sessionController}/src/client/scope.ts`]: [sessionController, 'scopeIdentityOf'],
+  [`${contextMenu}/src/client/trigger.ts`]: [contextMenu, 'createContextMenuBindings'],
 }
 
 function walk(node, visit) {

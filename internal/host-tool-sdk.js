@@ -260,41 +260,29 @@ export function sessionExecutionAvailable(tools, scope, name = 'run_code') {
 }
 
 /**
- * Executions this plugin submitted under the host's batch dispatch contract.
+ * Dispatch one tool call through the Host's invocation policy.
  *
- * That contract assigns the execution identity itself, so the execution object a
- * host runs is not the one the caller built and carries no parent token the caller
- * could compare. The submission record is what remains: the call id this plugin
- * chose, which the host matched its result back to.
- */
-const batchSubmissions = new WeakSet()
-
-/**
- * Whether this execution was submitted as a host batch call.
- * @param {object} execution - an execution object this plugin built.
- * @returns {boolean} true when the batch contract dispatched it.
- */
-export function isBatchSubmission(execution) {
-  return execution !== null && typeof execution === 'object' && batchSubmissions.has(execution)
-}
-
-/**
- * Dispatch one tool call through the host registry.
- *
- * Two dispatch contracts are published. A registry host accepts one call and
- * resolves to that call's settled result. An executor host accepts a complete
- * model batch, assigns the execution identity itself, and resolves to the
- * ordered outcomes — so the caller supplies only the call it wants run, and the
- * executor's own token is the one its observers see.
+ * Registry Hosts accept an execution input directly. Executor Hosts reserve
+ * batches for root calls; nested inputs use the published invocation pipeline
+ * so the Host retains their actual parent token and enclosing root identity.
+ * The Host owns validation, policy, cancellation and result materialization.
  * @param {object} tools - the host tool registry (`ctx.tools`).
  * @param {object} execution - call identity, arguments, agent and signal.
+ * @param {object} [ctx] - the owning plugin context, required for nested execution.
  * @returns {Promise<object>} this call's settled result.
  */
-export async function dispatchToolCall(tools, execution) {
+export async function dispatchToolCall(tools, execution, ctx) {
   if (typeof tools?.selectExecutor !== 'function') return tools.execute(execution)
-  // Recorded before the host runs the batch: it calls back into this plugin during
-  // the dispatch, and the relation has to be provable then.
-  batchSubmissions.add(execution)
+  if (execution.parent !== undefined) {
+    if (ctx === undefined) throw new Error('ptc-plus: nested Host execution requires its owning context')
+    const { ToolExecutionPipeline } = await import('@deepseek-ai/dsh-tools/pipeline')
+    const pipeline = new ToolExecutionPipeline(ctx, {
+      get: (name, scope) => hostTransportDefinition(tools, scope, name),
+    })
+    const prepared = await pipeline.prepare(execution)
+    const outcome = prepared.kind === 'dispatch' ? await pipeline.dispatch(prepared.exec) : prepared
+    return pipeline.complete(prepared.exec, outcome)
+  }
   const settled = await tools.execute({
     calls: [{ id: execution.callId, name: execution.name, arguments: JSON.stringify(execution.arguments) }],
     signal: execution.signal,

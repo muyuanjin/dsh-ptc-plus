@@ -310,8 +310,9 @@ export function createEditTransportOwner(ctx, {
           subCallId: `${String(exec.callId)}:derived`, name: RUN_CODE, arguments: argumentsValue }
         const executionStart = agent.session.append('tool/ptc-dispatch-start', data)
         const derivedExec = { callId: data.subCallId, rootCallId: data.rootCallId,
-          parent: rootExec.token, name: RUN_CODE, arguments: argumentsValue, agent, signal: rootSignal }
-        const dispatch = () => dispatchToolCall(ctx.tools, derivedExec)
+          parent: rootExec.token, name: RUN_CODE, arguments: argumentsValue, agent, signal: rootSignal,
+          ...(rootExec.toolSet === undefined ? {} : { toolSet: rootExec.toolSet }) }
+        const dispatch = () => dispatchToolCall(ctx.tools, derivedExec, ctx)
         const tentative = await executeTentative(executionStart.seq, start.rootCallSeq,
           dispatch, executionLog, derivedExec)
         const inner = tentative.result

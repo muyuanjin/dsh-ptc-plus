@@ -5,7 +5,7 @@ import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ptcPresentation } from './dsh-host-contract.mjs'
+import { executeHostTool, ptcPresentation } from './dsh-host-contract.mjs'
 
 /**
  * The program-runtime service name is a host declaration: the package that
@@ -226,15 +226,7 @@ async function main() {
         ],
       }, { surfaceOp: 'append' })
       const call = session.append('tool/call', { turn: 1, step, callId, name, arguments: argumentsValue })
-      // The registry accepts one call on a registry host; a host that publishes
-      // `selectExecutor` accepts a complete model batch and assigns the
-      // execution identity itself.
-      const registry = root.get('tools')
-      const result = typeof registry.selectExecutor !== 'function'
-        ? await registry.execute({ name, callId, arguments: args, agent, signal })
-        : (await registry.execute({
-          calls: [{ id: callId, name, arguments: argumentsValue }], signal, agent,
-        })).results.find(entry => entry.callId === callId).result
+      const result = await executeHostTool(root.get('tools'), { name, callId, arguments: args, agent, signal })
       session.append('tool/result', {
         turn: 1, step,
         message: createToolResultMessage({ callId, content: result.content, isError: result.isError }),

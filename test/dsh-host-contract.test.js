@@ -3,8 +3,28 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { hostAssistantUsageEvents, hostPersonaPatch, hostSessionPersistencePlugin, hostToolRuntime, ptcPresentation, ptcPresentationRows, readHostPersona } from '../scripts/dsh-host-contract.mjs'
+import { executeHostTool, hostAssistantUsageEvents, hostPersonaPatch, hostSessionPersistencePlugin, hostToolRuntime, ptcPresentation, ptcPresentationRows, readHostPersona } from '../scripts/dsh-host-contract.mjs'
 import { headlessConfigPatch, parseConfigDump, validateHeadlessRuntimeConfig } from '../scripts/headless-host.mjs'
+
+test('acceptance dispatch preserves arguments, identity and settlement across single-call and batch Hosts', async () => {
+  const agent = {}
+  const signal = new AbortController().signal
+  const args = JSON.parse('{"__proto__":{"own":true},"value":"quoted \\"text\\""}')
+  const call = { agent, signal, name: 'run_code', callId: 'acceptance-call', arguments: args }
+  const result = { isError: false, value: 42 }
+  assert.equal(await executeHostTool({ execute(input) {
+    assert.deepEqual(input, call)
+    assert.equal(input.arguments, args)
+    return result
+  } }, call), result)
+  assert.equal(await executeHostTool({ selectExecutor() {}, execute(input) {
+    assert.equal(input.agent, agent)
+    assert.equal(input.signal, signal)
+    assert.deepEqual(input.calls, [{ id: call.callId, name: call.name, arguments: JSON.stringify(args) }])
+    assert.deepEqual(JSON.parse(input.calls[0].arguments), args)
+    return { results: [{ callId: 'another-call', result: {} }, { callId: call.callId, result }] }
+  } }, call), result)
+})
 
 test('persistence registration preserves the public module lifecycle before historical service exports', () => {
   class HistoricalPersistence {}

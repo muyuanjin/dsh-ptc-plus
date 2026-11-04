@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { getEventListeners, once } from 'node:events'
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
 import { IsolatedWorker, UNANSWERED_SAMPLE_CODE } from '../internal/isolated-worker.js'
@@ -855,7 +857,11 @@ test('reclaims the worker at the unmeasured limit the configuration carries', as
   }
 })
 
-test('starts the worker with the configuration current after the scratch wait', async () => {
+test('starts the worker with the configuration current after the scratch wait', async t => {
+  const scratchParent = await mkdtemp(join(tmpdir(), 'ptc-worker-bounds-'))
+  t.after(() => rm(scratchParent, { recursive: true, force: true }))
+  const scratchDirectory = join(scratchParent, 'worker')
+  await mkdir(scratchDirectory)
   const runtime = new SessionRuntime({
     computeMs: 500,
     maxWallMs: 5_000,
@@ -886,7 +892,7 @@ test('starts the worker with the configuration current after the scratch wait', 
       workerReclaimMs: 15_000,
       startupProbeMs: 9_000,
     })
-    releaseScratch(tmpdir())
+    releaseScratch(scratchDirectory)
     const settled = await execution
     assert.deepEqual(settled.result.value, 1)
     // Both bounds are read after the scratch wait, so the worker carries the
@@ -897,6 +903,7 @@ test('starts the worker with the configuration current after the scratch wait', 
   } finally {
     await runtime.dispose().catch(() => {})
   }
+  assert.deepEqual(await readdir(scratchParent), [], 'worker cleanup removes only its private scratch directory')
 })
 
 test('a refused reclamation after the unmeasured limit is recorded instead of thrown', async () => {

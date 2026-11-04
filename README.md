@@ -29,7 +29,7 @@ PTC Plus 为 DSH 的 **PTC 模式**提供有状态的 TypeScript 计算环境。
 
 ## 快速开始
 
-需要 Node.js `^22.19.0 || >=24.0.0` 和最新可用的官方 DSH：
+需要最新可用的官方 DSH；Node.js 需同时满足插件的 `^22.19.0 || >=24.0.0` 与所选 DSH 的运行要求：
 
 ```sh
 dsh plugin --profile <profile> add dsh-ptc-plus

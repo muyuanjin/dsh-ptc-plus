@@ -37,7 +37,7 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 Replace `<profile>` with your profile name, restart DSH, and select **PTC mode** in the session. Continuous computation, call tolerance, and global bindings are on by default. To upgrade, run `dsh plugin --profile <profile> add dsh-ptc-plus@latest` and restart that Host; see the [installation guide](docs/installation.md) for other installation methods, Desktop, the local development launcher, and troubleshooting.
 
-The plugin declares `engines.dsh: "*"` for the Host's compatibility preflight; public capability checks and packed tests against the latest official release verify compatibility.
+The plugin declares the DSH compatibility range `>=0.2.1-0 <0.2.3` for the Host's version preflight; public capability checks and packed tests verify integration within that range.
 
 The session shows a **REPL** tab, and wide screens show a **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu, the session capability workbench, and **PTC Plus settings**; **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar is the same configuration.
 

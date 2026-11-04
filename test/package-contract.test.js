@@ -171,13 +171,31 @@ test('execution smoke rejects a plugin that never installs the entry and accepts
 
 test('keeps host-owned DSH service packages out of plugin dependencies', async () => {
   const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
-  assert.equal(manifest.engines.dsh, '*', 'Host admission follows public capabilities instead of a release range')
   for (const packageName of DSH_RUNTIME_PEERS) {
     assert.equal(manifest.dependencies?.[packageName], undefined)
     assert.equal(manifest.peerDependencies?.[packageName], '*')
     // The development graph declares a channel, never one release: a pinned host version
     // would make this repository's installation follow a single published build.
     assert.equal(manifest.devDependencies?.[packageName], DEVELOPMENT_CHANNEL)
+  }
+})
+
+test('DSH version preflight admits the verified channels and rejects versions outside the declared bounds', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'))
+  const { evaluatePluginCompatibility } = await import('@deepseek-ai/dsh-app-boot')
+  assert.equal(manifest.engines.dsh, '>=0.2.1-0 <0.2.3')
+  assert.equal(lock.packages[''].engines.dsh, manifest.engines.dsh)
+  const channels = await readManifest()
+  assert.equal(channels.channels.size, 3)
+  for (const host of channels.channels.values()) {
+    assert.equal(evaluatePluginCompatibility(manifest, {}, host.version), undefined,
+      `${host.channel} must pass DSH's own version preflight`)
+  }
+  for (const version of ['0.2.0', '0.2.3', '0.3.0']) {
+    const issue = evaluatePluginCompatibility(manifest, {}, version)
+    assert.equal(issue?.requirements['engines.dsh'], manifest.engines.dsh)
+    assert.equal(issue?.exempted, false)
   }
 })
 

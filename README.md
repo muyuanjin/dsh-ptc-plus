@@ -37,7 +37,7 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 把 `<profile>` 换成实际 profile 名称，重启 DSH，在会话中选择 **PTC 模式**。连续计算、调用容错和全局绑定默认开启；升级用 `dsh plugin --profile <profile> add dsh-ptc-plus@latest` 再重启宿主，其他安装方式、Desktop、本地开发启动器和故障排查见[安装指南](docs/installation.md)。
 
-插件通过 `engines.dsh: "*"` 接入宿主兼容性预检，按最新官方发行版的公共能力检查与打包测试验证兼容性。
+插件声明 DSH 兼容范围 `>=0.2.1-0 <0.2.3`，由宿主执行版本预检；范围内的接口适配仍通过公共能力检查与打包测试验证。
 
 界面默认显示会话里的 **REPL** 页签，宽屏顶部还有 **PTC Plus** 标志。输入框旁的星光按钮打开全局绑定菜单、会话能力工作台和 **PTC Plus 设置**，侧边栏的 **插件 → 已安装 → dsh-ptc-plus → 配置** 是同一套设置。
 

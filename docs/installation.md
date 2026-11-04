@@ -1,8 +1,8 @@
 # Installation
 
-PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and targets the latest available DSH release with TypeScript PTC mode. The runtime must also meet the selected Host's own Node.js requirement, which may be stricter than the plugin's range. Historical interface branches are retained through capability detection, without promising a fully verified earlier Host installation; when both generations expose competing presentation evidence, the current DSH contract wins. Compatibility follows those live extension surfaces rather than a version allowlist.
+PTC Plus requires Node.js `^22.19.0 || >=24.0.0` and targets the latest available DSH release with TypeScript PTC mode. The runtime must also meet the selected Host's own Node.js requirement, which may be stricter than the plugin's range. Historical interface branches are retained through capability detection, without promising a fully verified earlier Host installation; when both generations expose competing presentation evidence, the current DSH contract wins. DSH checks the declared compatibility range before loading the plugin; runtime interface selection follows those live extension surfaces.
 
-The package declares `engines.dsh: "*"` for DSH's plugin compatibility preflight. This keeps release-number gating open while public capability checks and packed Host contracts establish compatibility; it does not claim that every historical or future Host has been tested. Host-owned service packages are peers of the plugin because the host supplies them; the PTC tool executor is an optional peer, because a host that keeps tool presentation in its registry does not publish that package at all.
+The package declares `engines.dsh: ">=0.2.1-0 <0.2.3"` for DSH's plugin compatibility preflight. DSH evaluates that range, including prereleases, before loading the plugin. Public capability checks and packed Host contracts establish integration within the range; the declaration does not claim that every matching release has been tested. Host-owned service packages are peers of the plugin because the host supplies them; the PTC tool executor is an optional peer, because a host that keeps tool presentation in its registry does not publish that package at all.
 
 The worker uses the Host's Node executable. Startup verifies native REPL framing, imports, syntax failures, synchronous throws, awaited rejections, and original return values. The adapter combines public eval callbacks with domain error events before REPL formatting; a source-end witness distinguishes empty completion from falsy rejection. A failed or timed-out probe reports a runtime prerequisite failure before user code executes. The plugin engine range and the Host's engine range are separate requirements; CI exercises Node 22.19, 24, and 26, without claiming that untested future releases have already passed.
 
@@ -12,7 +12,7 @@ Install the plugin into the profile that actually runs the target DSH surface. D
 
 | Component | Current contract |
 | --- | --- |
-| DeepSeek Harness | Latest official release; `engines.dsh: "*"` keeps manifest admission open, while live public extension checks and packed Host contracts establish compatibility |
+| DeepSeek Harness | `engines.dsh: ">=0.2.1-0 <0.2.3"`; DSH owns version preflight, while live public extension checks and packed Host contracts establish integration |
 | Runtime | DSH TypeScript PTC mode; cells currently accept modern JavaScript syntax |
 | Node.js | `^22.19.0 || >=24.0.0` |
 | Platforms | Windows CLI/Desktop and Linux CLI/Web verified locally; macOS package tests and import smoke run in CI, while live DSH integration and Desktop require release-time smoke testing |
@@ -32,7 +32,7 @@ The Client root requires `slots`, `locale`, `connection`, and `remote`; it adopt
 
 ### Compatibility Evidence
 
-The plugin declares `engines.dsh: "*"` for manifest admission and leaves Host service peers unrestricted. This metadata does not prove a usable public extension surface; the selected Host must pass capability checks and packed contracts. Support is expressed as channels, not versions. `compat/channels.json` records, per channel, the host release each official dist-tag resolves to and the tarball integrity of every host package whose published surface the plugin probes. `latest` and `next` are the blocking channels; `alpha` carries the line this checkout develops against and reports without blocking a release. The development graph declares that channel rather than a release — every host `devDependencies` entry names it, and the lock resolves it — so a supported line is reached by moving the channel definition, not by editing the graph by hand. A probed package the release does not publish is recorded at the version and integrity its own declared dependency range resolves to, so a publish inside that range is a recorded drift; a probed package the release neither publishes nor depends on is recorded as absent, and the install proof rejects a graph that contains one. The recorded versions do not prove live registry availability or untested compatibility, and behaviour never branches on them: presentation, transport ownership and state retention are detected from the host's published shapes. `npm run host:channels:verify` checks the tracked manifest offline; `npm run host:channels:update` is the only command that resolves it from the registry.
+The plugin declares a bounded `engines.dsh` range for manifest admission and leaves Host service peers unrestricted. This metadata does not prove a usable public extension surface; the selected Host must pass capability checks and packed contracts. Verification targets are expressed as channels, independently of the manifest range. `compat/channels.json` records, per channel, the host release each official dist-tag resolves to and the tarball integrity of every host package whose published surface the plugin probes. `latest` and `next` are the blocking channels; `alpha` carries the line this checkout develops against and reports without blocking a release. The development graph declares that channel rather than a release — every host `devDependencies` entry names it, and the lock resolves it — so a supported line is reached by moving the channel definition, not by editing the graph by hand. A probed package the release does not publish is recorded at the version and integrity its own declared dependency range resolves to, so a publish inside that range is a recorded drift; a probed package the release neither publishes nor depends on is recorded as absent, and the install proof rejects a graph that contains one. The recorded versions do not prove live registry availability or untested compatibility, and behaviour never branches on them: presentation, transport ownership and state retention are detected from the host's published shapes. `npm run host:channels:verify` checks the tracked manifest offline; `npm run host:channels:update` is the only command that resolves it from the registry.
 
 | Retained interface | Evidence and consequence of removal |
 | --- | --- |
@@ -54,7 +54,7 @@ Capabilities select behavior, never a release number. Historical fixture success
 Use this form after the selected version is available from the npm registry:
 
 ```sh
-dsh plugin --profile <profile> add dsh-ptc-plus@0.5.3
+dsh plugin --profile <profile> add dsh-ptc-plus@0.5.6
 dsh --profile <profile> --dump-config
 ```
 
@@ -159,7 +159,7 @@ dsh plugin add github:muyuanjin/dsh-ptc-plus#main
 dsh --dump-config
 ```
 
-After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.3`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
+After an npm release, the package spec may instead be `dsh-ptc-plus@0.5.6`. For a local package, use its absolute tarball path. Restart DSH Desktop after installation. Linux Desktop is not a current DSH Desktop release target; use DSH CLI/Web on Linux.
 
 ## Upgrades
 

@@ -116,13 +116,6 @@ export function createPtcSettingsView(React, deps) {
         onChange: event => onChange(field, event.target.checked),
       })
     }
-    if (field.type === 'enum') {
-      return h('input', {
-        type: 'checkbox', role: 'switch', className: 'ptcPlusCheck', checked: value !== 'protected',
-        disabled, 'aria-label': label,
-        onChange: event => onChange(field, event.target.checked ? 'stateful' : 'protected'),
-      })
-    }
     return h('input', {
       type: 'number', className: 'ptcPlusInput',
       value: Number.isSafeInteger(value) ? String(value) : '',
@@ -402,9 +395,9 @@ export function createPtcSettingsView(React, deps) {
             h('div', { className: 'ptcPlusLabel' }, t(`${field.key}.label`)),
             field.description === '' ? null : h('div', { className: 'ptcPlusDetail' },
               t(migratingPolicy ? 'bindingPolicy.migrationDescription' : `${field.key}.description`))),
-          migratingPolicy
-            ? h(Select, { value: 'legacy', disabled: fieldDisabled(field), label: t(`${field.key}.label`),
-              options: [{ value: 'legacy', label: t('bindingPolicy.legacy'), disabled: true },
+          field.type === 'enum'
+            ? h(Select, { value: migratingPolicy ? 'legacy' : value[field.key], disabled: fieldDisabled(field), label: t(`${field.key}.label`),
+              options: [...(migratingPolicy ? [{ value: 'legacy', label: t('bindingPolicy.legacy'), disabled: true }] : []),
                 ...field.options.map(policy => ({ value: policy, label: t(`bindingPolicy.${policy}`) }))],
               onChange: next => persist(field, next) })
             : fieldInput(field, value[field.key], fieldDisabled(field), persist, t(`${field.key}.label`))),

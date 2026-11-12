@@ -3004,6 +3004,44 @@ test('target read failures block refresh while frozen-plan read failures preserv
 })
 
 test.each([
+  ['en', 'stateful'], ['en', 'protected'], ['zh', 'stateful'], ['zh', 'protected'],
+])('binding policy selector names both choices and saves the selected policy (%s, %s)', async (locale, policy) => {
+  const { runtime, settings, value, setLocale } = await fixture({ bindings: false })
+  settings.publish({ value: { ...value, bindingUpdates: policy } })
+  settings.mutate.mockImplementation(async operations => {
+    const next = { ...settings.scope.getSnapshot().value }
+    for (const operation of operations) next[operation.path[0]] = operation.value
+    settings.publish({ value: next })
+  })
+  setLocale(locale)
+  const copy = SETTINGS_COPY[locale]
+  const label = copy['bindingUpdates.label']
+  const nextPolicy = policy === 'stateful' ? 'protected' : 'stateful'
+  const view = runtime.renderRoot()
+  await runtime.flush()
+  fireEvent.click(view.container.querySelector('.ptcPlusHeader'))
+  await runtime.flush()
+  const selector = view.getByRole('combobox', { name: label })
+  expect(selector.textContent).toContain(copy[`bindingPolicy.${policy}`])
+  expect(view.queryByRole('switch', { name: label })).toBeNull()
+  expect(settings.set).not.toHaveBeenCalled()
+  expect(settings.mutate).not.toHaveBeenCalled()
+  fireEvent.keyDown(selector, { key: 'ArrowDown' })
+  expect(view.getByRole('option', { name: copy[`bindingPolicy.${policy}`] }).getAttribute('data-state')).toBe('checked')
+  fireEvent.click(view.getByRole('option', { name: copy[`bindingPolicy.${nextPolicy}`] }))
+  await runtime.flush()
+  expect(settings.set).not.toHaveBeenCalled()
+  expect(settings.mutate).toHaveBeenCalledExactlyOnceWith([
+    { op: 'set', path: ['bindingUpdates'], value: nextPolicy },
+    { op: 'set', path: ['legacyBindingSettings'], value: false },
+  ])
+  expect(view.getByRole('combobox', { name: label }).textContent).toContain(copy[`bindingPolicy.${nextPolicy}`])
+  settings.publish({ writable: false })
+  await runtime.flush()
+  expect(view.getByRole('combobox', { name: label }).disabled).toBe(true)
+})
+
+test.each([
   ['mixed settings', { looseTopLevelRedeclarations: false }, 'stateful'],
   ['mixed settings', { looseTopLevelRedeclarations: false }, 'protected'],
   ['explicit marker', { bindingUpdates: 'stateful', legacyBindingSettings: true }, 'stateful'],
@@ -3043,12 +3081,12 @@ test.each([
   migration.resolve()
   await runtime.flush()
   expect(settings.set).not.toHaveBeenCalled()
-  expect(view.queryByRole('combobox', { name: DECLARATION_POLICY_LABEL })).toBeNull()
   expect(view.container.querySelector('[aria-label="Allow top-level variable redeclarations"]')).toBeNull()
-  const toggle = view.getByRole('switch', { name: DECLARATION_POLICY_LABEL })
-  expect(toggle.checked).toBe(policy === 'stateful')
-  expect(toggle.disabled).toBe(false)
-  fireEvent.click(toggle)
+  const migratedSelector = view.getByRole('combobox', { name: DECLARATION_POLICY_LABEL })
+  expect(migratedSelector.textContent).toContain(SETTINGS_COPY.en[`bindingPolicy.${policy}`])
+  expect(migratedSelector.disabled).toBe(false)
+  const nextPolicy = policy === 'stateful' ? 'protected' : 'stateful'
+  await chooseCapabilityOption(view, DECLARATION_POLICY_LABEL, SETTINGS_COPY.en[`bindingPolicy.${nextPolicy}`])
   await runtime.flush()
   expect(settings.scope.getSnapshot().value.bindingUpdates).toBe(policy === 'stateful' ? 'protected' : 'stateful')
   expect(settings.scope.getSnapshot().value.legacyBindingSettings).toBe(false)
@@ -3812,7 +3850,7 @@ test('switching a saved capability configuration uses one public settings mutati
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
   expect(view.getByText('Capability configuration was not applied')).not.toBeNull()
-  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
+  await chooseCapabilityOption(view, DECLARATION_POLICY_LABEL, SETTINGS_COPY.en['bindingPolicy.protected'])
   await runtime.flush()
   expect(feedback()).toBe('Could not save: Capability configuration was not applied')
   expect(settings.scope.getSnapshot().value.capabilityBudgetBytes).toBe(initial.capabilityBudgetBytes)
@@ -7503,7 +7541,7 @@ test.each(['zh', 'en'])('context feature status follows independent saved settin
 test('capability save feedback reflects its own pending or conflicting writes', async () => {
   const { view, updateSetting, updateCapabilityConfiguration } = await capabilityWorkbenchFixture({ catalog: [{ id: 'tools.probe', category: 'tool' }] })
   updateSetting.mockResolvedValue('status.conflict')
-  fireEvent.click(view.getByRole('switch', { name: DECLARATION_POLICY_LABEL }))
+  await chooseCapabilityOption(view, DECLARATION_POLICY_LABEL, SETTINGS_COPY.en['bindingPolicy.protected'])
   await act(async () => {})
   const feedback = () => view.container.querySelector('.ptcPlusCombination .ptcPlusCapabilitySaveState').textContent
   expect(feedback()).toBe('Saved · used by new sessions')

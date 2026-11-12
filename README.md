@@ -88,7 +88,7 @@ return total() // 20
 - 已有闭包读到更新后的绑定，提前保存的函数值仍是原来的函数；不同块、函数和循环迭代的作用域照常区分。
 - 声明初始化失败不会永久占住这个名称，失败前已经生效的修改也不会回滚。
 
-cell 支持 TypeScript（含运行时 `enum` 和 `namespace`）、顶层 `await` / `return` 和静态 `import` / `export`；静态导入在整个 cell 正文执行前生效，正文里的赋值随后可以覆盖它。想检测名称覆盖，可以在设置里关掉“允许重声明和覆盖”改用 `protected` 策略；`tools` 这类受保护的运行时名称任何时候都不能覆盖。
+cell 支持 TypeScript（含运行时 `enum` 和 `namespace`）、顶层 `await` / `return` 和静态 `import` / `export`；静态导入在整个 cell 正文执行前生效，正文里的赋值随后可以覆盖它。设置中的“绑定更新语义”直接显示当前策略，可选择“允许重声明和覆盖”（`stateful`）或“启用名称保护”（`protected`）；`tools` 这类受保护的运行时名称任何时候都不能覆盖。
 
 `run_code`、编辑后的代码和全局绑定工作台采用同一套语言策略；显式 `eval`、`Function`、`node:vm` 或独立运行时仍受各自的原生边界约束。作用域、模块互操作和历史会话规则见[语言参考](docs/runtime-reference.md#cell-semantics)，完整的语言规则、配置字段与诊断见[运行时参考](docs/runtime-reference.md)。
 

@@ -88,7 +88,7 @@ The default **stateful semantics** (`bindingUpdates: 'stateful'`) extend JavaScr
 - Existing closures read the updated binding, a function value saved earlier is still the original function, and blocks, functions, and loop iterations keep their separate scopes.
 - A failed initialization does not permanently reserve that name, and changes made before the failure are not rolled back.
 
-Cells support TypeScript (including runtime `enum` and namespaces), top-level `await` / `return`, and static `import` / `export`; a static import takes effect before the whole cell body executes, and an assignment later in the body can override it. To detect name overwrites instead, disable **Allow redeclarations and overrides** and use the `protected` policy; protected runtime names such as `tools` can never be overwritten.
+Cells support TypeScript (including runtime `enum` and namespaces), top-level `await` / `return`, and static `import` / `export`; a static import takes effect before the whole cell body executes, and an assignment later in the body can override it. **Binding update semantics** in settings displays the current policy and offers **Allow redeclarations and overrides** (`stateful`) or **Protect names** (`protected`); protected runtime names such as `tools` can never be overwritten.
 
 `run_code`, edited code, and the global binding workbench follow the same language policy, while explicit `eval`, `Function`, `node:vm`, and independent runtimes keep their own native boundaries. Scope, module interoperability, and historical session rules are in the [language reference](docs/runtime-reference.md#cell-semantics), and complete language rules, configuration fields, and diagnostics are in the [runtime reference](docs/runtime-reference.md).
 

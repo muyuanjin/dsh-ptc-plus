@@ -145,6 +145,32 @@ test('runtime bridge disposal waits for session disposal and aggregates its fail
   assert.equal(active.instances.length, 1)
 })
 
+test('release without a session identity forwards to the upstream provider', async () => {
+  active.scenario = 'late-child'
+  resetActiveChildren()
+  const released = []
+  const seam = createExecutionSeam(Object.freeze({
+    run() {},
+    release(owner) { released.push(owner) },
+  }), 'codeRuntime')
+  const owner = createRuntimeBridgeOwner({
+    seam,
+    ctx: { tools: { get: () => undefined } },
+    sessionConfig: { userBindingsEnabled: false },
+    presentationGeneration: 'runtime-bridge-non-session-release-test',
+    sessionId: agent => agent.id,
+    toolSchemasForAgent: () => [],
+  })
+  try {
+    const owners = [undefined, {}, { id: 'no-session' }, { session: { events: [] } }]
+    for (const target of owners) await seam.provider.release(target)
+    assert.deepEqual(released, owners)
+    assert.equal(active.instances.length, 1)
+  } finally {
+    await owner.dispose()
+  }
+})
+
 test('waiting for active child runtimes preserves every child disposal failure', { timeout: 20_000 }, async () => {
   active.scenario = 'active-children'
   active.firstFailure = new Error('first child disposal failed')

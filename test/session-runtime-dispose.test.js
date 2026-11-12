@@ -2,7 +2,7 @@ import { environmentResetMessage } from '../internal/runtime-messages.js'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  appendOnlySession, runRecordedCell, orderedSurfaceSession, appendRunCodeCall, appendRunCodeResult,
+  appendOnlySession, runRecordedCell, orderedSurfaceSession, appendRunCodeCall, appendRunCodeResult, fixture,
 } from './plugin-fixture.js'
 import { recoverJournal } from '../internal/session-journal-recovery.js'
 import { isEnvironmentResetEvent } from '../internal/session-journal-schema.js'
@@ -156,4 +156,33 @@ test('Host reset reports cleanup and journal failures and permits retry', async 
   assert.equal(isEnvironmentResetEvent(events[0]), true)
   assert.equal(events[0].data.content[0].text, environmentResetMessage().content[0].text)
   await runtime.dispose()
+})
+
+
+test('Host reset without a public append API preserves the live computation', async t => {
+  const runtime = new SessionRuntime()
+  t.after(() => runtime.dispose())
+  const session = appendOnlySession('reset-missing-append')
+  await runRecordedCell(runtime, session, 'before', { program: 'let kept = 42', bindings: [] })
+  const kernel = runtime.kernels.get(session.id)
+  const eventCount = session.events.length
+  for (const invalid of [undefined, { id: session.id }, { id: session.id, append: true }]) {
+    await assert.rejects(runtime.resetEnvironment(invalid), {
+      name: 'TypeError', message: 'ptc-plus: environment reset requires the public session append API',
+    })
+    assert.equal(runtime.kernels.get(session.id), kernel)
+    assert.equal(session.events.length, eventCount)
+  }
+  assert.equal((await runRecordedCell(runtime, session, 'after', { program: 'return kept', bindings: [] })).value, 42)
+})
+
+
+test('public provider release clears live bindings and records the Host environment reset', async t => {
+  const state = fixture()
+  t.after(() => state.dispose())
+  const session = appendOnlySession('provider-reset')
+  await state.run(session.id, 'let kept = 42', {}, { session })
+  await state.runtime.release({ id: session.id, session })
+  assert.equal(session.events.filter(isEnvironmentResetEvent).length, 1)
+  assert.equal((await state.run(session.id, 'return typeof kept', {}, { session })).value, 'undefined')
 })

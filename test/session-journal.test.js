@@ -3438,3 +3438,19 @@ test('reset recovery boundaries require the actual damaged reset and an empty fr
   for (const event of events) state = projection.apply(state, event)
   assert.doesNotThrow(() => projection.stateSchema.parse(JSON.parse(JSON.stringify(state))))
 })
+
+
+test('migration rejects reset boundaries that cite a non-reset or a later reset', () => {
+  const reset = seq => ({ seq, type: 'user/message', surfaceOp: 'append', data: environmentResetMessage() })
+  const carrier = failedResetSeq => ({
+    ...resultEvent(0, journal()), seq: 1,
+    data: { meta: withRecoveryBoundaries({ [JOURNAL_KEY]: journal() }, [{ failedResetSeq, frontierCallSeq: null }]) },
+  })
+  for (const events of [
+    [callEvent(0, 'new', 'return 7'), carrier(0)],
+    [callEvent(0, 'new', 'return 7'), carrier(2), reset(2)],
+    [callEvent(0, 'new', 'return 7'), carrier(1)],
+  ]) {
+    assert.throws(() => migrateRecoveryBoundaryEvents(events), /unproved recovery-boundary reset event reference/)
+  }
+})

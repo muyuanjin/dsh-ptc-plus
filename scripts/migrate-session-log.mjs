@@ -18,7 +18,7 @@ import {
   isConfirmableNoop,
   validateRecoveryBoundaryApplication,
 } from '../internal/session-journal-recovery.js'
-import { REPL_TOOL_NAMES, usesCallSequenceConfirms } from '../internal/session-journal-schema.js'
+import { REPL_TOOL_NAMES, usesCallSequenceConfirms, isEnvironmentResetEvent } from '../internal/session-journal-schema.js'
 import { hostRequire } from './dsh-host-contract.mjs'
 
 function parseJsonLines(text) {
@@ -78,7 +78,13 @@ function expandReleasedRows(header, rows, codec) {
 function validatePtcTimeline(events) {
   const timeline = foldSessionTimeline(events)
   if (timeline.unavailableResultSeq !== undefined) {
-    throw new Error(`unproved PTC history at event ${timeline.unavailableResultSeq}`)
+    const reset = events.find(event => event.seq === timeline.unavailableResultSeq)
+    if (!isEnvironmentResetEvent(reset)) {
+      throw new Error(`unproved PTC history at event ${timeline.unavailableResultSeq}`)
+    }
+    // A damaged reset remains a raw fact after its contraction was persisted.
+    // Only the recovery owner can prove that a later carrier discharged it.
+    validateRecoveryBoundaryApplication(events)
   }
   const provedJournalEventSeqs = new Set([...timeline.results.values()]
     .filter(result => result?.journal !== undefined && result.error === undefined)
@@ -124,6 +130,12 @@ function remapPtcReferences(source, target) {
   const after = toolRecords(target)
   if (before.length !== after.length) throw new Error('DSH migration changed the number of tool records')
   const calls = new Map()
+  const sourceResets = source.filter(isEnvironmentResetEvent)
+  const targetResets = target.filter(isEnvironmentResetEvent)
+  if (sourceResets.length !== targetResets.length || sourceResets.some((event, index) => (
+    !isDeepStrictEqual(event.data, targetResets[index].data)
+  ))) throw new Error('DSH migration did not preserve reset message identities')
+  const resets = new Map(sourceResets.map((event, index) => [event.seq, targetResets[index]]))
   const seen = new Set()
   for (let index = 0; index < before.length; index++) {
     const old = before[index]
@@ -164,10 +176,19 @@ function remapPtcReferences(source, target) {
     }
     if (meta.dshPtcPlusRecoveryBoundaries !== undefined) {
       meta.dshPtcPlusRecoveryBoundaries = normalizeRecoveryBoundaries(meta.dshPtcPlusRecoveryBoundaries)
-        .map(boundary => ({
-          failedCallSeq: mapCall(boundary.failedCallSeq),
-          frontierCallSeq: boundary.frontierCallSeq === null ? null : mapCall(boundary.frontierCallSeq),
-        }))
+        .map(boundary => {
+          if (boundary.failedResetSeq !== undefined) {
+            const reset = resets.get(boundary.failedResetSeq)
+            if (reset === undefined || boundary.failedResetSeq >= old.seq || reset.seq >= next.seq) {
+              throw new Error('unproved PTC reset reference during migration')
+            }
+            return { failedResetSeq: reset.seq, frontierCallSeq: null }
+          }
+          return {
+            failedCallSeq: mapCall(boundary.failedCallSeq),
+            frontierCallSeq: boundary.frontierCallSeq === null ? null : mapCall(boundary.frontierCallSeq),
+          }
+        })
     }
   }
   validatePtcTimeline(target)

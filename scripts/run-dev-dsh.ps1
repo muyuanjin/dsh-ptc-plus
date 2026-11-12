@@ -228,37 +228,55 @@ function Remove-OldDirectories {
     }
 }
 
-function Get-FreeLoopbackPort {
-    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-    try {
-        $listener.Start()
-        return ([Net.IPEndPoint] $listener.LocalEndpoint).Port
-    } finally {
-        $listener.Stop()
-    }
-}
-
-function Test-LoopbackPortAvailable {
+function Get-NodeLoopbackPort {
     param(
         [Parameter(Mandatory = $true)]
-        [int] $Port
+        [string] $NodePath,
+
+        [int] $Port = 0
     )
 
-    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $Port)
-    try {
-        $listener.Start()
-        return $true
-    } catch [Net.Sockets.SocketException] {
-        return $false
-    } finally {
-        $listener.Stop()
+    # Probe with the same runtime and explicit IPv4 bind used by the Web Host.
+    # An OS-assigned port must also support closing and reopening by number.
+    $probe = @'
+const { createServer } = require('node:net');
+const requested = Number(process.argv[1]);
+let attempts = 0;
+function bind(port, verify) {
+  const server = createServer();
+  server.once('error', error => {
+    if (error.code !== 'EACCES' && error.code !== 'EADDRINUSE') throw error;
+    if (requested === 0 && ++attempts < 10) bind(0, true);
+    else process.exitCode = 2;
+  });
+  server.listen(port, '127.0.0.1', () => {
+    const selected = server.address().port;
+    server.close(() => {
+      if (verify) bind(selected, false);
+      else console.log(selected);
+    });
+  });
+}
+bind(requested, requested === 0);
+'@
+    $selectedPort = & $NodePath -e $probe $Port
+    $probeExitCode = $LASTEXITCODE
+    if ($probeExitCode -eq 2) {
+        return $null
     }
+    if ($probeExitCode -ne 0 -or "$selectedPort" -notmatch '^\d+$') {
+        throw 'Unable to probe a Web port with the Windows Node runtime.'
+    }
+    return [int] $selectedPort
 }
 
 function Get-ProfileWebPort {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $CachePath
+        [string] $CachePath,
+
+        [Parameter(Mandatory = $true)]
+        [string] $NodePath
     )
 
     if (Test-Path -LiteralPath $CachePath -PathType Leaf) {
@@ -266,13 +284,17 @@ function Get-ProfileWebPort {
         $parsedPort = 0
         if ($cachedPort -match '^\d+$' -and
             [int]::TryParse($cachedPort, [ref] $parsedPort) -and
-            $parsedPort -ge 1 -and $parsedPort -le 65535 -and
-            (Test-LoopbackPortAvailable $parsedPort)) {
-            return $parsedPort
+            $parsedPort -ge 1 -and $parsedPort -le 65535) {
+            $availablePort = Get-NodeLoopbackPort -NodePath $NodePath -Port $parsedPort
+            if ($null -ne $availablePort) { return $availablePort }
+            Write-Host "Cached Web port $parsedPort is unavailable; selecting another port."
         }
     }
 
-    $selectedPort = Get-FreeLoopbackPort
+    $selectedPort = Get-NodeLoopbackPort -NodePath $NodePath
+    if ($null -eq $selectedPort) {
+        throw 'Unable to select a usable Web port after 10 Node listen attempts.'
+    }
     $temporaryPath = "$CachePath.$([Guid]::NewGuid().ToString('N')).tmp"
     try {
         Set-Content -LiteralPath $temporaryPath -Value $selectedPort -Encoding ASCII
@@ -566,7 +588,7 @@ if ($ProfileName -eq 'web' -and -not ($launchArguments | Where-Object { $_ -eq '
     $configuredPort = $env:DSH_DEV_PORT
     if ([string]::IsNullOrWhiteSpace($configuredPort)) {
         $portCachePath = Join-Path $profileDirectory '.ptc-plus-dev-web-port'
-        $configuredPort = [string] (Get-ProfileWebPort $portCachePath)
+        $configuredPort = [string] (Get-ProfileWebPort -CachePath $portCachePath -NodePath $nodePath)
     }
     if ($configuredPort -notmatch '^\d+$' -or [int] $configuredPort -lt 0 -or [int] $configuredPort -gt 65535) {
         throw "DSH_DEV_PORT must be an integer between 0 and 65535."

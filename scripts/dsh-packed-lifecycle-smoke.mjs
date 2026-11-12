@@ -490,6 +490,55 @@ try {
   disposeDurableEditorObserver()
   record('persisted-cold-fork', { passed: true, retainedValue: 42, originalDirectories: true,
     redispatchedEffects: 0, redispatchedEditors: 0, retainedEditedJournal: true })
+  const resetExecutor = root.tools.selectExecutor?.(agent)
+  if (typeof resetExecutor?.reset === 'function') {
+    const saved = await invoke('run_code', 'before-host-reset', {
+      code: 'await repl.state({ action: "save", name: "before-reset" }); return durable',
+      description: 'Save state before explicit Host reset',
+    })
+    assert.equal(saved.isError, false, JSON.stringify(saved))
+    await resetExecutor.reset(agent)
+    const noOldTarget = await invoke('run_code', 'reset-edit-target', {
+      code: 'return await tools.edit_run_code({ edits: [{ old_string: "durable", new_string: "revived" }] })',
+      description: 'Check reset retired the editor target',
+    })
+    assert.equal(noOldTarget.value.result.accepted, false)
+    const cleared = await invoke('run_code', 'after-host-reset', {
+      code: 'return [typeof durable, (await repl.state({ action: "list" })).names]',
+      description: 'Check reset cleared variables and checkpoints',
+    })
+    assert.equal(cleared.isError, false, JSON.stringify(cleared))
+    assert.deepEqual(cleared.value.result, ['undefined', []])
+    const continued = await invoke('run_code', 'reset-continue', {
+      code: 'let afterReset = 8; return afterReset', description: 'Continue after Host reset',
+    })
+    assert.equal(continued.isError, false, JSON.stringify(continued))
+    session.append('turn/end', { turn, reason: { kind: 'completed' } }); await sessions.flush(session)
+    await scopes.at(-1).dispose()
+    // Recreate the runtime as well as the persisted session: disposing a session
+    // inside a live runtime deliberately retires that identity's environment.
+    await tree.resolve('ptc-plus').update({ disabled: true }); await root.loader.await()
+    detach(); await writer.close()
+    const resetReader = await persistence.open(session.id, 'read')
+    const resetStored = await resetReader.read(); const resetHeader = resetReader.header
+    const resetInherited = resetReader.inheritedEventCount; await resetReader.close()
+    session = sessions.prepare(session.id, { seed: resetStored.events, meta: resetHeader,
+      inheritedEventCount: resetInherited, eventState: resetStored.eventState })
+    writer = await persistence.open(session.id, 'write')
+    await storeUnpublished(session, writer, resetStored.events.length)
+    detach = sessions.enter(session); sessions.announce(session)
+    await tree.resolve('ptc-plus').update({ disabled: false }); await root.loader.await()
+    turn++; agent = await makeAgent(); step = 0; session.append('turn/start', { turn })
+    const afterReload = await invoke('run_code', 'reset-cold-reload', {
+      code: 'return [typeof durable, afterReset, (await repl.state({ action: "list" })).names]',
+      description: 'Verify reset survives persisted cold recovery',
+    })
+    assert.equal(afterReload.isError, false, JSON.stringify(afterReload))
+    assert.deepEqual(afterReload.value.result, ['undefined', 8, []])
+    assert.equal(nativeCalls, 2, 'reset recovery must not redispatch old effects')
+    record('explicit-host-reset', { passed: true, clearedVariables: true, clearedCheckpoints: true,
+      retiredEditTarget: true, persistedColdRecovery: true, redispatchedEffects: 0 })
+  }
   session.append('turn/end', { turn, reason: { kind: 'completed' } }); await sessions.flush(session)
   await scopes.at(-1).dispose(); detach(); await writer.close()
   session = parentSession; detach = parentDetach; writer = parentWriter

@@ -2401,6 +2401,12 @@ var CONFIG_DEFAULTS = Object.freeze(
   Object.fromEntries(CONFIG_FIELDS.map((field) => [field.key, field.default]))
 );
 
+// internal/message-sources.js
+var PTC_MESSAGE_SOURCE_KIND = "plugin:ptc-plus";
+function isPtcMessageSource(source) {
+  return source?.kind === PTC_MESSAGE_SOURCE_KIND || source?.kind === "plugin" && source.plugin === "ptc-plus";
+}
+
 // internal/session-journal-schema.js
 var IMPORT_BOUNDARY_JOURNAL_VERSION = 7;
 var PER_NAME_USER_BINDINGS_JOURNAL_VERSION = 8;
@@ -2501,6 +2507,7 @@ function normalizeJournalUserBindingNames(journal) {
   return normalizeUserBindingNames(journal.userBindingNames);
 }
 var RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedCallSeq", "frontierCallSeq"]);
+var RESET_RECOVERY_BOUNDARY_FIELDS = /* @__PURE__ */ new Set(["failedResetSeq", "frontierCallSeq"]);
 var REWRITE_FIELDS = /* @__PURE__ */ new Set(["kind", "description", "source"]);
 var REWRITE_KINDS = /* @__PURE__ */ new Set(["import", "redeclaration", "export"]);
 
@@ -2827,7 +2834,7 @@ function isValidDerivedRun(value) {
 }
 function isValidRecoveryBoundaries(value) {
   try {
-    return Array.isArray(value) && value.every((boundary) => hasExactFields(boundary, RECOVERY_BOUNDARY_FIELDS) && isSafeSequence(boundary.failedCallSeq) && (boundary.frontierCallSeq === null || isSafeSequence(boundary.frontierCallSeq)));
+    return Array.isArray(value) && value.every((boundary) => hasExactFields(boundary, RESET_RECOVERY_BOUNDARY_FIELDS) && isSafeSequence(boundary.failedResetSeq) && boundary.frontierCallSeq === null || hasExactFields(boundary, RECOVERY_BOUNDARY_FIELDS) && isSafeSequence(boundary.failedCallSeq) && (boundary.frontierCallSeq === null || isSafeSequence(boundary.frontierCallSeq)));
   } catch {
     return false;
   }
@@ -13980,12 +13987,6 @@ function createReplView(React32, deps) {
     );
   }
   return { ReplComposer, ReplConsole, ReplMemoryCard, replPopoverIsOpen, placeReplPopover, useObservedReplMemory };
-}
-
-// internal/message-sources.js
-var PTC_MESSAGE_SOURCE_KIND = "plugin:ptc-plus";
-function isPtcMessageSource(source) {
-  return source?.kind === PTC_MESSAGE_SOURCE_KIND || source?.kind === "plugin" && source.plugin === "ptc-plus";
 }
 
 // internal/compiler-descriptors.js

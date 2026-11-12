@@ -29,6 +29,7 @@ import {
   EDIT_TARGET_FIELDS,
   DERIVED_RUN_FIELDS,
   RECOVERY_BOUNDARY_FIELDS,
+  RESET_RECOVERY_BOUNDARY_FIELDS,
   REWRITE_FIELDS,
   REWRITE_KINDS,
   USER_BINDINGS_REUSE_POLICIES,
@@ -419,7 +420,9 @@ function isValidDerivedRun(value) {
 function isValidRecoveryBoundaries(value) {
   try {
     return Array.isArray(value) && value.every(boundary => (
-      hasExactFields(boundary, RECOVERY_BOUNDARY_FIELDS)
+      hasExactFields(boundary, RESET_RECOVERY_BOUNDARY_FIELDS)
+        && isSafeSequence(boundary.failedResetSeq) && boundary.frontierCallSeq === null
+      || hasExactFields(boundary, RECOVERY_BOUNDARY_FIELDS)
       && isSafeSequence(boundary.failedCallSeq)
       && (boundary.frontierCallSeq === null || isSafeSequence(boundary.frontierCallSeq))
     ))

@@ -94,19 +94,16 @@ export function createExecutionSeam(service, serviceName) {
       requireCompatible()
       return installed === undefined ? upstreamRun.call(service, input) : installed.execute(input)
     },
-    /**
-     * Release one owner's retained environment. The resources live in the
-     * original generation (the session kernel releases its state through its
-     * own lifecycle). Adapter retirement only closes execution; the original
-     * still owns cleanup for references retained by its consumers.
-     */
-    release(owner) {
-      if (typeof service.release !== 'function') return Promise.resolve()
-      try {
-        return Promise.resolve(service.release.call(service, owner))
-      } catch (error) {
-        return Promise.reject(error)
-      }
+    /** Release both the installed environment and any original-provider state. */
+    async release(owner) {
+      const entry = installed
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => entry?.release?.(owner)),
+        Promise.resolve().then(() => service.release?.call(service, owner)),
+      ])
+      const failures = results.filter(result => result.status === 'rejected').map(result => result.reason)
+      if (failures.length === 1) throw failures[0]
+      if (failures.length > 1) throw new AggregateError(failures, 'ptc-plus: execution environment release failed')
     },
     [PLUGIN_EXECUTION_SEAM]() { return seam },
   })
@@ -143,11 +140,12 @@ export function createExecutionSeam(service, serviceName) {
       requireCompatible()
       return upstreamRun.call(service, spec)
     },
-    installExecute(execute) {
+    installExecute(execute, release) {
       requireAvailable()
       if (typeof execute !== 'function') throw new TypeError('ptc-plus: execution entry must be a function')
       if (installed !== undefined) throw new Error('ptc-plus: execution seam already installed')
-      const entry = { execute, language: service.language }
+      if (release !== undefined && typeof release !== 'function') throw new TypeError('ptc-plus: release entry must be a function')
+      const entry = { execute, release, language: service.language }
       installed = entry
       const restore = () => {
         if (installed !== entry) return

@@ -250,7 +250,7 @@ test('admission proves digest-bound continuity: it rejects a tampered fact diges
   const projection = createSessionLogProjection()
   // 14: a binding-adoption statement this build cannot resolve is part of the fold, so
   // its fact carries the form its own replay needs.
-  assert.equal(projection.stateVersion, 14)
+  assert.equal(projection.stateVersion, 16)
   let checkpoint = projection.init()
   checkpoint = projection.apply(checkpoint, { seq: 0, type: 'user/message',
     data: runtimeStateMessage(state('retained')), surfaceOp: 'append' })

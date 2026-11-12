@@ -30,3 +30,4 @@ This directory records stable design constraints for PTC Plus. An ADR states a d
 - [0048: Supersede A Rewritten Cell](0048-supersede-a-rewritten-cell.md) — an edit with the rewrite setting on supersedes its target; the target stays in the log and its names are reported as replaced.
 - [0049: Prove A Settlement Against Its Published Record](0049-prove-a-settlement-against-its-published-record.md) — a settlement carries the digest of what it asserts, so an edited record is not evidence.
 - [0050: Read And Write The Host Surface Only Through Its Published Contract](0050-read-host-surfaces-through-their-published-contract.md) — contracted executor readers, the call id a batch host echoes back, and owned slot descriptors that disposal restores.
+- [0051: Persist Explicit Host Environment Resets](0051-persist-explicit-host-environment-resets.md) — public reset retires earlier computation durably while Agent disposal preserves recovery.

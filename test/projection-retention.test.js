@@ -12,6 +12,8 @@ const { advanceSessionTimeline, createSessionTimelineState, validateRetentionSum
   validateSessionTimelineState, withFullRetention, factDigest } =
   await import('../internal/session-journal-recovery.js')
 const { configureRetention, digestOf } = await import('../internal/projection-retention.js')
+const { createSessionLogProjection } = await import('../internal/session-log-view.js')
+const { environmentResetMessage } = await import('../internal/runtime-messages.js')
 const { JOURNAL_KEY, JOURNAL_VERSION } = await import('../internal/session-journal.js')
 const { LEGACY_USER_BINDING_TRANSFORM } = await import('../internal/module-transform-contract.js')
 const { IMPORT_BOUNDARY_JOURNAL_VERSION, LANGUAGE_SEMANTICS_JOURNAL_VERSION,
@@ -90,6 +92,34 @@ function withClusterCap(cap, body) {
 const settlementList = state => Object.values(state.settledResultsByEventSeq).map(pair => pair[1])
 const executableList = state => Object.values(state.executableCalls).map(pair => pair[1])
 const resultList = state => Object.values(state.results).map(pair => pair[1])
+
+test('compacted checkpoints retain every reset fact independently of the replay budget', () => {
+  const projection = createSessionLogProjection({ replayBudgetBytes: 1 })
+  const events = [{ seq: 0, type: 'turn/start', data: {} }]
+  const reset = () => ({ seq: next(), type: 'user/message', data: environmentResetMessage(), surfaceOp: 'append' })
+  for (let index = 0; index < 12; index++) {
+    const id = `reset-retention-${index}`
+    events.push(call(`let value${index} = ${index}`, id), result(id))
+    if (index === 0) events.push(reset())
+  }
+  events.push(reset())
+  let state = projection.init()
+  for (const event of events) state = projection.apply(state, event)
+  assert.equal(state.timeline.compacted, true)
+  const copy = () => JSON.parse(JSON.stringify(state))
+  assert.doesNotThrow(() => projection.stateSchema.parse(copy()))
+  const resets = state.timeline.eventFacts.filter(fact => fact.event.type === 'user/message')
+  assert.equal(resets.length, 2, 'reset evidence survives both sides of the retained cell window')
+  for (const removed of [[resets[0]], [resets[1]], resets]) {
+    const damaged = copy()
+    const indices = new Set(removed.map(fact => fact.eventIndex))
+    damaged.timeline.eventFacts = damaged.timeline.eventFacts.filter(fact => !indices.has(fact.eventIndex))
+    const remaining = damaged.timeline.eventFacts.findLast(fact => fact.event.type === 'user/message')
+    if (remaining === undefined) delete damaged.timeline.environmentReset
+    else damaged.timeline.environmentReset = { seq: remaining.event.seq, index: remaining.eventIndex }
+    assert.throws(() => projection.stateSchema.parse(damaged), /checkpoint/)
+  }
+})
 
 test('the retention window digests old payloads and keeps every cluster', () => withClusterCap(5000, () => {
   const events = []

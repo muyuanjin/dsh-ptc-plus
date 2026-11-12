@@ -885,3 +885,32 @@ test('keeps a failing owner release observable', async () => {
   }), EXECUTION_SEAM_SERVICE)
   await assert.rejects(rejecting.provider.release({}), asynchronous)
 })
+
+test('release drains installed and original state and preserves failures and retirement', async () => {
+  const released = []
+  const owner = {}
+  const originalFailure = new Error('original release failed')
+  const installedFailure = new Error('installed release failed')
+  let fail = true
+  const seam = createExecutionSeam({ run() {}, release(value) {
+    assert.equal(value, owner)
+    released.push('original')
+    if (fail) throw originalFailure
+  } }, 'codeRuntime')
+  const restore = seam.installExecute(() => {}, value => {
+    assert.equal(value, owner)
+    released.push('installed')
+    if (fail) throw installedFailure
+  })
+  await assert.rejects(seam.provider.release(owner), error => {
+    assert.deepEqual(error.errors, [installedFailure, originalFailure])
+    return true
+  })
+  assert.deepEqual(released, ['installed', 'original'])
+  fail = false
+  await seam.provider.release(owner)
+  restore()
+  released.length = 0
+  await seam.provider.release(owner)
+  assert.deepEqual(released, ['original'])
+})

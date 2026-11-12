@@ -1,3 +1,4 @@
+import { isPtcMessageSource } from './message-sources.js'
 import {
   LEGACY_DEFAULT_EXPORT_BINDING,
   LIVE_DEFAULT_EXPORT_BINDING,
@@ -29,6 +30,14 @@ export const PREVIOUS_JOURNAL_VERSION = 3
 export const USER_BINDING_RELATIONLESS_JOURNAL_VERSION = 4
 export const FINGERPRINT_REUSE_JOURNAL_VERSION = 5
 export const VERSIONED_BINDING_REUSE_JOURNAL_VERSION = 6
+export const ENVIRONMENT_RESET_VERSION = 1
+
+/** Structured producer identity proves a reset independently of notice wording. */
+export function isEnvironmentResetEvent(event) {
+  const source = event?.data?.source
+  return event?.type === 'user/message' && isPtcMessageSource(source)
+    && source.form === 'environment-reset'
+}
 export const RECOVERY_BOUNDARY_EVENT = 'ptc-plus/recovery-boundary'
 
 export const STATUSES = new Set(['durable', 'volatile', 'discarded', 'noop'])
@@ -121,6 +130,7 @@ export function normalizeJournalUserBindingNames(journal) {
   return normalizeUserBindingNames(journal.userBindingNames)
 }
 export const RECOVERY_BOUNDARY_FIELDS = new Set(['failedCallSeq', 'frontierCallSeq'])
+export const RESET_RECOVERY_BOUNDARY_FIELDS = new Set(['failedResetSeq', 'frontierCallSeq'])
 export const REPL_TOOL_NAMES = new Set(['run_code', 'edit_run_code'])
 export const REWRITE_FIELDS = new Set(['kind', 'description', 'source'])
 export const REWRITE_KINDS = new Set(['import', 'redeclaration', 'export'])

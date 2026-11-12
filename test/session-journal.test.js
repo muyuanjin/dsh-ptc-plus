@@ -50,7 +50,7 @@ import {
   usesCallSequenceConfirms,
 } from '../internal/session-journal-schema.js'
 import { createSessionLogProjection, editTargetForCall, projectSessionLog } from '../internal/session-log-view.js'
-import { runtimeNoticeMessage } from '../internal/runtime-messages.js'
+import { environmentResetMessage, runtimeNoticeMessage } from '../internal/runtime-messages.js'
 import {
   createUserBindingsSnapshot,
   USER_BINDINGS_META_KEY,
@@ -3367,4 +3367,74 @@ test('source qualification requires a unique projected assistant message and rej
   assert.equal(sessionSourceMessages({ deriveMessages: () => [message, message] }, events, [0]).size, 0)
   const session = { events, surface: { nodes: [0] }, deriveMessages() { throw new Error('projection unavailable') } }
   assert.deepEqual([...visibleExecutableCallSeqs(session)], [])
+})
+
+test('environment reset invalidates replay and edit targets across projection checkpoints', () => {
+  const events = [{ seq: 0, type: 'turn/start', data: {} },
+    callEvent(1, 'old', 'let old = 1'),
+    { seq: 2, ...resultEvent(1, journal()), data: { message: { source: { callId: 'old' } }, meta: { [JOURNAL_KEY]: journal() } } },
+    { seq: 3, type: 'user/message', data: environmentResetMessage(), surfaceOp: 'append' },
+    { seq: 4, type: 'tool/call', data: { name: 'edit_run_code', callId: 'edit', arguments: '{}' } }]
+  const projection = createSessionLogProjection()
+  for (let cut = 0; cut <= events.length; cut++) {
+    let state = projection.init()
+    for (const event of events.slice(0, cut)) state = projection.apply(state, event)
+    state = projection.stateSchema.parse(JSON.parse(JSON.stringify(state)))
+    for (const event of events.slice(cut)) state = projection.apply(state, event)
+    state = projection.stateSchema.parse(JSON.parse(JSON.stringify(state)))
+    const view = projectSessionLog({ session: { events } }, { callId: 'edit', callSeq: 4 }, state)
+    assert.equal(view.latestRun, undefined)
+    assert.equal(view.requestedEditTarget, undefined)
+  }
+  const recovered = recoverJournal({ events: events.slice(0, 4) })
+  assert.equal(recovered.nodes.length, 0)
+  assert.equal(recovered.checkpoints.size, 0)
+})
+
+test('reset source identity survives wording changes and cannot be removed from a checkpoint', () => {
+  const message = structuredClone(environmentResetMessage())
+  message.content[0].text = 'Changed presentation wording.'
+  const projection = createSessionLogProjection({ replayBudgetBytes: 1 })
+  let state = projection.init()
+  state = projection.apply(state, { seq: 0, type: 'user/message', data: message, surfaceOp: 'append' })
+  const copy = () => JSON.parse(JSON.stringify(state))
+  assert.doesNotThrow(() => projection.stateSchema.parse(copy()))
+  const missing = copy()
+  delete missing.timeline.environmentReset
+  assert.throws(() => projection.stateSchema.parse(missing), /checkpoint/)
+  const wrong = copy()
+  wrong.timeline.environmentReset.seq = 9
+  assert.throws(() => projection.stateSchema.parse(wrong), /checkpoint/)
+  const changedSource = copy()
+  changedSource.logFacts[0].event.data.source.version = 2
+  assert.throws(() => projection.stateSchema.parse(changedSource), /checkpoint/)
+})
+
+test('reset recovery boundaries require the actual damaged reset and an empty frontier', () => {
+  const message = structuredClone(environmentResetMessage())
+  message.source.version = 2
+  const boundary = { failedResetSeq: 0, frontierCallSeq: null }
+  const eventsFor = (data = message, evidence = boundary) => [
+    { seq: 0, type: 'user/message', data, surfaceOp: 'append' },
+    callEvent(1, 'new', 'let fresh = 7'),
+    { ...resultEvent(1, journal()), seq: 2, data: { meta: withRecoveryBoundaries({ [JOURNAL_KEY]: journal() }, [evidence]) } },
+  ]
+  assert.deepEqual(normalizeRecoveryBoundaries([boundary]), [boundary])
+  for (const invalid of [
+    { ...boundary, failedCallSeq: 0 }, { ...boundary, frontierCallSeq: 1 },
+    { ...boundary, failedResetSeq: -0 }, { ...boundary, failedResetSeq: '0' },
+  ]) assert.throws(() => normalizeRecoveryBoundaries([invalid]), /recovery boundary/)
+  const events = eventsFor()
+  assert.equal(recoverJournal({ events }).available, true)
+  assert.equal(recoverJournal({ events }).nodes.length, 1)
+  for (const [data, evidence] of [
+    [environmentResetMessage(), boundary],
+    [message, { ...boundary, failedResetSeq: 1 }],
+    [message, { ...boundary, failedResetSeq: 2 }],
+    [message, { failedCallSeq: 0, frontierCallSeq: null }],
+  ]) assert.equal(recoverJournal({ events: eventsFor(data, evidence) }).available, false)
+  const projection = createSessionLogProjection({ replayBudgetBytes: 1 })
+  let state = projection.init()
+  for (const event of events) state = projection.apply(state, event)
+  assert.doesNotThrow(() => projection.stateSchema.parse(JSON.parse(JSON.stringify(state))))
 })

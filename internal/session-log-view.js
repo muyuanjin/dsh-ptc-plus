@@ -1,3 +1,4 @@
+import { isEnvironmentResetEvent } from './session-journal-schema.js'
 import {
   advanceSessionTimeline, createSessionTimelineState, factDigest, replaySessionTimelineFact, withFullRetention,
   retentionSummaryOf, validateRetentionSummary, validateSessionTimelineState, admissionReplayBudget,
@@ -101,7 +102,7 @@ export function runtimeMessageFacts(records, initial = {}) {
 
 function presentationEvent(event) {
   const recognized = event?.type === 'user/message'
-    && (systemPromptSnapshotSections(event.data) !== undefined || readRuntimeMessage(event.data) !== undefined
+    && (isEnvironmentResetEvent(event) || systemPromptSnapshotSections(event.data) !== undefined || readRuntimeMessage(event.data) !== undefined
       || isBindingAdoptionStatement(event.data))
   const data = recognized ? { source: event.data.source, content: event.data.content }
     : event?.type === 'user/message' && typeof event.data?.source?.kind === 'string'
@@ -171,11 +172,9 @@ export function createSessionLogProjection(options = {}) {
   const replayBudget = admissionReplayBudget(options.replayBudgetBytes)
   return Object.freeze({
     key: SESSION_LOG_PROJECTION_KEY,
-    // 14 records the binding-adoption statement this build cannot resolve: the fact it
-    // keeps now carries the form its own replay needs, and `ptcMessages` gained a record
-    // for it. A checkpoint written by an earlier fold answers a different question, so
-    // the version moves and stored checkpoints are refolded rather than admitted.
-    stateVersion: 14,
+    // 16 classifies damaged reset recovery targets separately from failed calls.
+    // Refold older caches to retain their reset corruption evidence.
+    stateVersion: 16,
     stateSchema: Object.freeze({ parse(value) {
       if (!isJsonValue(value) || !isRecord(value) || !isRecord(value.timeline)
         || typeof value.timeline.openTurn !== 'boolean' || typeof value.timeline.found !== 'boolean'
@@ -201,6 +200,7 @@ export function createSessionLogProjection(options = {}) {
       // ordered log facts whose indices agree with the timeline facts, each
       // timeline fact carrying a digest that matches the log fact it points at,
       // and a frontier that names the processed cut.
+      const timelineFacts = new Map(value.timeline.eventFacts.map(fact => [fact.eventIndex, fact]))
       let lastIndex = -1
       for (const fact of value.logFacts) {
         if (!isRecord(fact) || Object.keys(fact).some(key => !['index', 'event'].includes(key))
@@ -208,6 +208,12 @@ export function createSessionLogProjection(options = {}) {
           || !isRecord(fact.event) || !isCanonicalSequence(fact.event.seq) || typeof fact.event.type !== 'string'
           || !deepEqualJson(presentationEvent(fact.event), fact.event)) {
           throw new TypeError('invalid PTC session-log projection checkpoint facts')
+        }
+        // Reset facts are never dropped with retained cell clusters. Their log
+        // identity must survive even when compaction prevents full replay below.
+        if (isEnvironmentResetEvent(fact.event)
+          && !isEnvironmentResetEvent(timelineFacts.get(fact.index)?.event)) {
+          throw new TypeError('inconsistent PTC session-log projection checkpoint missing reset fact')
         }
         lastIndex = fact.index
       }
@@ -221,7 +227,9 @@ export function createSessionLogProjection(options = {}) {
         if (logFact === undefined) {
           throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
         }
-        if (logFact.event.seq !== timelineFact.event.seq || logFact.event.type !== timelineFact.event.type) {
+        if (logFact.event.seq !== timelineFact.event.seq || logFact.event.type !== timelineFact.event.type
+          || (isEnvironmentResetEvent(timelineFact.event)
+            && !deepEqualJson(logFact.event.data?.source, timelineFact.event.data?.source))) {
           throw new TypeError('inconsistent PTC session-log projection checkpoint event identity')
         }
       }
@@ -241,7 +249,6 @@ export function createSessionLogProjection(options = {}) {
       // longer reach the stored state. Admission proves the summary instead (below)
       // and skips the replay entirely: it is both impossible to satisfy and the
       // most expensive thing this file does.
-      const timelineFacts = new Map(value.timeline.eventFacts.map(fact => [fact.eventIndex, fact]))
       let replayBytes = 0
       let replayComplete = true
       let reconstructed = emptyLogState()

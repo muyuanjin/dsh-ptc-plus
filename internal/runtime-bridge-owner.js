@@ -697,7 +697,13 @@ function applyEditableSlots(definition, promptText, slotPatches) {
       .finally(projected.release)
   }
 
-  const releaseSeam = seam.installExecute(patchedRun)
+  const releaseSeam = seam.installExecute(patchedRun, owner => {
+    if (owner?.session === undefined || sessionId(owner) === undefined) return
+    // Host uses release for explicit reset and for its retained-environment effect.
+    // Cordis clears the public Agent scope uid before invoking disposal effects.
+    if (owner.ctx?.fiber?.uid === null) return sessions.disposeAgent(sessionId(owner))
+    return sessions.resetEnvironment(owner.session)
+  })
 
   /**
    * Whether this execution is the derived execution the edit transport submitted.

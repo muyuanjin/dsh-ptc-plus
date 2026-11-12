@@ -144,6 +144,23 @@ test('uses generated run_code summaries from persisted result metadata', () => {
   assert.equal(view.description, 'Execute the next TypeScript cell in this session')
 })
 
+test('edit receipts retain their feature with a damaged-reset recovery boundary', () => {
+  const meta = {
+    dshPtcPlus: normalizeJournal(journal()),
+    dshPtcPlusEdit: { targetCallSeq: 12 },
+    dshPtcPlusDerivedRun: { code: 'return 1', description: 'Edit after recovery' },
+    dshPtcPlusRecoveryBoundaries: [{ failedResetSeq: 9, frontierCallSeq: null }],
+  }
+  const view = evidence => derivePtcToolView(result({ ...meta, dshPtcPlusRecoveryBoundaries: evidence },
+    { toolName: 'edit_run_code' }), 'edit_run_code')
+  assert.ok(view(meta.dshPtcPlusRecoveryBoundaries).features.some(item => item.key === 'feature.safeEdit'))
+  for (const boundary of [
+    { failedResetSeq: 9, failedCallSeq: 9, frontierCallSeq: null },
+    { failedResetSeq: 9, frontierCallSeq: 4 },
+    { failedResetSeq: -0, frontierCallSeq: null },
+  ]) assert.ok(!view([boundary]).features.some(item => item.key === 'feature.safeEdit'))
+})
+
 test('does not infer canonicalizer provenance from model-copyable code and description', () => {
   const valid = normalizeJournal(journal())
   const canonical = derivePtcToolView(result(

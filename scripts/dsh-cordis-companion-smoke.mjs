@@ -1,12 +1,11 @@
 /** Exercise a packed Cordis owner against an active-host package resource. */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const SKILL_NAME = 'cordis-plugin-development'
 const PROVIDER_NAME = 'ptc-plus-cordis'
 
 async function main() {
@@ -15,6 +14,9 @@ async function main() {
     throw new Error('dsh-cordis-companion-smoke: DSH_PTC_ACTIVE_PRESET_PACKAGE is required')
   }
   const activeSkillDirectory = join(activePackage, 'skills')
+  const SKILL_NAME = ['dsh-doc', 'cordis-plugin-development'].find(name =>
+    existsSync(join(activeSkillDirectory, name, 'SKILL.md')))
+  assert.ok(SKILL_NAME, 'active host has no supported official companion Skill')
   const activeSkillFile = join(activeSkillDirectory, SKILL_NAME, 'SKILL.md')
   const activeContent = readFileSync(activeSkillFile, 'utf8')
 

@@ -180,7 +180,9 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 在插件 graph IPC 支持的值范围内，程序参数、结果和恢复记录能保留 `undefined`、BigInt、`NaN`、无穷大、稀疏数组、循环引用和共享引用关系，支持的值直接返回即可，不必自己写 `JSON.stringify`（它会丢掉对象里的 `undefined`，把 `NaN` 和无穷大变成 `null`、把 `-0` 变成 `0`，还会拒绝 BigInt）。函数、Promise、类实例、Date、Map、Set 不在这个范围内，原生 `tools.*` 的 JSON 参数与结果契约也不受影响，详见[值契约](docs/value-wire.md)。
 
-会话状态不是永久内存：重启、执行环境重置或上下文压缩后，只保留能从会话记录验证、且来源仍在模型上下文中的状态，其余会被丢弃并给出提示，必要时从空环境继续当前计算。会话记录本身缺失或损坏时会明确报错，不会被当作成功恢复的空会话。恢复不会重新派发已记录的原生工具调用，也不会撤销历史外部效果，依据和限制见[运行时参考](docs/runtime-reference.md)。
+会话状态不是永久内存：重启或上下文压缩后，只保留能从会话记录验证、且来源仍在模型上下文中的状态，其余会被丢弃并给出提示，必要时从空环境继续当前计算。会话记录本身缺失或损坏时会明确报错，不会被当作成功恢复的空会话。恢复不会重新派发已记录的原生工具调用，也不会撤销历史外部效果，依据和限制见[运行时参考](docs/runtime-reference.md)。
+
+宿主显式重置程序环境时，会清除会话变量、命名 checkpoint 和可编辑目标；重启或 fork 后也不会恢复重置前的状态。已完成的外部操作保留，全局绑定配置保持有效。
 
 停止后台子代理不会清空父会话的 REPL 状态；通知触发的后续调用可以继续使用父会话的变量。父会话自身释放后，后续调用仍按上述恢复规则继续计算。
 
@@ -193,6 +195,8 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 PTC Plus 是社区插件，与 DeepSeek 或 DSH 无隶属或背书关系。
 
 ## 开发
+
+Windows 可双击 `scripts\run-dev-dsh.cmd` 启动隔离开发环境；默认复用经 Windows Node.js 实测可监听的端口，缓存端口被占用或拒绝访问时自动更换。手动指定的端口保持原值，详见[安装指南](docs/installation.md)。
 
 开发在仓库根目录进行：`npm ci` 安装依赖，`npm run build` 重新生成 `client.cjs` 和 compiler 产物。聚焦测试必须指定用例：
 

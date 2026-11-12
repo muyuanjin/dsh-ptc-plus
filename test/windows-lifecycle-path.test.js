@@ -755,6 +755,14 @@ if (tool === 'git') {
   const pnpm = path.join(process.env.DSH_HOME, 'profiles', args[2], 'pnpm.cmd')
   const result = spawnSync('"' + pnpm + '" install', { shell: process.env.ComSpec, stdio: 'inherit' })
   process.exit(result.status ?? 1)
+} else if (tool === 'dsh' && process.env.PTC_MOCK_LISTEN === '1') {
+  const portArgument = args.find(arg => arg.startsWith('--port='))
+  const port = Number(portArgument ? portArgument.slice(7) : args[args.indexOf('--port') + 1])
+  const server = require('node:net').createServer()
+  server.listen(port, '127.0.0.1', () => {
+    console.log('Web listening on ' + server.address().port)
+    server.close()
+  })
 } else if (tool === 'corepack' && args.at(-1) === 'prune' && process.env.PTC_MOCK_PRUNE_FAILURE === '1') {
   console.error('Store is in use')
   process.exit(19)
@@ -909,14 +917,17 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
   }, async t => {
     const fixture = await developmentRegistryFixture(t)
     const portCache = path.join(fixture.cacheRoot, 'dsh-home', 'profiles', 'web', '.ptc-plus-dev-web-port')
-    const first = fixture.run(shellPath, { DSH_DEV_PORT: '', NODE_OPTIONS: '--no-warnings' })
+    const environment = { DSH_DEV_PORT: '', NODE_OPTIONS: '--no-warnings', PTC_MOCK_LISTEN: '1' }
+    const first = fixture.run(shellPath, environment)
     assert.equal(first.status, 0, first.stderr || first.stdout || first.error?.message)
     const firstPort = (await readFile(portCache, 'utf8')).trim()
     assert.match(firstPort, /^\d+$/u)
+    assert.ok(first.stdout.includes(`Web listening on ${firstPort}`), first.stdout)
 
-    const second = fixture.run(shellPath, { DSH_DEV_PORT: '', NODE_OPTIONS: '--no-warnings' })
+    const second = fixture.run(shellPath, environment)
     assert.equal(second.status, 0, second.stderr || second.stdout || second.error?.message)
     assert.equal((await readFile(portCache, 'utf8')).trim(), firstPort)
+    assert.ok(second.stdout.includes(`Web listening on ${firstPort}`), second.stdout)
 
     const launches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin')
     assert.equal(launches.length, 2)
@@ -959,6 +970,7 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
     const replacementPort = (await readFile(portCache, 'utf8')).trim()
     assert.notEqual(replacementPort, occupiedPort)
     assert.match(replacementPort, /^\d+$/u)
+    assert.ok(occupied.stdout.includes(`Cached Web port ${occupiedPort} is unavailable`), occupied.stdout)
 
     const launches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin')
     assert.deepEqual(launches.map(entry => entry.args.slice(-2)), [
@@ -966,6 +978,92 @@ for (const shellName of ['powershell.exe', 'pwsh.exe']) {
       ['--port', recoveredPort],
       ['--port', replacementPort],
     ])
+  })
+
+  test(`Windows cmd launcher replaces a denied cached port before Node listens under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const exclusions = execFileSync('netsh.exe', ['interface', 'ipv4', 'show', 'excludedportrange', 'protocol=tcp'], { encoding: 'utf8' })
+    let deniedPort
+    for (const match of exclusions.matchAll(/^\s*(\d+)\s+(\d+)\s*\*?\s*$/gmu)) {
+      const candidate = Number(match[1])
+      if (candidate === 0) continue
+      const server = createServer()
+      const code = await new Promise(resolve => {
+        server.once('error', error => resolve(error.code))
+        server.listen(candidate, '127.0.0.1', () => server.close(() => resolve(null)))
+      })
+      if (code === 'EACCES') { deniedPort = candidate; break }
+    }
+    if (deniedPort === undefined) return t.skip('No Windows excluded port currently denies a Node bind')
+
+    const fixture = await developmentRegistryFixture(t)
+    const portCache = path.join(fixture.cacheRoot, 'dsh-home', 'profiles', 'web', '.ptc-plus-dev-web-port')
+    await mkdir(path.dirname(portCache), { recursive: true })
+    await writeFile(portCache, String(deniedPort))
+    const environment = { DSH_DEV_PORT: '', PTC_MOCK_LISTEN: '1' }
+    const result = fixture.run(shellPath, environment, false, { cmd: true, args: [] })
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+    const selectedPort = (await readFile(portCache, 'utf8')).trim()
+    assert.notEqual(selectedPort, String(deniedPort))
+    assert.ok(result.stdout.includes(`Cached Web port ${deniedPort} is unavailable`), result.stdout)
+    assert.ok(result.stdout.includes(`Web listening on ${selectedPort}`), result.stdout)
+
+    const restarted = fixture.run(shellPath, environment, false, { cmd: true, args: [] })
+    assert.equal(restarted.status, 0, restarted.stderr || restarted.stdout || restarted.error?.message)
+    assert.equal((await readFile(portCache, 'utf8')).trim(), selectedPort)
+    assert.ok(restarted.stdout.includes(`Web listening on ${selectedPort}`), restarted.stdout)
+
+    const explicit = fixture.run(shellPath, { ...environment, DSH_DEV_PORT: String(deniedPort) }, false, { cmd: true, args: [] })
+    assert.notEqual(explicit.status, 0)
+    assert.match(explicit.stdout + explicit.stderr, /EACCES/u)
+    assert.equal((await readFile(portCache, 'utf8')).trim(), selectedPort)
+  })
+
+  test(`isolated launcher detects Node-specific port denial and preserves the cache on probe exhaustion under ${shellName}`, {
+    skip: shellPath === null,
+  }, async t => {
+    const fixture = await developmentRegistryFixture(t)
+    const server = createServer()
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const deniedPort = server.address().port
+    await new Promise(resolve => server.close(resolve))
+    const portCache = path.join(fixture.cacheRoot, 'dsh-home', 'profiles', 'web', '.ptc-plus-dev-web-port')
+    await mkdir(path.dirname(portCache), { recursive: true })
+    await writeFile(portCache, String(deniedPort))
+    const preload = path.join(fixture.root, 'deny-node-port.cjs')
+    await writeFile(preload, String.raw`
+const { Server } = require('node:net')
+const listen = Server.prototype.listen
+Server.prototype.listen = function(port, ...args) {
+  if (Number(port) === Number(process.env.PTC_NODE_DENIED_PORT) || process.env.PTC_NODE_DENY_ALL === '1') {
+    const error = Object.assign(new Error('Node listen access denied'), { code: 'EACCES' })
+    process.nextTick(() => this.emit('error', error))
+    return this
+  }
+  return listen.call(this, port, ...args)
+}
+`)
+    const environment = {
+      DSH_DEV_PORT: '', PTC_MOCK_LISTEN: '1', PTC_NODE_DENIED_PORT: String(deniedPort),
+      NODE_OPTIONS: `--require=${JSON.stringify(preload)}`,
+    }
+    const result = fixture.run(shellPath, environment)
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message)
+    const selectedPort = (await readFile(portCache, 'utf8')).trim()
+    assert.notEqual(selectedPort, String(deniedPort))
+    assert.ok(result.stdout.includes(`Web listening on ${selectedPort}`), result.stdout)
+    const previousLaunches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin').length
+
+    const exhausted = fixture.run(shellPath, { ...environment, PTC_NODE_DENY_ALL: '1' })
+    assert.notEqual(exhausted.status, 0)
+    assert.match(exhausted.stdout + exhausted.stderr, /Unable to select a usable Web port/u)
+    assert.equal((await readFile(portCache, 'utf8')).trim(), selectedPort)
+    const launches = (await fixture.reports()).filter(entry => entry.tool === 'dsh' && entry.args[0] !== 'plugin')
+    assert.equal(launches.length, previousLaunches, 'failed probes must stop before launching the Host')
   })
 
   test(`isolated launcher continues after locked cache cleanup and prune failures under ${shellName}`, {

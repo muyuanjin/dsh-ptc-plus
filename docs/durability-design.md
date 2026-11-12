@@ -38,6 +38,16 @@ PTC Plus 的正确承诺是：
 
 这避免了两个错误极端：既不为追求恢复而删除正常 REPL 能力，也不把无法迁移的 heap 伪装成可确定重建。
 
+## 显式环境重置
+
+宿主对 live Agent 调用公共 `ptcRuntime.release(owner)` 时，runtime bridge 将其路由到 `SessionRuntime.resetEnvironment`。该路径先释放 live kernel，再通过公共 `Session.append` 写入插件自有 `user/message`，其结构化 source 为 `{ kind: "plugin:ptc-plus", form: "environment-reset", version: 1 }`，并用 `surfaceOp: "append"` 公开状态变化；清理或追加失败均向宿主返回失败，由宿主的 reset 协调器负责取消、等待和重试。插件不另建调度器；这条消息公开计算边界，宿主另行拥有 reset 完成回执。
+
+共享 timeline 保留完整历史的关联事实，但以最新 reset 序号划定后续计算的起点：更早 cell、命名 checkpoint 和 edit target 不再有恢复资格；新的计算从空环境继续，并按配置重新初始化 Global User Bindings。`ptcPlusSessionLog` 状态版本 16 使旧缓存重新折叠日志；JSON checkpoint、冷恢复和 fork 都消费同一边界，不能用旧 restore 名称恢复重置前状态。重置不删除原始日志、不修改绑定配置、不撤销或重新派发历史外部效果。
+
+历史 reset 的 `source.version` 缺失或不受支持时，恢复从空 frontier 继续当前计算，并在已确认结果写入 `{ failedResetSeq, frontierCallSeq: null }` 收缩记录。它只证明最新损坏 reset 到该 carrier 之间的恢复证据已被舍弃，不冒充失败的 executable call。后续冷恢复消费这份记录，保留 carrier 及其新分支，不重复收缩或派发外部调用；缺失或无效的记录仍不证明后续状态。
+
+Agent scope 正常销毁时，Cordis 在调用清理 effect 前把其公共 fiber `uid` 置为 `null`。这种 release 只释放 live worker，保留可证明 journal 的冷恢复；它与用户显式重置不同。见 [ADR 0051](adr/0051-persist-explicit-host-environment-resets.md)。
+
 ## Journal
 
 每个进入执行缝的 cell 创建 mutable tentative journal：

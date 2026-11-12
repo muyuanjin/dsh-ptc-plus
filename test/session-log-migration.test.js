@@ -10,6 +10,8 @@ import { JOURNAL_VERSION, JOURNAL_VERSIONS, MODULE_TRANSFORM_JOURNAL_VERSION, LA
 import { LEGACY_USER_BINDING_TRANSFORM, USER_BINDING_TRANSFORM } from '../internal/typescript-transform.js'
 import { createUserBindingsSnapshot, normalizeUserBindingEntry, normalizeUserBindingsSnapshot, USER_BINDINGS_META_KEY } from '../internal/user-bindings.js'
 import { encodeValue } from '../internal/value-wire.js'
+import { environmentResetMessage } from '../internal/runtime-messages.js'
+import { migrateRecoveryBoundaryEvents } from '../internal/session-journal.js'
 import { appendOnlySession, appendRunCodeEvents, fixture } from './plugin-fixture.js'
 import {
   main,
@@ -961,6 +963,75 @@ test('format migration remaps confirmations and recovery frontiers and rejects u
   assert.deepEqual(meta.dshPtcPlusRecoveryBoundaries, [{ failedCallSeq: nextCalls[1].seq, frontierCallSeq: nextCalls[0].seq }])
   result.data.meta.dshPtcPlusRecoveryBoundaries[0].frontierCallSeq = 999
   assert.throws(migrate, /unproved PTC call reference/)
+})
+
+test('migration preserves damaged-reset recovery identity when event sequences change', () => {
+  const message = structuredClone(environmentResetMessage())
+  message.source.version = 2
+  const events = [{ seq: 0, type: 'assistant/chunk', data: {} },
+    { seq: 1, type: 'user/message', data: message, surfaceOp: 'append' }]
+  appendRunCodeEvents(events, 'after-reset', 'let fresh = 7', { meta: {
+    dshPtcPlus: legacyJournal(),
+    dshPtcPlusRecoveryBoundaries: [{ failedResetSeq: 1, frontierCallSeq: null }],
+  } })
+  const original = structuredClone(events)
+  const migration = migrateSessionLogText(logText([sessionHeader, ...events]), { catalog: renumberingCatalog() })
+  const [, ...migrated] = migration.text.trim().split('\n').map(line => JSON.parse(line))
+  const reset = migrated.find(event => event.type === 'user/message')
+  assert.deepEqual(migrated.at(-1).data.meta.dshPtcPlusRecoveryBoundaries,
+    [{ failedResetSeq: reset.seq, frontierCallSeq: null }])
+  assert.equal(recoverJournal({ events: migrated }).available, true)
+  assert.deepEqual(events, original)
+  assert.throws(() => migrateSessionLogText(logText([sessionHeader, ...events]), {
+    catalog: renumberingCatalog(rows => {
+      rows.find(event => event.type === 'user/message').data.source.version = 1
+      return rows
+    }),
+  }), /reset message identities/)
+  // Removing a retired event also renumbers a later reset and its evidence.
+  const withRetired = [
+    { seq: 0, type: 'tool/call', data: { name: 'run_code', callId: 'old', arguments: '{"code":"return 0"}' } },
+    { seq: 1, type: 'ptc-plus/recovery-boundary', data: { failedCallSeq: 0, frontierCallSeq: null } },
+    ...events.slice(1).map(event => ({ ...structuredClone(event), seq: event.seq + 1,
+      ...(event.sourceEventSeqs === undefined ? {} : { sourceEventSeqs: event.sourceEventSeqs.map(seq => seq + 1) }) })),
+  ]
+  withRetired.at(-1).data.meta.dshPtcPlusRecoveryBoundaries[0].failedResetSeq = 2
+  const converted = migrateRecoveryBoundaryEvents(withRetired)
+  assert.deepEqual(converted.at(-1).data.meta.dshPtcPlusRecoveryBoundaries,
+    [{ failedCallSeq: 0, frontierCallSeq: null }, { failedResetSeq: 1, frontierCallSeq: null }])
+})
+
+test('migration validates only recovery boundaries after the latest reset', () => {
+  const events = []
+  const resetSeqs = []
+  for (const version of [undefined, 2]) {
+    events.push({ seq: events.length, type: 'assistant/chunk', data: {} })
+    const message = structuredClone(environmentResetMessage())
+    if (version === undefined) delete message.source.version
+    else message.source.version = version
+    const resetSeq = events.length
+    resetSeqs.push(resetSeq)
+    events.push({ seq: resetSeq, type: 'user/message', data: message, surfaceOp: 'append' })
+    appendRunCodeEvents(events, `after-reset-${resetSeq}`, `let fresh${resetSeq} = 7`, { meta: {
+      dshPtcPlus: legacyJournal(),
+      dshPtcPlusRecoveryBoundaries: [{ failedResetSeq: resetSeq, frontierCallSeq: null }],
+    } })
+  }
+  const migrate = () => migrateSessionLogText(logText([sessionHeader, ...events]), { catalog: renumberingCatalog() })
+  const migration = migrate()
+  const [, ...migrated] = migration.text.trim().split('\n').map(line => JSON.parse(line))
+  const resets = migrated.filter(event => event.type === 'user/message')
+  const carriers = migrated.filter(event => event.type === 'tool/result')
+  assert.equal(carriers.length, 2, 'superseded recovery receipts remain historical facts')
+  assert.deepEqual(carriers.map(event => event.data.meta.dshPtcPlusRecoveryBoundaries[0].failedResetSeq),
+    resets.map(event => event.seq))
+  const recovered = recoverJournal({ events: migrated })
+  assert.equal(recovered.available, true)
+  assert.equal(recovered.nodes.length, 1)
+  events.at(-1).data.meta.dshPtcPlusRecoveryBoundaries[0].failedResetSeq = resetSeqs[0]
+  assert.throws(migrate, /does not prove its declared frontier/)
+  events.push({ seq: events.length, type: 'user/message', data: environmentResetMessage(), surfaceOp: 'append' })
+  assert.doesNotThrow(migrate, 'a later valid reset retires earlier damaged recovery evidence')
 })
 
 test('format migration refuses changed tool identities, invalid journals and mixed retired events', async t => {

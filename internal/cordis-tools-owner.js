@@ -8,7 +8,7 @@ import { RUN_CODE } from './runtime-bridge-owner.js'
 import { sessionExecutionAvailable } from './host-tool-sdk.js'
 
 const CORDIS_PRESET_ID = 'cordis'
-const CORDIS_SKILL_NAME = 'cordis-plugin-development'
+const COMPANION_SKILL_NAMES = Object.freeze(['dsh-doc', 'cordis-plugin-development'])
 const CORDIS_SKILL_PROVIDER = 'ptc-plus-cordis'
 const COMPANION_SKILL_TOOL = 'skill'
 const COMPANION_PACKAGE_LAYOUTS = Object.freeze([
@@ -22,19 +22,19 @@ const COMPANION_PACKAGE_LAYOUTS = Object.freeze([
   }),
 ])
 
-function exactCompanionCandidates(observation) {
+function exactCompanionCandidates(observation, skillName) {
   if (Array.isArray(observation)) {
-    return observation.filter(candidate => candidate?.name === CORDIS_SKILL_NAME)
+    return observation.filter(candidate => candidate?.name === skillName)
   }
   if (observation === null || typeof observation !== 'object'
     || !Array.isArray(observation.candidates)) return observation
   return {
     ...observation,
-    candidates: observation.candidates.filter(candidate => candidate?.name === CORDIS_SKILL_NAME),
+    candidates: observation.candidates.filter(candidate => candidate?.name === skillName),
   }
 }
 
-function exactCompanionProvider(provider) {
+function exactCompanionProvider(provider, skillName) {
   if (provider === null || typeof provider !== 'object'
     || typeof provider.name !== 'string'
     || typeof provider.list !== 'function'
@@ -44,17 +44,17 @@ function exactCompanionProvider(provider) {
   return {
     ...provider,
     async list(options) {
-      return exactCompanionCandidates(await Reflect.apply(provider.list, provider, [options]))
+      return exactCompanionCandidates(await Reflect.apply(provider.list, provider, [options]), skillName)
     },
     async get(candidate, options) {
-      if (candidate?.name !== CORDIS_SKILL_NAME) return undefined
+      if (candidate?.name !== skillName) return undefined
       const skill = await Reflect.apply(provider.get, provider, [candidate, options])
-      return skill?.name === CORDIS_SKILL_NAME ? skill : undefined
+      return skill?.name === skillName ? skill : undefined
     },
   }
 }
 
-function exactCompanionSkillPlugin(skillFilesystemPlugin) {
+function exactCompanionSkillPlugin(skillFilesystemPlugin, skillName) {
   return {
     ...skillFilesystemPlugin,
     apply(pluginCtx, config) {
@@ -68,7 +68,7 @@ function exactCompanionSkillPlugin(skillFilesystemPlugin) {
       const facade = new Proxy(skills, {
         get(target, property) {
           if (property === 'registerProvider') {
-            return create => target.registerProvider(control => exactCompanionProvider(create(control)))
+            return create => target.registerProvider(control => exactCompanionProvider(create(control), skillName))
           }
           const value = Reflect.get(target, property, target)
           return typeof value === 'function' ? value.bind(target) : value
@@ -144,12 +144,13 @@ function requireCompanionServices(agent) {
   return { agentPresets, skills }
 }
 
-function containsCompanionSkill(directory, fileExists) {
-  return fileExists(join(directory, CORDIS_SKILL_NAME, 'SKILL.md'))
+function companionSkill(directory, fileExists) {
+  const skillName = COMPANION_SKILL_NAMES.find(name => fileExists(join(directory, name, 'SKILL.md')))
+  return skillName === undefined ? undefined : { skillRoot: directory, skillName }
 }
 
 /** Resolve the official Cordis companion Skill across DSH preset generations. */
-export async function resolveCompanionSkillDirectory(agentPresets, options = {}) {
+export async function resolveCompanionSkillResource(agentPresets, options = {}) {
   const preset = await agentPresets.resolve(CORDIS_PRESET_ID)
   const resolution = typeof options === 'function' ? options() : options
   const fileExists = resolution.fileExists ?? existsSync
@@ -161,10 +162,11 @@ export async function resolveCompanionSkillDirectory(agentPresets, options = {})
       throw new Error('ptc-plus: DSH cordis preset did not expose an absolute composition path')
     }
     const directory = join(dirname(preset.path), 'skills')
-    if (!containsCompanionSkill(directory, fileExists)) {
-      throw new Error(`ptc-plus: DSH cordis preset does not contain ${CORDIS_SKILL_NAME}/SKILL.md beside its composition`)
+    const resource = companionSkill(directory, fileExists)
+    if (resource === undefined) {
+      throw new Error(`ptc-plus: DSH cordis preset does not contain a supported companion SKILL.md beside its composition`)
     }
-    return directory
+    return resource
   }
 
   for (const layout of COMPANION_PACKAGE_LAYOUTS) {
@@ -174,7 +176,8 @@ export async function resolveCompanionSkillDirectory(agentPresets, options = {})
       throw new Error(`ptc-plus: DSH pluginPackages returned an invalid ${layout.name} package resource`)
     }
     const directory = layout.skillRoot(pkg.dir)
-    if (containsCompanionSkill(directory, fileExists)) return directory
+    const resource = companionSkill(directory, fileExists)
+    if (resource !== undefined) return resource
   }
 
   if (resolution.packageOf === undefined && resolution.resolveLegacyPackageManifest !== undefined) {
@@ -186,29 +189,30 @@ export async function resolveCompanionSkillDirectory(agentPresets, options = {})
     }
     if (manifest !== undefined) {
       const directory = join(dirname(manifest), 'presets', CORDIS_PRESET_ID, 'skills')
-      if (containsCompanionSkill(directory, fileExists)) return directory
+      const resource = companionSkill(directory, fileExists)
+      if (resource !== undefined) return resource
     }
   }
-  throw new Error(`ptc-plus: the active DSH installation does not publish a loadable ${CORDIS_SKILL_NAME} companion Skill through its package-resolution surface`)
+  throw new Error(`ptc-plus: the active DSH installation does not publish a loadable official companion Skill through its package-resolution surface`)
 }
 
-async function requireCompanionSkill(agent, skills) {
+async function requireCompanionSkill(agent, skills, skillName) {
   const lookup = {
     cwd: agent.session?.header?.cwd,
     scope: agent,
   }
   const owned = (await skills.list(lookup)).filter(skill => skill?.provider === CORDIS_SKILL_PROVIDER)
   const summary = owned[0]
-  if (owned.length !== 1 || summary?.name !== CORDIS_SKILL_NAME
+  if (owned.length !== 1 || summary?.name !== skillName
     || summary.invocation?.modelInvocable !== true) {
-    throw new Error(`ptc-plus: official Cordis Skill provider must publish exactly ${JSON.stringify(CORDIS_SKILL_NAME)} as model-invocable`)
+    throw new Error(`ptc-plus: official Cordis Skill provider must publish exactly ${JSON.stringify(skillName)} as model-invocable`)
   }
-  const skill = await skills.get(CORDIS_SKILL_NAME, lookup)
+  const skill = await skills.get(skillName, lookup)
   if (skill?.provider !== CORDIS_SKILL_PROVIDER
     || skill.invocation?.modelInvocable !== true
     || typeof skill.content !== 'string'
     || skill.content.length === 0) {
-    throw new Error(`ptc-plus: official Cordis companion Skill ${JSON.stringify(CORDIS_SKILL_NAME)} is not loadable`)
+    throw new Error(`ptc-plus: official Cordis companion Skill ${JSON.stringify(skillName)} is not loadable`)
   }
 }
 
@@ -321,7 +325,6 @@ export function createCordisToolsOwner(
   const withdrawn = new Map()
   const cordisInspectLeases = createCordisInspectLeases(ctx)
   const scopedCordisPlugin = cordisInspectLeases.plugin(cordisPlugin)
-  const scopedSkillPlugin = exactCompanionSkillPlugin(skillFilesystemPlugin)
   const packageBaseUrl = ctx.baseUrl
   const skillResolution = companionResolution ?? (() => {
     const pluginPackages = ctx.get?.('pluginPackages')
@@ -423,13 +426,14 @@ export function createCordisToolsOwner(
     mounts.set(agent, mount)
     mount.activation = Promise.resolve().then(async () => {
       const { agentPresets, skills } = requireCompanionServices(agent)
-      const skillDirectory = await resolveCompanionSkillDirectory(agentPresets, skillResolution)
+      const { skillRoot, skillName } = await resolveCompanionSkillResource(agentPresets, skillResolution)
+      const scopedSkillPlugin = exactCompanionSkillPlugin(skillFilesystemPlugin, skillName)
       if (mount.disposed) return
 
       const skillFiber = agent.ctx.plugin(scopedSkillPlugin, {
         providerName: CORDIS_SKILL_PROVIDER,
         includeDefaultRoots: false,
-        bundledSkillDir: skillDirectory,
+        bundledSkillDir: skillRoot,
         watch: false,
       })
       if (typeof skillFiber?.dispose !== 'function') {
@@ -449,7 +453,7 @@ export function createCordisToolsOwner(
       await Promise.resolve(cordisFiber)
       if (mount.disposed) return
 
-      await requireCompanionSkill(agent, skills)
+      await requireCompanionSkill(agent, skills, skillName)
       if (mount.disposed) return
       mount.activated = true
     }).catch(async error => {

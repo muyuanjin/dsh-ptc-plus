@@ -1,3 +1,4 @@
+import { ENVIRONMENT_RESET_VERSION } from './session-journal-schema.js'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   CATALOG_PREFIX, EMPTY_CATALOG, LEGACY_STATE_PREFIX, PREVIOUS_EMPTY_CATALOG, PREVIOUS_STATE_PREFIX,
@@ -184,4 +185,11 @@ export function runtimeNoticeMessage(tip) {
   })
   if (readRuntimeMessage(message) === undefined) throw new Error('invalid PTC recovery notice')
   return message
+}
+
+/** A persisted computation boundary; the Host separately owns its reset receipt. */
+export function environmentResetMessage() {
+  return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'environment-reset', version: ENVIRONMENT_RESET_VERSION },
+    content: [{ type: 'text', text: 'PTC Plus computation reset: earlier session bindings, named checkpoints and edit targets are retired. New computation starts empty with the configured global bindings. Completed external effects remain.' }],
+  })
 }

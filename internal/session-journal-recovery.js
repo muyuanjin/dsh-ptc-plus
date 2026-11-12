@@ -7,6 +7,8 @@ import {
   JOURNAL_KEY,
   RECOVERY_BOUNDARY_KEY,
   RECOVERY_BOUNDARY_EVENT,
+  ENVIRONMENT_RESET_VERSION,
+  isEnvironmentResetEvent,
   DIAGNOSTIC_WORDING_KEY,
   DIAGNOSTIC_WORDING_FIELDS,
   SETTLEMENT_PROOF_KEY,
@@ -40,7 +42,7 @@ import {
 
 const RECOVERY_BOUNDARY_EVIDENCE = Symbol('recoveryBoundaryEvidence')
 const RUN_SELECTION_CLEAR_REASONS = new Set([
-  'turn/start', 'turn/end', 'duplicate-call-sequence', 'invalid-source-relation',
+  'turn/start', 'turn/end', 'environment-reset', 'duplicate-call-sequence', 'invalid-source-relation',
   'ambiguous-call-id', 'ambiguous-call-sequence', 'duplicate-result', 'result-identity-mismatch',
 ])
 const MODEL_VISIBLE_SURFACE_EVENTS = new Set([
@@ -80,8 +82,12 @@ function sourceForRunCall(call, executableCalls) {
 /** Select the boundary of a failed replay node or an unavailable recovered suffix. */
 export function recoveryBoundaryForHistory(history, failedNode, { reset = false } = {}) {
   if (reset) failedNode = history.nodes[0]
+  const unavailable = history.available === false ? history.volatileSuffix[0] : undefined
+  if (failedNode === undefined && unavailable?.kind === 'environment-reset') {
+    return { failedResetSeq: unavailable.seq, frontierCallSeq: null }
+  }
   const failedCallSeq = failedNode === undefined
-    ? history.available === false ? history.volatileSuffix[0]?.seq : undefined
+    ? unavailable?.seq
     : failedNode.callSeq
   if (failedCallSeq === undefined) return undefined
   const frontier = reset ? undefined : failedNode === undefined ? history.head : failedNode.parent
@@ -735,6 +741,7 @@ function correlationEvent(event) {
       ...(typeof event.data?.message?.source?.callId === 'string'
         ? { callId: event.data.message.source.callId } : {}),
     } } } } : {}),
+    ...(isEnvironmentResetEvent(event) ? { data: { source: event.data.source } } : {}),
     ...(event.type === 'compaction/prune' ? { data: {
       ...(event.data?.shadowedSeqs === undefined ? {} : { shadowedSeqs: event.data.shadowedSeqs }),
       ...(event.data?.shadowedRange === undefined ? {} : { shadowedRange: event.data.shadowedRange }),
@@ -1158,7 +1165,7 @@ export function validateSessionTimelineState(value, logFacts, options = {}) {
     'ordinaryResultSeqs', 'settledResultsByEventSeq', 'scope', 'latestRun', 'editableRun', 'lastSuccessfulRunIndex',
     'unavailableResultSeq', 'unavailableResultReason', 'pruneReplacementWindow', 'runSelectionFrontier',
     'runSelectionHistory', 'lastEventIndex', 'eventFacts', 'retainedBytes', 'retentionSummary', 'compacted',
-    'hotCellDropped']) && typeof value.openTurn === 'boolean'
+    'hotCellDropped', 'environmentReset']) && typeof value.openTurn === 'boolean'
     && typeof value.found === 'boolean' && isCanonicalSequence(value.scope)
     && typeof value.retainedBytes === 'number' && value.retainedBytes >= 0
     && (value.retentionSummary === undefined || value.retentionSummary === null || isRecord(value.retentionSummary))
@@ -1328,9 +1335,10 @@ export function validateSessionTimelineState(value, logFacts, options = {}) {
       && isCanonicalSequence(observation.eventIndex) && observation.eventIndex > correlationIndex
       && value.lastEventIndex !== null && observation.eventIndex <= value.lastEventIndex
       && isRecord(observation.event) && isCanonicalSequence(observation.event.seq)
-      && ['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
+      && ['turn/start', 'turn/end', 'user/message', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
         'tool/ptc-dispatch-start', 'tool/ptc-dispatch']
         .includes(observation.event.type)
+      && (observation.event.type !== 'user/message' || isEnvironmentResetEvent(observation.event))
       && deepEqualJson(correlationEvent(observation.event), observation.event)
       && (observation.event.type === 'tool/ptc-dispatch-start'
         && observation.event.data?.name === 'edit_run_code'
@@ -1363,6 +1371,9 @@ export function validateSessionTimelineState(value, logFacts, options = {}) {
     }
     reconstructed = replaySessionTimelineFact(reconstructed, observation, executable)
   }
+  const resetFact = value.eventFacts.findLast(fact => isEnvironmentResetEvent(fact.event))
+  requireFact(deepEqualJson(value.environmentReset ?? null, resetFact === undefined ? null
+    : { seq: resetFact.event.seq, index: resetFact.eventIndex }))
   const summary = retentionSummaryOf(value)
   // A compacted state that lost its summary must be rejected: dropping the summary
   // would erase the only trace of the clusters the window removed.
@@ -1428,7 +1439,8 @@ export function validateSessionTimelineState(value, logFacts, options = {}) {
     if (item.frontier !== undefined) {
       dispatchFrontier = item.frontier
       dispatchRun = undefined
-      if (item.frontier.reason === 'turn/start' || item.frontier.reason === 'turn/end') {
+      if (item.frontier.reason === 'turn/start' || item.frontier.reason === 'turn/end'
+        || item.frontier.reason === 'environment-reset') {
         dispatchScope = item.frontier.scope
         dispatchClaims.clear()
         dispatchEdits.clear()
@@ -1669,13 +1681,14 @@ function requireRecordedSettlementProof(meta, journal, isError = undefined) {
 }
 
 function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, retainedCalls) {
+  if (inputEvent?.type === 'user/message' && !isEnvironmentResetEvent(inputEvent)) return previous
   const nested = inputEvent?.type === 'tool/ptc-dispatch-start'
     || inputEvent?.type === 'tool/ptc-dispatch'
   if (nested && inputEvent.data?.name !== 'edit_run_code'
     && inputEvent.data?.name !== 'run_code'
     && !previous.eventFacts.some(fact => fact.event.type === 'tool/ptc-dispatch-start'
       && fact.event.data?.subCallId === inputEvent.data?.subCallId)) return previous
-  if (!['turn/start', 'turn/end', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
+  if (!['turn/start', 'turn/end', 'user/message', RECOVERY_BOUNDARY_EVENT, 'compaction/prune', 'tool/call', 'tool/result',
     'tool/ptc-dispatch-start', 'tool/ptc-dispatch'].includes(inputEvent?.type)) {
     return previous
   }
@@ -1744,6 +1757,21 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
     }
     if (event?.type === 'turn/end') {
       resetTurn(false)
+      continue
+    }
+    if (isEnvironmentResetEvent(event)) {
+      state.environmentReset = { seq: event.seq, index: eventIndex }
+      pendingByCallId.clear()
+      seenCallIds.clear()
+      claimedEditTargets.clear()
+      editClaims.clear()
+      delete state.unavailableResultSeq
+      delete state.unavailableResultReason
+      clearRunSelection('environment-reset')
+      if (event.data.source.version !== ENVIRONMENT_RESET_VERSION) {
+        state.unavailableResultSeq = isCanonicalSequence(event.seq) ? event.seq : eventIndex
+        state.unavailableResultReason = { seq: state.unavailableResultSeq, reason: 'invalid PTC environment reset boundary' }
+      }
       continue
     }
     if (event?.type === RECOVERY_BOUNDARY_EVENT) {
@@ -1824,6 +1852,7 @@ function advanceTimelineEvent(previous, inputEvent, eventIndex, replayFact, reta
       settledResultsByEventSeq.set(event.seq, republishedSettlement)
       continue
     }
+    if (entry?.event?.seq <= (state.environmentReset?.seq ?? -1)) continue
     if (hasSourceRelation && !canonicalSourceRelation) {
       const callSeq = invalidSourceCallSeq(event, state.executableCalls, pendingByCallId)
       if (callSeq !== undefined) {
@@ -2387,29 +2416,33 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   const needsPayload = [...folded.executableCalls.values()]
     .some(entry => typeof entry?.event?.data?.arguments !== 'string')
   const timeline = needsPayload ? withFullRetention(() => foldSessionTimeline(events)) : folded
-  const calls = timelineCalls(timeline).filter(call => call.seq !== currentCallSeq)
-  const { executableCalls, results, found } = timeline
+  const resetSeq = timeline.environmentReset?.seq ?? -1
+  const calls = timelineCalls(timeline).filter(call => call.seq !== currentCallSeq && call.seq > resetSeq)
+  const executableCalls = new Map([...timeline.executableCalls].filter(([seq]) => seq > resetSeq))
+  const results = new Map([...timeline.results].filter(([seq]) => seq > resetSeq))
+  const found = timeline.found || resetSeq >= 0
   const visibleCalls = options?.visibleCallSeqs
   const appliedBoundaries = options?.[RECOVERY_BOUNDARY_EVIDENCE]
   const invalidCallSeqs = new Set()
   let unavailableBoundary
-  const registerUnavailable = ({ seq, reason, code }, recoveryState) => {
+  const registerUnavailable = ({ seq, reason, code, kind }, recoveryState) => {
     if (unavailableBoundary === undefined || seq <= unavailableBoundary.seq) {
-      unavailableBoundary = { seq, reason }
+      unavailableBoundary = { seq, reason, ...(kind === undefined ? {} : { kind }) }
     }
     if (recoveryState === undefined) return
     invalidCallSeqs.add(seq)
     recoveryState.trusted = false
     if (!recoveryState.volatileSuffix.some(item => item.seq === seq)) {
-      const item = { seq, code, reason }
+      const item = { seq, code, reason, ...(kind === undefined ? {} : { kind }) }
       const index = recoveryState.volatileSuffix.findIndex(existing => existing.seq > seq)
       if (index < 0) recoveryState.volatileSuffix.push(item)
       else recoveryState.volatileSuffix.splice(index, 0, item)
     }
   }
-  if (timeline.unavailableResultSeq !== undefined) {
+  if (timeline.unavailableResultSeq !== undefined && timeline.unavailableResultSeq >= resetSeq) {
     registerUnavailable({
       seq: timeline.unavailableResultSeq,
+      ...(timeline.unavailableResultSeq === resetSeq ? { kind: 'environment-reset' } : {}),
       reason: timeline.unavailableResultReason?.seq === timeline.unavailableResultSeq
         ? timeline.unavailableResultReason.reason
         : 'unavailable or malformed dsh-ptc-plus journal result',
@@ -2428,7 +2461,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
     normalizedExtraBoundaries = []
   }
   const boundaries = [
-    ...timeline.boundaries,
+    ...recoveryBoundariesAfterReset(timeline),
     ...normalizedExtraBoundaries.map(boundary => ({
       ...boundary,
       eventSeq: Number.POSITIVE_INFINITY,
@@ -2442,7 +2475,7 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   for (const [resultSeq, { journal, eventIndex }] of results.entries()) {
     const candidateConfirms = []
     for (const callSeq of journal?.confirms ?? []) {
-      if (!isConfirmableNoop(timeline, callSeq, eventIndex)) {
+      if (callSeq <= resetSeq || !isConfirmableNoop(timeline, callSeq, eventIndex)) {
         const reason = `confirmed no-op does not identify an earlier unjournaled run_code call seq ${callSeq}`
         invalidResultReasons.set(resultSeq, reason)
         registerUnavailable({ seq: resultSeq, reason })
@@ -2470,9 +2503,10 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   ))
   const rejectBoundary = (boundary, reason) => {
     const carrierCallSeq = carrierCallSeqForBoundary(boundary)
+    const failedSeq = boundary.failedResetSeq ?? boundary.failedCallSeq
     const contractionSeq = carrierCallSeq === undefined
-      ? boundary.failedCallSeq
-      : Math.min(boundary.failedCallSeq, carrierCallSeq)
+      ? failedSeq
+      : Math.min(failedSeq, carrierCallSeq)
     // A rejected boundary still establishes a conservative contraction point:
     // the same window an accepted boundary would contract stays unproved, so
     // settlements folded after this rejection cannot re-enter the frontier.
@@ -2486,12 +2520,13 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
       ...foldOptions,
       surfaceContracted: state.surfaceContracted,
     })
-    registerUnavailable({ seq: carrierCallSeq ?? boundary.failedCallSeq, reason }, state)
+    registerUnavailable({ seq: carrierCallSeq ?? failedSeq, reason }, state)
   }
   const applyBoundariesBefore = (seq) => {
     while (boundaryIndex < boundaries.length && boundaries[boundaryIndex].eventSeq <= seq) {
       const boundary = boundaries[boundaryIndex++]
       const carrierCallSeq = carrierCallSeqForBoundary(boundary)
+      const failedSeq = boundary.failedResetSeq ?? boundary.failedCallSeq
       const failedCall = executableCalls.get(boundary.failedCallSeq)
       // Derived records exist only after the shared timeline has proved both
       // dispatch pairs and the final root publication. A raw nested start does
@@ -2503,14 +2538,17 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
       )) : []
       const failedExecution = failedCall === undefined && derivedRecords.length === 1
         ? derivedRecords[0] : undefined
+      const failedReset = boundary.failedResetSeq === resetSeq
+        && unavailableBoundary?.seq === resetSeq && unavailableBoundary.kind === 'environment-reset'
+        && resetSeq < boundary.eventSeq
       const isEarlierExecution = failedCall === undefined
         ? failedExecution !== undefined && recordEventSeq(failedExecution) < boundary.eventSeq
         : failedCall.event.seq < boundary.eventSeq
-      if (!isEarlierExecution) {
+      if (boundary.failedResetSeq !== undefined ? !failedReset : !isEarlierExecution) {
         rejectBoundary(boundary, 'recovery boundary does not identify an earlier executable call')
         continue
       }
-      const failedIndex = state.nodes.findIndex(node => node.callSeq === boundary.failedCallSeq)
+      const failedIndex = state.nodes.findIndex(node => node.callSeq === failedSeq)
       const expectedFrontier = failedIndex < 0 ? state.head : state.nodes[failedIndex].parent
       const frontierIndex = boundary.frontierCallSeq === null
         ? undefined
@@ -2519,25 +2557,25 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
         rejectBoundary(boundary, 'recovery boundary frontier does not match the failed call parent')
         continue
       }
-      const resolvesUnavailable = unavailableBoundary?.seq === boundary.failedCallSeq
+      const resolvesUnavailable = unavailableBoundary?.seq === failedSeq
       const resolvesConfirmedNoop = confirmedNoops.has(boundary.failedCallSeq)
       if (failedIndex < 0 && !resolvesUnavailable && !resolvesConfirmedNoop) {
         rejectBoundary(boundary, 'recovery boundary failed call is outside the verified frontier')
         continue
       }
-      if (carrierCallSeq !== undefined && carrierCallSeq <= boundary.failedCallSeq) {
+      if (carrierCallSeq !== undefined && carrierCallSeq <= failedSeq) {
         rejectBoundary(boundary, 'recovery boundary carrier does not follow the failed call')
         continue
       }
       if (Array.isArray(appliedBoundaries)) appliedBoundaries.push(boundary)
       if (carrierCallSeq !== undefined) {
-        contractedCallRanges.push({ start: boundary.failedCallSeq, end: carrierCallSeq })
+        contractedCallRanges.push({ start: failedSeq, end: carrierCallSeq })
       }
       for (let index = 0; index < state.nodes.length; index += 1) {
         if (dependsOn(state.nodes, index, failedIndex)) invalidCallSeqs.add(state.nodes[index].callSeq)
       }
       for (const record of records) {
-        if ((failedIndex < 0 && record.call.seq >= boundary.failedCallSeq)
+        if ((failedIndex < 0 && record.call.seq >= failedSeq)
           || isContractedCallSeq(record.call.seq)) {
           invalidCallSeqs.add(record.call.seq)
         }
@@ -2663,7 +2701,12 @@ export function recoverJournal(session, currentCallSeq, options = {}) {
   return history
 }
 
-/** Prove that recovery consumes every persisted boundary at its declared frontier. */
+function recoveryBoundariesAfterReset(timeline) {
+  const resetSeq = timeline.environmentReset?.seq ?? -1
+  return timeline.boundaries.filter(boundary => boundary.carrierCallSeq > resetSeq)
+}
+
+/** Prove every persisted boundary eligible after the latest reset at its declared frontier. */
 export function validateRecoveryBoundaryApplication(events) {
   const applied = []
   const recovered = recoverJournal(
@@ -2671,7 +2714,7 @@ export function validateRecoveryBoundaryApplication(events) {
     undefined,
     { [RECOVERY_BOUNDARY_EVIDENCE]: applied },
   )
-  const declared = foldSessionTimeline(events).boundaries.length
+  const declared = recoveryBoundariesAfterReset(foldSessionTimeline(events)).length
   if (!recovered.available || applied.length !== declared) {
     throw new Error('migrated PTC recovery boundary does not prove its declared frontier')
   }

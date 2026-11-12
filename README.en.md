@@ -182,7 +182,9 @@ Stopping a background subagent preserves the parent session's REPL state, so cal
 
 Within the supported range of the plugin's graph IPC, program arguments, results, and recovery records keep `undefined`, BigInt, `NaN`, infinities, sparse arrays, cycles, and shared references, and supported values can be returned directly without writing `JSON.stringify` yourself (it drops object fields containing `undefined`, turns `NaN` and infinities into `null` and `-0` into `0`, and rejects BigInt). Functions, Promises, class instances, Date, Map, and Set are outside that range, and native `tools.*` JSON argument and result contracts do not change; see the [value contract](docs/value-wire.md).
 
-Session state is not permanent memory: after a restart, a runtime reset, or context compaction, only state verifiable from session records whose provenance remains in the model's context is retained, and everything else is discarded with a diagnostic, continuing in an empty environment when necessary. Missing or damaged session records produce an explicit error instead of being treated as a successfully recovered empty session. Recovery neither redispatches recorded native-tool calls nor reverses historical external effects; see the [runtime reference](docs/runtime-reference.md) for its evidence and limits.
+Session state is not permanent memory: after a restart or context compaction, only state verifiable from session records whose provenance remains in the model's context is retained, and everything else is discarded with a diagnostic, continuing in an empty environment when necessary. Missing or damaged session records produce an explicit error instead of being treated as a successfully recovered empty session. Recovery neither redispatches recorded native-tool calls nor reverses historical external effects; see the [runtime reference](docs/runtime-reference.md) for its evidence and limits.
+
+An explicit Host environment reset clears session variables, named checkpoints and edit targets, including after restart or fork. Completed external effects remain, and global binding configuration stays active.
 
 ## Boundaries
 
@@ -193,6 +195,8 @@ Session state is not permanent memory: after a restart, a runtime reset, or cont
 PTC Plus is a community plugin, with no affiliation with or endorsement from DeepSeek or DSH.
 
 ## Development
+
+On Windows, double-click `scripts\run-dev-dsh.cmd` to start an isolated development environment. By default it reuses a port verified by Windows Node.js and replaces cached ports that are occupied or denied. Explicit port choices are preserved; see the [installation guide](docs/installation.md).
 
 Development happens in the repository root: `npm ci` installs dependencies and `npm run build` regenerates `client.cjs` and the compiler artifacts. Focused tests require an explicit selection:
 

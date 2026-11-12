@@ -359,7 +359,8 @@
         "v11 exact per-cell executionCwd and v1-v10 historical directory fallback remain distinct from the new request directory",
         "acceptance audit derivedExecutions preserves proved actual start/settle sequences, canonical completion values, error and policy evidence for inspectLog and scenario descriptors",
         "recovery proves an unexecuted derived settlement from the same dispatch relation, keeps the root cell and its source, folds no derived state or model-visible derived call, and leaves the root cell as the editable target",
-        "the historical top-level editor relation still requires an executed derived run, so an unmeasured settlement cannot be reused to prove any other edit"
+        "the historical top-level editor relation still requires an executed derived run, so an unmeasured settlement cannot be reused to prove any other edit",
+        "explicit environment-reset/v1 retires earlier replay branches, named checkpoints and edit targets while retaining the ordered historical log and proof facts; compacted checkpoint admission proves every reset against both timeline and presentation facts independently of the replay budget; missing or unsupported reset versions contract once through a distinct failedResetSeq/null-frontier receipt and preserve confirmed subsequent computation without effect redispatch"
       ],
       "entries": [
         "live settlement",
@@ -385,7 +386,7 @@
         "legacy-v1",
         "protected-v1",
         "stateful-v1",
-        "ptcPlusSessionLog-state-v1..v9"
+        "ptcPlusSessionLog-state-v1..v16"
       ],
       "platforms": [
         "all supported hosts"
@@ -408,7 +409,8 @@
         "test/runtime-messages.test.js",
         "test/session-journal.test.js",
         "test/session-recovery-boundary-faults.test.js",
-        "test/user-bindings-recovery.test.js"
+        "test/user-bindings-recovery.test.js",
+        "test/session-runtime-dispose.test.js"
       ],
       "dependsOn": [
         "language-frontend",
@@ -513,7 +515,9 @@
         "a cell that ends before its run frame because the compute baseline could not be observed, or because the wall or compute bound expired first, settles as a no-op that keeps the live worker and its bindings until the configured unmeasuredCellLimit consecutive such cells are reached, drops the live worker while keeping the proved frontier at that threshold, and leaves a replay that could not observe a recorded cell with its frontier intact instead of contracting it, while a transport-reported worker loss keeps the worker-exit reset route, and a cell refused admission because a previous helper was not reclaimed settles as blocked without contracting the recorded frontier while later computation stays blocked",
         "an accepted deferred edit whose revision never ran publishes its own unexecuted settlement so the root cell stays provable, while the receipt stays a receipt: no revision binding, no successful revision, and no derived source becomes the next edit target",
         "an override document changes only the asset it names: the resolver is total, unknown ids stay inert, derived policy sentences, diagnostics and envelopes remain owned by code, and an empty document reproduces the built-in prompt byte for byte",
-        "the assembled request is captured against its host baseline: every added or modified section, every adapted tool schema and every injected context is claimed with its recorded bytes, and a sentence appended to a claimed block changes the capture"
+        "the assembled request is captured against its host baseline: every added or modified section, every adapted tool schema and every injected context is claimed with its recorded bytes, and a sentence appended to a claimed block changes the capture",
+        "official companion resource identity selects dsh-doc before the historical cordis-plugin-development Skill without publishing siblings",
+        "public provider release resets live session computation durably; disposed Cordis Agent scopes retain cold recovery; original-provider cleanup remains delegated and failures remain retryable"
       ],
       "entries": [
         "run_code",
@@ -532,7 +536,8 @@
         "capabilityProfileConfiguration",
         "validateCapabilityProfiles",
         "handBackRuntimeSessions",
-        "test:package:consumer"
+        "test:package:consumer",
+        "ptcRuntime.release(owner)"
       ],
       "lifecycle": [
         "register",
@@ -540,7 +545,8 @@
         "reconfigure",
         "dispose",
         "unavailable",
-        "provider handback"
+        "provider handback",
+        "explicit Host environment reset"
       ],
       "generations": [
         "official latest and next DSH public surfaces",
@@ -618,7 +624,8 @@
         "test/prompt-surface-lanes.js",
         "test/host-transport-surface.test.js",
         "test/cordis-tools-owner.test.js",
-        "test/user-bindings-owner.test.js"
+        "test/user-bindings-owner.test.js",
+        "test/session-runtime-dispose.test.js"
       ],
       "dependsOn": [
         "execution-kernel",

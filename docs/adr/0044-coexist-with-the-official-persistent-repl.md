@@ -12,6 +12,8 @@ DSH added an opt-in official Node execution mode (`executionMode: persistent-in-
 
 Cells executed under the official mode produce no plugin journal records. They are an unrecorded execution interval: recovery never replays them, and they do not extend plugin state as recovery evidence.
 
+Explicit release of a live session environment additionally follows [ADR 0051](0051-persist-explicit-host-environment-resets.md): the plugin clears its own computation through a persisted reset boundary, while ordinary disposed-Agent cleanup keeps journal recovery. This supplements original-provider cleanup and leaves non-session delegation intact.
+
 ## Alternatives considered
 
 **Gate on the DSH release or on reading the original row's `executionMode` configuration.** The mode is a live runtime capability and a configuration fact outside the plugin's public contract; the provider's own retention declaration is proof that its environment survives between runs, and on older generations that lack the declaration the retained source form is the only evidence they publish.

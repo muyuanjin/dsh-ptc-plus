@@ -1,3 +1,4 @@
+import { environmentResetMessage } from './runtime-messages.js'
 import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -1621,6 +1622,18 @@ export class SessionRuntime {
     if (noops === undefined) return
     for (const callSeq of journal.confirms ?? []) noops.delete(callSeq)
     if (noops.size === 0) this.pendingNoops.delete(sessionId)
+  }
+
+  /** Explicit Host reset ends live state and every earlier replay/checkpoint branch. */
+  async resetEnvironment(session) {
+    if (typeof session?.append !== 'function') {
+      throw new TypeError('ptc-plus: environment reset requires the public session append API')
+    }
+    const id = String(session.id)
+    await this.#releaseKernel(id)
+    await session.append('user/message', environmentResetMessage(), { surfaceOp: 'append' })
+    this.releasedAgents.delete(id)
+    this.disposedSessions.delete(id)
   }
 
   async disposeSession(sessionId) {

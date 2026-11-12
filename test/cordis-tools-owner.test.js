@@ -11,7 +11,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 import {
   createCordisToolsOwner as createCordisToolsOwnerRaw,
-  resolveCompanionSkillDirectory,
+  resolveCompanionSkillResource,
 } from '../internal/cordis-tools-owner.js'
 import { createHostContext, describeSections, runHookChain } from './host-fixture.js'
 
@@ -659,7 +659,7 @@ test('Cordis companion Skill resolution supports pathless official preset genera
       ['@deepseek-ai/dsh-agent-presets', pluralPackage],
     ]), pluralRoot],
   ]) {
-    const directory = await resolveCompanionSkillDirectory({
+    const directory = await resolveCompanionSkillResource({
       resolve: async id => ({ id }),
     }, {
       packageOf(specifier, parentURL) {
@@ -670,27 +670,27 @@ test('Cordis companion Skill resolution supports pathless official preset genera
       packageBaseUrl: 'file:///active-profile/',
       fileExists: filename => filename === join(expected, CORDIS_SKILL_NAME, 'SKILL.md'),
     })
-    assert.equal(directory, expected, label)
+    assert.deepEqual(directory, { skillRoot: expected, skillName: CORDIS_SKILL_NAME }, label)
   }
 })
 
 test('Cordis companion Skill resolution supports a host-anchored legacy plural package', async () => {
   const manifest = join('/legacy-host', 'node_modules', '@deepseek-ai', 'dsh-agent-presets', 'package.json')
   const expected = join(dirname(manifest), 'presets', 'cordis', 'skills')
-  const directory = await resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+  const directory = await resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
     resolveLegacyPackageManifest(specifier) {
       assert.equal(specifier, '@deepseek-ai/dsh-agent-presets/package.json')
       return manifest
     },
     fileExists: filename => filename === join(expected, CORDIS_SKILL_NAME, 'SKILL.md'),
   })
-  assert.equal(directory, expected)
+  assert.deepEqual(directory, { skillRoot: expected, skillName: CORDIS_SKILL_NAME })
 })
 
 test('Cordis companion Skill resolution never falls back around pluginPackages', async () => {
   let legacyLookups = 0
   await assert.rejects(
-    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
       packageOf: () => undefined,
       resolveLegacyPackageManifest() {
         legacyLookups += 1
@@ -698,7 +698,7 @@ test('Cordis companion Skill resolution never falls back around pluginPackages',
       },
       fileExists: () => true,
     }),
-    /active DSH installation does not publish a loadable cordis-plugin-development companion Skill/,
+    /active DSH installation does not publish a loadable official companion Skill/,
   )
   assert.equal(legacyLookups, 0)
 })
@@ -855,30 +855,30 @@ test('Cordis companion resolution reads the current Host package service for eac
 
 test('Cordis companion Skill resolution rejects missing official Skill content', async () => {
   await assert.rejects(
-    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
       packageOf: name => ({ name, dir: join('/host', 'dsh-agent-preset') }),
       fileExists: () => false,
     }),
-    /active DSH installation does not publish a loadable cordis-plugin-development companion Skill/,
+    /active DSH installation does not publish a loadable official companion Skill/,
   )
 
   await assert.rejects(
-    resolveCompanionSkillDirectory({
+    resolveCompanionSkillResource({
       resolve: async id => ({ id, path: '/host/presets/cordis/agent.cordis.yml' }),
     }, { fileExists: () => false }),
-    /does not contain cordis-plugin-development\/SKILL\.md/,
+    /does not contain a supported companion SKILL\.md/,
   )
 
   const resolutionFailure = new Error('package resolution denied')
   await assert.rejects(
-    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
       packageOf() { throw resolutionFailure },
     }),
     error => error === resolutionFailure,
   )
 
   await assert.rejects(
-    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
       packageOf: name => ({ name: `${name}-wrong`, dir: join('/host', 'dsh-agent-preset') }),
     }),
     /pluginPackages returned an invalid/,
@@ -886,7 +886,7 @@ test('Cordis companion Skill resolution rejects missing official Skill content',
 
   const legacyFailure = new Error('legacy host resolution failed')
   await assert.rejects(
-    resolveCompanionSkillDirectory({ resolve: async id => ({ id }) }, {
+    resolveCompanionSkillResource({ resolve: async id => ({ id }) }, {
       resolveLegacyPackageManifest() { throw legacyFailure },
     }),
     error => error === legacyFailure,
@@ -1313,4 +1313,40 @@ test('Cordis activation rollback reports a synchronously throwing fiber disposer
       && errorMessages(error).includes('Cordis disposal failed synchronously'),
   )
   await assert.rejects(owner.dispose(), /Cordis disposal failed/)
+})
+
+test('Cordis companion selects the official dsh-doc identity before the legacy resource', async () => {
+  for (const pathless of [false, true]) {
+    for (const available of [['dsh-doc'], ['dsh-doc', CORDIS_SKILL_NAME], [CORDIS_SKILL_NAME]]) {
+      const skillRoot = '/host/skills'
+      const resource = await resolveCompanionSkillResource({ resolve: async () =>
+        pathless ? { id: 'cordis' } : { id: 'cordis', path: '/host/cordis.yml' } }, {
+        packageOf: name => name === '@deepseek-ai/dsh-agent-preset' ? { name, dir: '/host' } : undefined,
+        fileExists: filename => available.some(name => filename === join(skillRoot, name, 'SKILL.md')),
+      })
+      assert.deepEqual(resource, { skillRoot, skillName: available[0] })
+    }
+  }
+})
+
+test('Cordis mount publishes and loads only the selected official dsh-doc Skill', async () => {
+  const agent = scopedAgent('current-official-skill')
+  const skillPlugin = { ...fakeSkillFilesystemPlugin, apply(ctx, config) {
+    ctx.effect(() => ctx.skills.registerProvider(() => ({
+      name: config.providerName,
+      list: async () => ['dsh-doc', CORDIS_SKILL_NAME, EXTRA_CORDIS_SKILL_NAME].map(name => ({
+        name, provider: config.providerName, invocation: { modelInvocable: true },
+      })),
+      get: async candidate => ({ ...candidate, content: `# ${candidate.name}` }),
+    })))
+  } }
+  const owner = createCordisToolsOwnerRaw(ownerContext([agent]).ctx, fakeCordisPlugin, skillPlugin, {
+    fileExists: filename => filename.endsWith('/dsh-doc/SKILL.md') || filename.endsWith(`/${CORDIS_SKILL_NAME}/SKILL.md`),
+  })
+  await owner.ready
+  assert.deepEqual((await agent.ctx.get('skills').list({ scope: agent })).map(skill => skill.name), ['dsh-doc'])
+  assert.equal(agent.skillCatalog.get('dsh-doc').content, '# dsh-doc')
+  assert.equal(await agent.ctx.get('skills').get(CORDIS_SKILL_NAME, { scope: agent }), undefined)
+  await owner.dispose()
+  assert.equal(agent.skillCatalog.has('dsh-doc'), false)
 })

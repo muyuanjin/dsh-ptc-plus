@@ -63,6 +63,8 @@ import {
   JOURNAL_VERSIONS,
   USER_BINDINGS_REUSE_POLICIES,
   RECOVERY_BOUNDARY_FIELDS,
+  RESET_RECOVERY_BOUNDARY_FIELDS,
+  isEnvironmentResetEvent,
   DIAGNOSTIC_WORDING_KEY,
   SETTLEMENT_PROOF_KEY,
   SETTLEMENT_PROOF_FIELDS,
@@ -722,18 +724,19 @@ export function recoveryBoundariesEqual(left, right) {
 }
 
 function normalizeRecoveryBoundaryValue(value, eventSeq = undefined) {
+  const reset = isRecord(value) && Object.hasOwn(value, 'failedResetSeq')
   if (!isRecord(value)
-    || !isCanonicalSequence(value.failedCallSeq)
-    || (value.frontierCallSeq !== null
-      && !isCanonicalSequence(value.frontierCallSeq))) {
+    || !isCanonicalSequence(reset ? value.failedResetSeq : value.failedCallSeq)
+    || (reset ? value.frontierCallSeq !== null
+      : value.frontierCallSeq !== null && !isCanonicalSequence(value.frontierCallSeq))) {
     throw new Error('invalid dsh-ptc-plus recovery boundary')
   }
-  assertOwnFields(value, RECOVERY_BOUNDARY_FIELDS, 'recovery boundary')
+  assertOwnFields(value, reset ? RESET_RECOVERY_BOUNDARY_FIELDS : RECOVERY_BOUNDARY_FIELDS, 'recovery boundary')
   if (eventSeq !== undefined && !isCanonicalSequence(eventSeq)) {
     throw new Error('invalid dsh-ptc-plus recovery boundary event sequence')
   }
   return {
-    failedCallSeq: value.failedCallSeq,
+    ...(reset ? { failedResetSeq: value.failedResetSeq } : { failedCallSeq: value.failedCallSeq }),
     frontierCallSeq: value.frontierCallSeq,
     ...(eventSeq === undefined ? {} : { eventSeq }),
   }
@@ -1111,15 +1114,24 @@ export function migrateRecoveryBoundaryEvents(events) {
     }
     return target.retainedSeq
   }
-  const mapBoundary = (boundary, resultSeq) => ({
-    failedCallSeq: mapCall(boundary.failedCallSeq, resultSeq, 'recovery-boundary failure'),
-    frontierCallSeq: boundary.frontierCallSeq === null ? null : (() => {
-      if (boundary.frontierCallSeq >= boundary.failedCallSeq) {
-        throw new Error('recovery-boundary frontier must precede its failed call')
+  const mapBoundary = (boundary, resultSeq) => {
+    if (boundary.failedResetSeq !== undefined) {
+      const target = sequenceMap.get(boundary.failedResetSeq)
+      if (!isEnvironmentResetEvent(target?.event) || boundary.failedResetSeq >= resultSeq) {
+        throw new Error('unproved recovery-boundary reset event reference')
       }
-      return mapCall(boundary.frontierCallSeq, resultSeq, 'recovery-boundary frontier')
-    })(),
-  })
+      return { failedResetSeq: mapEvent(boundary.failedResetSeq, 'recovery-boundary reset'), frontierCallSeq: null }
+    }
+    return {
+      failedCallSeq: mapCall(boundary.failedCallSeq, resultSeq, 'recovery-boundary failure'),
+      frontierCallSeq: boundary.frontierCallSeq === null ? null : (() => {
+        if (boundary.frontierCallSeq >= boundary.failedCallSeq) {
+          throw new Error('recovery-boundary frontier must precede its failed call')
+        }
+        return mapCall(boundary.frontierCallSeq, resultSeq, 'recovery-boundary frontier')
+      })(),
+    }
+  }
   const migrated = []
   const pending = []
   const boundaryOrigins = new Map()

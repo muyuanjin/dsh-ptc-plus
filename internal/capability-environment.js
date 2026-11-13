@@ -496,8 +496,11 @@ const callingRevision = capability => capability === undefined || capability.eff
 
 function contractUpdateMessage(snapshot, sessionId) {
   const dependencies = new Map()
+  // Recorded generations retain their exact body for restoration and deduplication.
+  const grouped = snapshot.schema === 'ptc-capability-contracts/v2'
+  const onDemand = grouped ? snapshot.changes.filter(change => change.capability !== null && change.disclosure === 'on-demand') : []
   const text = ['PTC Plus current calling contracts. These updates replace the earlier contracts for the listed capabilities only; session enablement and disclosure choices are unchanged.',
-    ...snapshot.changes.map(change => change.capability === null
+    ...snapshot.changes.filter(change => !grouped || change.capability === null || change.disclosure === 'full').map(change => change.capability === null
       ? `### ${change.id}\nThe Host no longer supplies this capability. Its earlier calling contract no longer applies.`
       : change.disclosure === 'full'
         ? [...(change.capability.dependencies ?? []).flatMap(item => {
@@ -508,6 +511,7 @@ function contractUpdateMessage(snapshot, sessionId) {
           return [`### dependency:${item.id}\n${item.text}`]
         }), `### ${change.id}\n${change.capability.contract}`].join('\n\n')
         : `### ${change.id}\nThe Host calling contract has changed. Retrieve the current complete contract with capabilities.search(${JSON.stringify({ query: change.id })}) before invoking it.`),
+    ...(onDemand.length === 0 ? [] : [`### Updated on-demand contracts\nBefore invoking any capability below, retrieve its current complete contract with capabilities.search({query: "<capability ID>"}):\n${onDemand.map(change => `- ${change.id}`).join('\n')}`]),
     ...(snapshot.overageBytes > 0 ? [`The currently selected full contracts exceed the configured budget by ${snapshot.overageBytes} UTF-8 bytes.`] : [])].join('\n\n')
   return createUserMessage({ source: { kind: PTC_MESSAGE_SOURCE_KIND, form: 'capability-contracts', sessionId,
     digest: digest(snapshot), snapshot }, content: [{ type: 'text', text }] })
@@ -517,7 +521,7 @@ function readContractUpdate(message, planDigest, sessionId) {
   const source = message?.source
   const snapshot = source?.snapshot
   if (source?.kind !== PTC_MESSAGE_SOURCE_KIND || source.form !== 'capability-contracts'
-    || source.sessionId !== sessionId || snapshot?.schema !== 'ptc-capability-contracts/v1'
+    || source.sessionId !== sessionId || !['ptc-capability-contracts/v1', 'ptc-capability-contracts/v2'].includes(snapshot?.schema)
     || snapshot.planDigest !== planDigest || source.digest !== digest(snapshot)
     || !Array.isArray(snapshot.views) || !Array.isArray(snapshot.changes)
     || !Number.isSafeInteger(snapshot.overageBytes) || snapshot.overageBytes < 0) return undefined
@@ -1953,7 +1957,7 @@ export function createCapabilityEnvironment({ ctx, config, toolSchemasForAgent, 
             .filter(item => state.snapshot.capabilities.some(original => original.id === item.id)),
           manual: { baseline: [], overrides: Object.fromEntries(state.snapshot.plan.entries.map(entry => [entry.id, entry.selection === 'host' ? 'full' : entry.selection])) },
           navigationText: NAVIGATION, configurationRevision: state.snapshot.plan.configurationRevision })
-          additions.push(contractUpdateMessage({ schema: 'ptc-capability-contracts/v1', planDigest, views, changes,
+          additions.push(contractUpdateMessage({ schema: 'ptc-capability-contracts/v2', planDigest, views, changes,
             overageBytes: livePlan.budgets.overageBytes }, sessionId))
         }
         const expandedVisible = new Set([...visible, ...messages].flatMap(message => message.source?.form === 'capability-descriptions'

@@ -2376,6 +2376,75 @@ test('Host calling contract changes append accepted updates while saved choices 
   assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
 })
 
+test('multiple on-demand contract changes share one retrieval instruction while full contracts and withdrawals stay explicit', async t => {
+  const agent = agentFor(Session.create('grouped-calling-contracts'))
+  const names = ['interrupt_agent', 'list_agents', 'list_subagent_models', 'read', 'send_message', 'subagent', 'subagent_fork', 'web_search']
+  let schemas = [...names, 'full', 'removed'].map(schema)
+  const env = createCapabilityEnvironment({ ctx: {}, config: config({ 'tools.full': 'full' }), toolSchemasForAgent: () => schemas })
+  t.after(() => env.dispose())
+  await acceptPreparation(env, agent, [{ name: 'tool:full', text: 'Required full owner guidance.' }])
+  const frozen = JSON.stringify(env.stateFor(agent).snapshot)
+  schemas = schemas.filter(item => item.name !== 'removed').map(item => ({ ...item, output: { type: 'number' } }))
+  const step = await env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+  const notice = step.messages.find(message => message.source.form === 'capability-contracts')
+  assert.equal(notice.source.snapshot.schema, 'ptc-capability-contracts/v2')
+  const text = notice.content[0].text
+  assert.equal(text.match(/capabilities\.search/g)?.length, 1)
+  for (const name of names) assert.equal(text.split('\n').filter(line => line === `- tools.${name}`).length, 1)
+  assert.match(text, /Before invoking any capability below, retrieve its current complete contract/)
+  assert.match(text, /### tools\.full\n[\s\S]*Promise<number>/)
+  assert.match(text, /Required full owner guidance/)
+  assert.match(text, /### tools\.removed\nThe Host no longer supplies this capability/)
+  assert.equal(JSON.stringify(env.stateFor(agent).snapshot), frozen)
+  assert.equal(readCapabilityContextMessage(notice, agent.session.id)?.form, 'capability-contracts')
+})
+
+for (const generation of ['v1', 'v2']) {
+  test(`accepted ${generation} calling-contract notices survive restoration without repeating and reject damaged evidence`, async t => {
+    const session = Session.create(`calling-contract-${generation}-restore`)
+    const agent = agentFor(session)
+    let schemas = [schema('probe'), schema('removed')]
+    const options = { ctx: {}, config: config(), toolSchemasForAgent: () => schemas }
+    const env = createCapabilityEnvironment(options)
+    t.after(() => env.dispose())
+    await acceptPreparation(env, agent, [])
+    schemas = [{ ...schema('probe'), output: { type: 'number' } }]
+    const step = () => env.preStep({ agent, signal: agent.signal }, async () => ({ kind: 'enter', messages: [] }))
+    const proposal = await step()
+    const notice = structuredClone(proposal.messages.find(message => message.source.form === 'capability-contracts'))
+    if (generation === 'v1') {
+      notice.source.snapshot.schema = 'ptc-capability-contracts/v1'
+      notice.source.digest = createHash('sha256').update(JSON.stringify(notice.source.snapshot)).digest('hex')
+      // Exact body emitted before grouped notifications were introduced.
+      notice.content[0].text = 'PTC Plus current calling contracts. These updates replace the earlier contracts for the listed capabilities only; session enablement and disclosure choices are unchanged.\n\n'
+        + '### tools.probe\nThe Host calling contract has changed. Retrieve the current complete contract with capabilities.search({"query":"tools.probe"}) before invoking it.\n\n'
+        + '### tools.removed\nThe Host no longer supplies this capability. Its earlier calling contract no longer applies.'
+    }
+    assert.equal(readCapabilityContextMessage(notice, session.id)?.form, 'capability-contracts')
+    const damaged = structuredClone(notice)
+    damaged.content[0].text += '\nUnrecorded instructions.'
+    assert.equal(readCapabilityContextMessage(damaged, session.id), undefined)
+    const wrongDigest = structuredClone(notice)
+    wrongDigest.source.digest = 'damaged'
+    assert.equal(readCapabilityContextMessage(wrongDigest, session.id), undefined)
+    const unknown = structuredClone(notice)
+    unknown.source.snapshot.schema = 'ptc-capability-contracts/v99'
+    unknown.source.digest = createHash('sha256').update(JSON.stringify(unknown.source.snapshot)).digest('hex')
+    assert.equal(readCapabilityContextMessage(unknown, session.id), undefined)
+    assert.equal(readCapabilityContextMessage(notice, 'another-session'), undefined)
+    assert.ok((await step()).messages.some(message => message.source.form === 'capability-contracts'),
+      'An unaccepted proposal does not suppress the update.')
+    session.append('user/message', notice, { surfaceOp: 'append' })
+    assert.equal((await step()).messages.some(message => message.source.form === 'capability-contracts'), false)
+    const restored = createCapabilityEnvironment(options)
+    t.after(() => restored.dispose())
+    const restoredAgent = agentFor(session)
+    await restored.prepare(restoredAgent, [])
+    const resumed = await restored.preStep({ agent: restoredAgent, signal: restoredAgent.signal }, async () => ({ kind: 'enter', messages: [] }))
+    assert.equal(resumed.messages.some(message => message.source.form === 'capability-contracts'), false)
+  })
+}
+
 test('live Skill eligibility and owner guidance revisions update contracts without loading bodies or reallocating choices', async t => {
   const agent = agentFor(Session.create('live-skill-contracts'))
   let skills = [{ name: 'design', provider: 'fixture', source: 'fixture', description: 'Design a page.',

@@ -132,6 +132,8 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 搜索按中英文词法匹配，没匹配到不代表工具不存在。发现工具不会增加权限，实际调用仍由 DSH 校验和调度，更多用法见[能力发现](docs/runtime-reference.md#capability-discovery)。
 
+启用能力管理时，DSH 更新造成的接口变化会在续聊时追加通知：按需能力共用一条查询提示和名称列表，完整披露项提供完整新契约，已撤下项明确撤销旧说明；已接受的通知仍保留且接口未再变化时，继续会话或重启不会重复通知。
+
 ## 全局绑定：跨会话复用常用函数
 
 会话变量服务于当前任务，**全局绑定**把常用 TypeScript 函数保存下来供多个会话加载：保存 `textTools` 之后，模型就能调用 `textTools.clean(text)`。你可以手动创建、导入 `.ts` 文件，也可以让模型帮忙：

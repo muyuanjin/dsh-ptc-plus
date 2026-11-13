@@ -132,6 +132,8 @@ return capabilities.search({ query: 'read file content', budgetBytes: 8192 })
 
 Search uses English/Chinese lexical matching, and a miss does not prove that a tool is unavailable. Discovery grants no additional authority, DSH still validates and schedules calls, and more usage notes are in [capability discovery](docs/runtime-reference.md#capability-discovery).
 
+With capability management enabled, interface changes after a DSH update append a notice when the conversation resumes: on-demand capabilities share one retrieval instruction and a list of names, full disclosure supplies complete replacement contracts, and withdrawn capabilities explicitly revoke their earlier contracts. With the accepted notice retained and no further interface changes, continuation or restart does not repeat it.
+
 ## Global bindings: reuse functions across sessions
 
 Session variables serve the current task, and **global bindings** save common TypeScript functions for multiple sessions to load: after saving `textTools`, the model can call `textTools.clean(text)`. Create entries by hand, import `.ts` files, or ask the model:

@@ -64,6 +64,8 @@ test('a missing worker reports every binding instead of throwing', async t => {
   await runtime.run('restore-no-worker', { program: 'let seeded = 1', bindings: [] })
   const worker = workerOf(runtime, 'restore-no-worker')
   await worker.terminate()
+  // The client observes exit after stdio closes, not at the helper's process exit.
+  await worker.closed
   const executor = sessionCellExecutor(runtime, 'restore-no-worker')
   const outcome = await executor.restoreBindings([{ name: 'lost', wire: { kind: 'undefined' } }], {})
   assert.deepEqual(outcome.restored, [])
@@ -124,6 +126,8 @@ test('a restore-only cell whose worker cannot start fails as a worker exit', asy
   await runtime.run('restore-no-start', { program: 'let seeded = 1', bindings: [] })
   const worker = workerOf(runtime, 'restore-no-start')
   await worker.terminate()
+  // Startup failure requires the client to have released the previous worker.
+  await worker.closed
   failScratchDirectory(runtime, 'restore-no-start', new Error('scratch unavailable'))
   const executor = sessionCellExecutor(runtime, 'restore-no-start')
   const outcome = await executor.executeCell({

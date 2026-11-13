@@ -39,6 +39,8 @@ Replace `<profile>` with your profile name, restart DSH, and select **PTC mode**
 
 The plugin declares the DSH compatibility range `>=0.2.1-0 <0.2.3` for the Host's version preflight; public capability checks and packed tests verify integration within that range.
 
+When DSH exits or restarts through its built-in updater, the plugin releases computation resources without scanning historical sessions. Unloading the plugin while DSH continues running still persists session handback notices; recovery after restart uses the session records.
+
 The session shows a **REPL** tab, and wide screens show a **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu, the session capability workbench, and **PTC Plus settings**; **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar is the same configuration.
 
 ## Feature overview

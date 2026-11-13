@@ -1,4 +1,13 @@
 import { attachPtcExecutor } from './tool-executor-fixture.js'
+import { Session, SessionStore } from '@deepseek-ai/dsh-session'
+import { SessionQueryEngine } from '@deepseek-ai/dsh-session-query'
+import * as sessionPersistenceJsonl from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
+import { TypertRegistry } from '@deepseek-ai/dsh-typert-registry'
+import { CommandRuntime } from '@deepseek-ai/dsh-commands'
+import { AgentRegistry } from '@deepseek-ai/dsh-agent'
+import { AgentLoop } from '@deepseek-ai/dsh-agent-loop'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -12,6 +21,7 @@ import { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { parse } from 'yaml'
 import { apply as applyMain } from '../index.js'
 import { installExecutionSeam } from '../internal/execution-seam-compat.js'
+import { runtimeAvailabilityMessage } from '../internal/runtime-messages.js'
 import * as composition from '../internal/execution-provider-owner.js'
 
 const moduleUrl = source => 'data:text/javascript,' + encodeURIComponent(source)
@@ -188,6 +198,80 @@ test('composed provider forwards the original program format and owner release',
   const owner = {}
   await provider.release(owner)
   assert.deepEqual(state.releases, [owner])
+})
+
+for (const usedRuntime of [false, true]) test(`whole Host shutdown skips historical sessions ${usedRuntime ? 'after recorded computation' : 'before any conversation'}`, { timeout: 10_000 }, async t => {
+  const { root } = await loaderFixture(t)
+  const directory = await mkdtemp(join(tmpdir(), 'ptc-shutdown-'))
+  const previousDshHome = process.env.DSH_HOME
+  process.env.DSH_HOME = directory
+  t.after(async () => {
+    if (previousDshHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousDshHome
+    await rm(directory, { recursive: true, force: true })
+  })
+  await root.plugin(sessionPersistenceJsonl, { root: directory, compression: 'none' }).await()
+  await root.plugin(SessionStore).await()
+  await root.plugin(SessionQueryEngine).await()
+  const persistence = root.get('sessionPersistence')
+  const historical = Session.create('offline-shutdown-history')
+  const event = historical.append('user/message', runtimeAvailabilityMessage('active'), { surfaceOp: 'append' })
+  const writer = await persistence.create(historical.header)
+  try {
+    await writer.append([event])
+    await writer.flush()
+  } finally { await writer.close() }
+  new SystemPrompt(root, { includeHarnessIdentity: false, includeRuntimeContext: false, persona: '' })
+  new ToolRuntime(root)
+  attachPtcExecutor(root)
+  await root.plugin(SessionProjectionRegistry).await()
+  await root.plugin(TypertRegistry).await()
+  await root.plugin(CommandRuntime).await()
+  await root.plugin(AgentRegistry).await()
+  let requests = 0
+  root.provide('llm', { async prepareCall(config) { return { config, adapterDefaults: {}, async *stream() {
+    if (requests++ === 0) {
+      const call = { type: 'tool-call', id: 'before-shutdown', name: 'run_code', arguments: JSON.stringify({
+        code: 'let retained = 42; return process.pid', description: 'Initialize a session',
+      }) }
+      yield { type: 'tool-call-delta', index: 0, id: call.id, name: call.name, argumentsDelta: call.arguments }
+      yield { type: 'block-end', index: 0, block: call }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+    } else {
+      yield { type: 'text-delta', index: 0, text: 'done' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  } } } })
+  await root.plugin(AgentLoop, { agents: [] }).await()
+  await root.loader.create({ id: 'ptc-plus', name: new URL('../index.js', import.meta.url).href,
+    config: { cordisToolsEnabled: false } })
+  await root.loader.await()
+  let workerPid
+  if (usedRuntime) {
+    root.on('tools/result', (exec, result, next) => {
+      if (exec.callId === 'before-shutdown') workerPid = result.value?.result
+      return next()
+    })
+    const owner = await root.agents.create({ sessionId: 'shutdown-used-runtime', meta: { cwd: directory },
+      agentOptions: { provider: 'fixture', model: 'fixture' } })
+    const agent = owner.agent
+    agent.send(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: 'Initialize' }] }), 'next-turn', true)
+    await agent.whenIdle()
+    assert.ok(agent.session.snapshotEvents().some(event => event.type === 'tool/result' && event.data.meta?.dshPtcPlus),
+      'the Host must record actual plugin computation before shutdown')
+    assert.equal(Number.isSafeInteger(workerPid), true)
+    assert.notEqual(workerPid, process.pid)
+    assert.doesNotThrow(() => process.kill(workerPid, 0), 'the runtime helper must still exist before shutdown')
+  }
+  let historyAccesses = 0
+  for (const operation of ['list', 'open']) t.mock.method(persistence, operation, () => {
+    historyAccesses++
+    throw new Error('whole Host shutdown must not traverse historical sessions')
+  })
+  await root.fiber.dispose()
+  assert.equal(historyAccesses, 0)
+  assert.equal(requests, usedRuntime ? 2 : 0)
+  if (usedRuntime) assert.throws(() => process.kill(workerPid, 0), 'shutdown must await the actual helper exit')
 })
 
 test('composed provider derives retention from the form when the original declares none', async t => {

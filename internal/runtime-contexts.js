@@ -23,8 +23,12 @@ function hadPluginComputation(session) {
     && Object.hasOwn(event.data?.meta ?? {}, JOURNAL_KEY))
 }
 
-/** Persist actual provider release through public Session and single-writer owners. */
+/** Persist provider-only release through public Session and single-writer owners. */
 export async function handBackRuntimeSessions(ctx, owners) {
+  // Cordis FiberState.UNLOADING: application teardown has no continuing model
+  // request to hand back. Archive-wide writes do not belong to process cleanup;
+  // a restarted provider reconciles availability at the next accepted step.
+  if (ctx.root?.fiber.state === 5) return
   const service = name => owners ? owners[name] : typeof ctx.get === 'function' ? ctx.get(name) : ctx[name]
   const sessions = service('sessions')
   const persistence = service('sessionPersistence')

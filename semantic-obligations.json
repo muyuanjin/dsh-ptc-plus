@@ -506,7 +506,7 @@
         "read-only capability allocation and catalog assembly preserve active accepted-request runtime-message delivery evidence",
         "installed projector preserves Host JSON validity through policy reprojection and retirement without manufacturing journal evidence",
         "pure model message content generation invalidates stale worker observations independently of surface node membership",
-        "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on release",
+        "provider availability withdraws only plugin-owned declarations through accepted steps and public single-writer persistence on provider-only release; whole-application disposal releases runtime resources without scanning or rewriting historical sessions",
         "locale-independent capability command receipt distinguishes prepared and recorded without replaying model notifications",
         "deferred editor acceptance audit and inspectLog consume the actual derived execution completion and failure rather than the outer receipt completion",
         "derived editor dispatch retains the original rootCallId, actual root parent token and step admission through the public Host invocation pipeline on executor Hosts; registry Hosts retain single-call execution; a root batch submission marker cannot replace parent evidence, and Host denial, cancellation, result policy and cold recovery remain authoritative",
@@ -546,6 +546,7 @@
         "dispose",
         "unavailable",
         "provider handback",
+        "whole-application shutdown without session archive traversal",
         "explicit Host environment reset"
       ],
       "generations": [

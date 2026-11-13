@@ -106,6 +106,32 @@ test('historical availability wording stays readable while new messages use the 
   assert.doesNotMatch(current.content[0].text, /newly supplied/)
 })
 
+test('application shutdown does not enumerate session history or append provider withdrawals', async () => {
+  const ctx = new Context()
+  new SessionStore(ctx)
+  const session = ctx.sessions.create('shutdown-handback')
+  append(session, runtimeBindingCatalogMessage({ name: PTC_BINDING_CATALOG, text: 'Live API' }))
+  const eventsBefore = session.snapshotEvents()
+  let released = false
+  let accessedHistory = false
+  const owners = Object.fromEntries(['sessions', 'sessionPersistence', 'sessionQuery'].map(name => [name,
+    new Proxy({}, { get() { accessedHistory = true; return undefined } }),
+  ]))
+  const plugin = ctx.plugin({
+    apply(scope) {
+      scope.effect(() => async () => {
+        released = true
+        await handBackRuntimeSessions(scope, owners)
+      }, 'provider handback')
+    },
+  })
+  await plugin.await()
+  await ctx.fiber.dispose()
+  assert.equal(released, true)
+  assert.equal(accessedHistory, false, 'Application shutdown must not access session owners')
+  assert.deepEqual(session.snapshotEvents(), eventsBefore)
+})
+
 test('provider handback persists live and unloaded sessions without creating an agent or waking a model', async t => {
   const ctx = new Context()
   new SessionStore(ctx)
@@ -132,7 +158,13 @@ test('provider handback persists live and unloaded sessions without creating an 
       cursor: session.seq - 1, [Symbol.dispose]() {} }
   } }))
   t.after(() => ctx.fiber.dispose())
-  await handBackRuntimeSessions(ctx)
+  const provider = ctx.plugin({
+    apply(scope) {
+      scope.effect(() => () => handBackRuntimeSessions(scope), 'provider-only handback')
+    },
+  })
+  await provider.await()
+  await provider.dispose()
   assert.equal(readRuntimeAvailability(live.deriveMessages().at(-1)), 'unloaded')
   const restored = Session.fromRestore(offline.id, events, offline.header, 0)
   assert.equal(readRuntimeAvailability(restored.deriveMessages().at(-1)), 'unloaded')

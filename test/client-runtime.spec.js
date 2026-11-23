@@ -4334,31 +4334,44 @@ test('a click pins the open composer menu against the pointer and a second click
   expect(view.queryByRole('menu')).toBeNull()
 })
 
-test('an open composer menu follows its anchor when the composer moves without a scroll', async () => {
+test.each(['native', 'fallback'])('an open %s composer menu follows its anchor and updates its height budget', async mode => {
   let top = 500
   const rects = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
     return this.classList?.contains('ptcPlusComposerBindingAnchor') ? new DOMRect(20, top, 24, 24) : new DOMRect()
   })
   cleanups.push(() => rects.mockRestore())
   const entry = { ...reviewCandidate('moving').entry, enabled: false }
-  const { runtime, setLocale } = await fixture({ rpc: async () => ({ ok: true, value: { revision: 'r1', entries: [entry] } }) })
+  const { runtime, setLocale } = await fixture({
+    rpc: async () => ({ ok: true, value: { revision: 'r1', entries: [entry] } }),
+    ui: mode === 'native' ? primitives : { ...primitives, Menu: undefined },
+  })
   const view = runtime.renderRoot()
   await runtime.flush()
   await openGlobalMenu(view, runtime)
   const menu = view.getByRole('menu')
-  expect(menu.style.top).toBe('496px')
+  if (mode === 'native') {
+    const anchorName = view.container.querySelector('.ptcPlusAuthorButtonShell').style.anchorName
+    expect(anchorName).toMatch(/^--/)
+    expect(menu.style.positionAnchor).toBe(anchorName)
+    expect(menu.dataset.anchorSide).toBe('top')
+  } else {
+    expect(menu.style.top).toBe('496px')
+  }
   // The list must stay next to the trigger, so the height budget is measured from
   // the trigger's own top edge, not from a taller composer container.
   expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('')
   expect(menu.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')).toBe('484px')
-  // A composer that grew (or moved) without emitting a scroll still moves the list,
-  // because the placement effect re-reads the anchor on every entry render.
   top = 440
   setLocale('zh')
   await runtime.flush()
-  expect(menu.style.top).toBe('436px')
+  await new Promise(requestAnimationFrame)
+  if (mode === 'fallback') expect(menu.style.top).toBe('436px')
   expect(menu.style.getPropertyValue('--ptc-plus-menu-space')).toBe('')
   expect(menu.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')).toBe('424px')
+  top = 400
+  await new Promise(requestAnimationFrame)
+  if (mode === 'fallback') expect(menu.style.top).toBe('396px')
+  expect(menu.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')).toBe('384px')
 })
 
 test('a global row stays actionable while a later catalog read is pending', async () => {

@@ -66,7 +66,7 @@ if (values.list) {
     import {capabilityProfileConfiguration} from './internal/runtime-config.js';
     const h=React.createElement;
     installStyles();
-    const {Menu,Modal,Select}=resolvePrimitives({...window.nativeMenu?{Menu:NativeMenu}:{},...window.nativeSettingsModal?{Modal:NativeModal}:{}},React,createPortal);
+    const {Menu,MenuFallback,Modal,Select}=resolvePrimitives({...window.nativeMenu?{Menu:NativeMenu}:{},...window.nativeSettingsModal?{Modal:NativeModal}:{}},React,createPortal);
     window.nativeModalUsed=Modal===NativeModal;
     let entries=Array.from({length:window.largeMenu?48:8},(_,index)=>({id:'entry-'+index,name:'Entry '+index,
       scope:'namespace',symbols:['value'],purpose:'Stored input',source:'export const value=1',enabled:!window.largeMenu||index%3===0}));
@@ -218,7 +218,7 @@ if (values.list) {
         effective:{budgets:{contractBytes:1200,overageBytes:0},entries:[{id:'skills.rightapi-image-generator',category:'skill',selection:'on-demand',reason:'baseline-not-selected',statisticsReason:'statistics-disabled'}]}}]:[]});
     const view={mounted:false,reachable:true,candidate:null,candidateKey:null,action:null,message:null};
     const review={reachable:()=>{},getSnapshot:()=>view};
-    const {BindingAuthorButton}=createAuthoringView(React,{ActionButton,IconButton,Menu,MenuFallback:Menu,
+    const {BindingAuthorButton}=createAuthoringView(React,{ActionButton,IconButton,Menu,MenuFallback,
       BindingsDialog:workbench.BindingsDialog,PTCPlusSettingsDialog,SessionCapabilityControls,
       useWorkbenchController:workbench.useWorkbenchController,useBindingReview:()=>[review,view],
       catalogOwner,callUserBindings,subscribeReset:()=>()=>{},menuChildren:createMenuChildrenEvidence(),
@@ -1081,6 +1081,23 @@ if (values.list) {
         await menu.locator('[data-binding-id]').first().waitFor()
         const initial = await assertSparkleMenuLayout(menu, label)
         await assertSparkleMenuTypography(menu, label)
+        if (viewport.height === 420 && locale === 'en' && theme === 'light') {
+          const geometry = () => menu.evaluate(element => ({
+            anchorTop: document.querySelector('.ptcPlusComposerBindingAnchor').getBoundingClientRect().top,
+            menuBottom: element.getBoundingClientRect().bottom,
+            budget: parseFloat(element.querySelector('.ptcPlusBindingMenuContent').style.getPropertyValue('--ptc-plus-menu-space')),
+          }))
+          const before = await geometry()
+          await page.locator('#composer').evaluate(element => { element.style.bottom = '120px' })
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+          const after = await geometry()
+          assert.equal(before.anchorTop - after.anchorTop, 104, `${label}: layout did not move the trigger`)
+          assert.equal(before.budget - after.budget, 104, `${label}: stale catalog height budget`)
+          assert.ok(Math.abs(before.menuBottom - after.menuBottom - 104) <= 2, `${label}: menu did not follow the trigger`)
+          await assertSparkleMenuLayout(menu, `${label}/moved composer`)
+          await page.locator('#composer').evaluate(element => { element.style.bottom = '16px' })
+          await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+        }
         assert.equal(initial.scrollable, true, `${label}: large catalog does not scroll`)
         await group.press('Enter')
         assert.equal(await group.getAttribute('aria-expanded'), 'true')

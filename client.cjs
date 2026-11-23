@@ -10084,15 +10084,18 @@ function createFallbackMenu(React32, createPortal3 = (content2) => content2) {
     React32.useEffect(() => cancelClose, [open]);
     React32.useLayoutEffect(() => {
       if (!open) return void 0;
-      const place = () => {
-        const rect = getAnchorRect?.() ?? root.current?.getBoundingClientRect();
+      let previousRect;
+      let frame;
+      const measureAnchor = () => getAnchorRect?.() ?? root.current?.getBoundingClientRect();
+      const place = (rect) => {
         const surface2 = list.current;
         if (!rect || !surface2) return;
-        const viewport = window.visualViewport;
-        const viewportTop = viewport?.offsetTop ?? 0;
-        const viewportLeft = viewport?.offsetLeft ?? 0;
-        const viewportHeight = viewport?.height ?? window.innerHeight;
-        const viewportWidth = viewport?.width ?? window.innerWidth;
+        previousRect = rect;
+        const viewport2 = window.visualViewport;
+        const viewportTop = viewport2?.offsetTop ?? 0;
+        const viewportLeft = viewport2?.offsetLeft ?? 0;
+        const viewportHeight = viewport2?.height ?? window.innerHeight;
+        const viewportWidth = viewport2?.width ?? window.innerWidth;
         const available = Math.max(0, side === "top" ? rect.top - viewportTop - 12 : viewportTop + viewportHeight - rect.bottom - 12);
         surface2.style.maxHeight = `${available}px`;
         const measured = surface2.getBoundingClientRect();
@@ -10100,16 +10103,25 @@ function createFallbackMenu(React32, createPortal3 = (content2) => content2) {
         surface2.style.left = `${Math.max(viewportLeft + 8, Math.min(left, viewportLeft + viewportWidth - measured.width - 8))}px`;
         surface2.style.top = `${side === "top" ? Math.max(viewportTop + 8, rect.top - measured.height - 4) : rect.bottom + 4}px`;
       };
-      place();
-      window.addEventListener("resize", place);
-      window.addEventListener("scroll", place, true);
-      window.visualViewport?.addEventListener("resize", place);
-      window.visualViewport?.addEventListener("scroll", place);
+      const refresh = () => place(measureAnchor());
+      const followAnchor = () => {
+        const rect = measureAnchor();
+        if (rect && (!previousRect || rect.left !== previousRect.left || rect.right !== previousRect.right || rect.top !== previousRect.top || rect.bottom !== previousRect.bottom)) place(rect);
+        frame = requestAnimationFrame(followAnchor);
+      };
+      refresh();
+      if (getAnchorRect) frame = requestAnimationFrame(followAnchor);
+      const viewport = window.visualViewport;
+      window.addEventListener("resize", refresh);
+      window.addEventListener("scroll", refresh, true);
+      viewport?.addEventListener("resize", refresh);
+      viewport?.addEventListener("scroll", refresh);
       return () => {
-        window.removeEventListener("resize", place);
-        window.removeEventListener("scroll", place, true);
-        window.visualViewport?.removeEventListener("resize", place);
-        window.visualViewport?.removeEventListener("scroll", place);
+        if (frame !== void 0) cancelAnimationFrame(frame);
+        window.removeEventListener("resize", refresh);
+        window.removeEventListener("scroll", refresh, true);
+        viewport?.removeEventListener("resize", refresh);
+        viewport?.removeEventListener("scroll", refresh);
       };
     }, [open, side, align, getAnchorRect, children, items, footer]);
     React32.useEffect(() => {
@@ -10239,12 +10251,13 @@ function createFallbackModal(React32, createPortal3 = (content2) => content2) {
   };
 }
 function resolvePrimitives(primitives, React32, createPortal3) {
+  const MenuFallback = createFallbackMenu(React32, createPortal3);
   return Object.freeze({
     Button: primitives.Button,
     CodeBlock: primitives.CodeBlock,
     DisclosureRow: primitives.DisclosureRow,
-    Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React32, createPortal3),
-    MenuFallback: createFallbackMenu(React32, createPortal3),
+    Menu: isHostComponent(primitives.Menu) ? primitives.Menu : MenuFallback,
+    MenuFallback,
     Select: createSelect(React32),
     Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React32, createPortal3),
     Toast: primitives.Toast,
@@ -14671,7 +14684,7 @@ function createAuthoringView(React32, deps) {
     const [settingsOpen, setSettingsOpen] = React32.useState(false);
     const probeRef = React32.useRef(null);
     const [probing, setProbing] = React32.useState(() => menuChildren.supported() === void 0);
-    const menuChildrenRegion = menuChildren.supported() !== false;
+    const ComposerMenu = menuChildren.supported() === false ? MenuFallback : Menu;
     const catalogSource = React32.useMemo(() => catalogOwner.claim(), [catalogOwner]);
     const catalogState = React32.useSyncExternalStore(catalogSource.subscribe, catalogSource.getSnapshot);
     const catalog = catalogState.catalog;
@@ -14764,13 +14777,27 @@ function createAuthoringView(React32, deps) {
       const offset4 = item.height > scroll.clientHeight ? item.top + item.height / 2 - (viewport.top + viewport.height / 2) : item.top < viewport.top ? item.top - viewport.top : item.bottom > viewport.bottom ? item.bottom - viewport.bottom : 0;
       scroll.scrollTop += offset4;
     };
-    const menuAnchorRect = () => {
+    const menuAnchorRect = React32.useCallback(() => {
       const anchor = anchorRef.current;
       if (!anchor) return null;
       const rect = anchor.getBoundingClientRect();
-      menuElement()?.style.setProperty("--ptc-plus-menu-space", `${Math.max(0, rect.top - 16)}px`);
+      const style = menuBodyRef.current?.style;
+      const space2 = `${Math.max(0, rect.top - 16)}px`;
+      if (style && style.getPropertyValue("--ptc-plus-menu-space") !== space2) {
+        style.setProperty("--ptc-plus-menu-space", space2);
+      }
       return rect;
-    };
+    }, []);
+    React32.useLayoutEffect(() => {
+      if (!menuOpen || ComposerMenu === MenuFallback) return void 0;
+      let frame;
+      const measure = () => {
+        menuAnchorRect();
+        frame = requestAnimationFrame(measure);
+      };
+      measure();
+      return () => cancelAnimationFrame(frame);
+    }, [ComposerMenu, menuOpen, menuAnchorRect]);
     const hideMenu = () => {
       const itemHasFocus = menuElement()?.contains(document.activeElement) || catalogFocus.current !== null && document.activeElement === document.body;
       setMenu(null);
@@ -15100,7 +15127,7 @@ function createAuthoringView(React32, deps) {
         "data-text": isHostIconComponent(IconSparkle16) ? void 0 : true,
         ref: attachAnchor
       },
-      !pluginEnabled ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
+      !pluginEnabled ? null : h(ComposerMenu, {
         className: "ptcPlusAuthorButtonShell",
         open: menuOpen,
         anchor: isHostComponent(Tooltip) ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,

@@ -8,19 +8,15 @@ import { pathToFileURL } from 'node:url'
 import { executeHostTool, ptcPresentation } from './dsh-host-contract.mjs'
 
 /**
- * The program-runtime service name is a host declaration: the package that
- * consumes a runtime names it through `ctx.get('<name>Runtime')`. Which package
- * that is moved between lines — a registry host resolves the runtime itself, an
- * executor host resolves it in its tool executor — so every package that can
- * play that role contributes a source to inspect.
- * @param {...string} sources - source text of the candidate consuming packages.
+ * Read the program runtime from the executor's public injections or the older
+ * registry's service lookup.
+ * @param {string[]} injections - the installed executor's service names.
+ * @param {string} registrySource - source of the older registry consumer.
  * @returns {string} the single declared program-runtime service name.
  */
-export function executionServiceName(...sources) {
-  const names = new Set()
-  for (const source of sources) {
-    for (const match of source.matchAll(/\bget\(\s*["']([A-Za-z_$][\w$]*Runtime)["']\s*\)/g)) names.add(match[1])
-  }
+function executionServiceName(injections, registrySource) {
+  const names = new Set(injections.filter(name => typeof name === 'string' && name.endsWith('Runtime')))
+  for (const match of registrySource.matchAll(/\bget\(\s*["']([A-Za-z_$][\w$]*Runtime)["']\s*\)/g)) names.add(match[1])
   if (names.size !== 1) {
     throw new Error(`dsh-execution-seam-smoke: the installed tool consumers name ${names.size} execution services (${[...names].join(', ') || 'none'})`)
   }
@@ -47,11 +43,10 @@ async function main() {
   // installed schema says which, and the consumers of a program runtime are the
   // registry on one shape and the tool executor on the other.
   const presentation = ptcPresentation(ToolRuntime)
-  const runtimeConsumers = [readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8')]
-  if (presentation.kind === 'executor') {
-    runtimeConsumers.push(readFileSync(require.resolve('@deepseek-ai/dsh-tool-executor-ptc'), 'utf8'))
-  }
-  const seamService = executionServiceName(...runtimeConsumers)
+  const executor = presentation.kind === 'executor' ? await load('@deepseek-ai/dsh-tool-executor-ptc') : undefined
+  const seamService = executor === undefined
+    ? executionServiceName([], readFileSync(require.resolve('@deepseek-ai/dsh-tools'), 'utf8'))
+    : executionServiceName(executor.inject ?? [], '')
   if (!['ptcRuntime', 'codeRuntime'].includes(seamService)) throw new Error(`dsh-execution-seam-smoke: unsupported public provider service ${seamService}`)
   const manifestPath = require.resolve('dsh-ptc-plus/package.json')
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
@@ -265,6 +260,21 @@ async function main() {
     assert.equal(continued.isError, false, JSON.stringify(continued))
     assert.deepEqual(continued.value, { logs: [], result: 43 })
     assert.equal(nativeCalls, 1)
+    for (const [id, code, value, text] of [
+      ['printed-cell', 'console.log("first"); console.log("second"); return false', { logs: ['first', 'second'], result: false }, 'first\nsecond\nfalse'],
+      ['printed-no-value', 'const logged = (console.log("first"), console.log("second"));', { logs: ['first', 'second'] }, 'first\nsecond'],
+      ['printed-blank', 'console.log(); return false', { logs: [''], result: false }, 'false'],
+    ]) {
+      const printed = await invoke('run_code', id, { code, description: 'Preserve output and completion' })
+      assert.equal(printed.isError, false, JSON.stringify(printed))
+      assert.deepEqual(printed.value, value)
+      assert.equal(printed.content.map(block => block.text).join('\n'), text)
+    }
+    const failedAfterPrint = await invoke('run_code', 'failed-after-print', {
+      code: 'console.log("first"); console.log("second"); throw new Error("printed failure")', description: 'Preserve output on failure',
+    })
+    assert.equal(failedAfterPrint.isError, true)
+    assert.match(failedAfterPrint.error.message, /Captured output:\nfirst\nsecond/u)
     const syntax = await invoke('run_code', 'runtime-ts', {
       code: 'enum Kind { Answer=42 }; namespace Answer { export const value=Kind.Answer }; return Answer.value',
       description: 'Compute with TypeScript runtime forms',

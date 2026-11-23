@@ -55,7 +55,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 | 核心工作区 | 状态与恢复 | `tipCooldownMessages` / `tipEscalationFailures` | 同类提示间隔与详细提示阈值。 |
 | 核心工作区 | 状态与恢复 | `unmeasuredCellLimit` | 连续第几个未测量 cell 触发丢弃（默认 2：第一个保留，第二个丢弃）；已证明 frontier 留给下一 cell 重放。 |
 | 扩展与容错 | 工具扩展 | `userBindingsEnabled` | 默认开启，显式关闭仍有效；开启时加载跨会话 TypeScript helper，并在开关下方显示管理按钮，同时启用全局绑定工作台与 `/binding` Agent 编写入口。 |
-| 扩展与容错 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与精确的 `cordis-plugin-development` companion Skill，不发布同目录 sibling。 |
+| 扩展与容错 | 工具扩展 | `cordisToolsEnabled` | 默认关闭；开启后为 PTC agent 加入官方 Cordis 工具、指引与宿主提供的 companion Skill。优先使用 `dsh-doc`，兼容旧版 `cordis-plugin-development`，同目录的其他 Skill 不会被挂载。 |
 | 扩展与容错 | 调用容错 | `autoDescribeRunCode` / `canonicalizeToolCalls` | 默认开启；允许缺少外层摘要的 `run_code` 执行，并修复 schema 可唯一确认的顶层 native 工具误调用。 |
 | 界面与资源 | 界面显示 | `enhancedToolView` | 默认开启；关闭后注销 PTC Plus 的两个 keyed tool view，恢复 DSH 原生 generic row。 |
 | 界面与资源 | 界面显示 | `toolHoverPreviewEnabled` | 默认开启；控制执行行的悬停与键盘聚焦预览，即时生效。 |
@@ -83,7 +83,7 @@ Client 按数据、传输、注册与视图分文件，沿用既有 `createX(Rea
 保存设置后，Host 在 settings watch 中安装、卸载或重配置对应 owner。能力与上下文的独立职责输入用于新会话；已有会话保持冻结方案，执行 `/capabilities refresh` 后才同步说明、发现与执行成员。其他可重配置字段即时生效；`executionSeamTimeoutMs` 由激活期等待拥有，只在插件激活或重载时读取。已提交的 cell 的预算与策略固定使用提交时的配置快照，运行中的更新从随后提交的 cell 开始使用；worker 生命周期上界（`maxOldGenerationSizeMb`、`workerReclaimMs`、`startupProbeMs`）在 worker 创建或关闭时从当前配置读取；这不会替换 session-bound REPL 或已有 binding。`maxOldGenerationSizeMb` 在活动 worker 存在时因 Node 的创建期限制而拒绝并回滚，其他可重配置字段照常交给 owner。关闭后唯一的宿主副作用是注册 settings 命名空间，
 保证设置卡片仍然可读；此时只有 `enabled` 可写，其他控件被禁用。运行时重配置失败时回滚到上一次已应用值。
 
-`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与 `cordis-plugin-development` Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍只有 `run_code`，编辑器通过程序内的 `tools.edit_run_code` 调用，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
+`cordisToolsEnabled` 默认关闭并即时生效。它不切换 preset，而是把官方 Cordis 工具、owner guidance 与选中的官方 companion Skill 作为一个 agent-scoped mount 加入或移出同时暴露 `run_code`、`skill` 工具与 preset/Skill service 的 PTC agent；顶层仍只有 `run_code`，编辑器通过程序内的 `tools.edit_run_code` 调用，普通 agent 不继承。暴露面齐全但挂载失败时，启用会完整回滚；agent scope 缺少 companion surface 时只是延后，不报错也不发布。完整运行要求见 [运行时参考](runtime-reference.md)。
 
 ## 全局用户 Binding 工作台
 

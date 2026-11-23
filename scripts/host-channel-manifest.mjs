@@ -26,11 +26,8 @@ export const MANIFEST_PATH = 'compat/channels.json'
 /** Dist-tags that identify a supported channel, with whether it may block a release. */
 export const CHANNELS = Object.freeze([
   Object.freeze({ channel: 'latest', distTag: 'latest', blocks: true }),
-  Object.freeze({ channel: 'next', distTag: 'next', blocks: true }),
-  // The development graph follows one channel rather than a release: this checkout builds
-  // against the surfaces that channel publishes, and a release never waits on a channel that
-  // carries no blocking role.
-  Object.freeze({ channel: 'alpha', distTag: 'alpha', blocks: false, development: true }),
+  Object.freeze({ channel: 'next', distTag: 'next', blocks: true, development: true }),
+  Object.freeze({ channel: 'alpha', distTag: 'alpha', blocks: false }),
 ])
 
 /** The channel this checkout's development graph declares and installs. */
@@ -332,10 +329,10 @@ export async function updateManifest(options = {}) {
 }
 
 /**
- * Move the root development lock onto the `next` channel release when it lags.
+ * Move the root development lock onto its declared channel release when it lags.
  *
  * The development graph is the materialized host the ordinary gates run against,
- * so leaving it behind while `next` moves would make local verification test a
+ * so leaving it behind while the channel moves would make local verification test a
  * host no channel resolves to. Only the scheduled channel workflow calls this:
  * ordinary verification never resolves a floating tag.
  * @param {object} options - repository root, npm seam and an already-read record.
@@ -514,8 +511,8 @@ async function main() {
   if (command === 'graph') {
     const moved = await refreshDevelopmentGraph()
     console.log(moved === undefined
-      ? 'the development graph already matches the next channel'
-      : `the development graph moved onto the next channel release ${moved}`)
+      ? `the development graph already matches the ${DEVELOPMENT_CHANNEL} channel`
+      : `the development graph moved onto the ${DEVELOPMENT_CHANNEL} channel release ${moved}`)
     return
   }
   if (command !== 'verify') throw new Error('usage: host-channel-manifest.mjs <update|graph|verify>')
@@ -533,16 +530,18 @@ async function main() {
 export async function describeDevelopmentGraph(channels, root = resolve(dirname(fileURLToPath(import.meta.url)), '..')) {
   const lock = JSON.parse(await readFile(join(root, 'package-lock.json'), 'utf8'))
   const version = lock.packages?.['node_modules/@deepseek-ai/dsh']?.version
-  const matched = [...channels.values()].find(record => record.version === version)
+  const declared = channels.get(DEVELOPMENT_CHANNEL)
+  if (declared === undefined) throw new Error(`no manifest record for the ${DEVELOPMENT_CHANNEL} development channel`)
   const installed = await installedHostVersion(root)
   if (installed !== version) {
     throw new Error(`installed @deepseek-ai/dsh@${String(installed)} differs from package-lock.json (${String(version)}); run npm ci`)
   }
-  const materialization = 'materialized as locked'
-  const channel = matched === undefined
-    ? 'no channel resolves to this release; host:channels:graph moves it onto next'
-    : `the ${matched.channel} channel`
-  return `@deepseek-ai/dsh@${String(version)} (${channel}; ${materialization})`
+  const materialization = `@deepseek-ai/dsh@${String(version)} (materialized as locked)`
+  if (declared.version === version) return `${DEVELOPMENT_CHANNEL} resolves to ${materialization}`
+  const matchingChannels = [...channels.values()].filter(record => record.version === version).map(record => record.channel)
+  const match = matchingChannels.length === 0 ? 'no channel resolves to the locked release'
+    : `the locked release matches ${matchingChannels.join(', ')}`
+  return `${materialization}. ${DEVELOPMENT_CHANNEL} resolves to @deepseek-ai/dsh@${declared.version}. Run host:channels:graph to update the lock (${match}).`
 }
 
 async function installedHostVersion(root) {

@@ -121,6 +121,15 @@ redefinable: frozen definitions or outputs reject execution and are not a
 supported compatibility claim. Frozen original execution providers remain
 supported through the independent composition described above.
 
+The output-block executor consumes ordered `PtcRunResult.output` blocks and
+publishes a text-only completion schema. PTC Plus uses its own cell completion
+to extend that schema and render the `result` field for its session execution.
+The adapter retains logical log entries in the structured result and joins them
+with the completion for rendering. The host validates the value and applies
+result policy. A binding result issued
+as `PtcInspectableValue` contributes its canonical JSON value to the worker and
+journal. Native provider delegation retains the host's own output contract.
+
 The bridge retains call-local settlement isolation, native canonical values,
 output limits, original callback receivers, and descriptor/ownership restoration
 on rollback or disposal. DSH continues to own validation, policy, approval,

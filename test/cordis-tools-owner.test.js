@@ -34,7 +34,8 @@ const fakeCordisPlugin = {
   },
 }
 
-const CORDIS_SKILL_NAME = 'cordis-plugin-development'
+const CORDIS_SKILL_NAME = 'dsh-doc'
+const LEGACY_CORDIS_SKILL_NAME = 'cordis-plugin-development'
 const EXTRA_CORDIS_SKILL_NAME = 'editing-cordis-compositions'
 const require = createRequire(import.meta.url)
 const CORDIS_PRESET_PACKAGE = dirname(require.resolve('@deepseek-ai/dsh-agent-preset/package.json'))
@@ -44,7 +45,7 @@ const CORDIS_SKILL_DIRECTORY = join(dirname(CORDIS_PRESET_PATH), 'skills')
 const fakeSkillFilesystemPlugin = {
   name: 'fake-skill-filesystem',
   inject: ['skills'],
-  apply(ctx, config) {
+  apply(ctx, config, skillName = CORDIS_SKILL_NAME) {
     assert.equal(typeof ctx.skills.list, 'function')
     assert.deepEqual(config, {
       providerName: 'ptc-plus-cordis',
@@ -53,7 +54,7 @@ const fakeSkillFilesystemPlugin = {
       watch: false,
     })
     const definitions = new Map([
-      [CORDIS_SKILL_NAME, '# Cordis plugin development'],
+      [skillName, `# ${skillName}`],
       [EXTRA_CORDIS_SKILL_NAME, '# Editing Cordis compositions'],
     ])
     ctx.effect(() => ctx.skills.registerProvider(() => ({
@@ -682,9 +683,9 @@ test('Cordis companion Skill resolution supports a host-anchored legacy plural p
       assert.equal(specifier, '@deepseek-ai/dsh-agent-presets/package.json')
       return manifest
     },
-    fileExists: filename => filename === join(expected, CORDIS_SKILL_NAME, 'SKILL.md'),
+    fileExists: filename => filename === join(expected, LEGACY_CORDIS_SKILL_NAME, 'SKILL.md'),
   })
-  assert.deepEqual(directory, { skillRoot: expected, skillName: CORDIS_SKILL_NAME })
+  assert.deepEqual(directory, { skillRoot: expected, skillName: LEGACY_CORDIS_SKILL_NAME })
 })
 
 test('Cordis companion Skill resolution never falls back around pluginPackages', async () => {
@@ -765,7 +766,7 @@ test('Cordis owner reads the packaged companion as a bundled Host resource', asy
     scope: agent,
   })
   assert.equal(skill?.provider, 'ptc-plus-cordis')
-  assert.match(skill.content, /# Persistent Harness plugins/)
+  assert.match(skill.content, /# DeepSeek Harness documentation/)
   await owner.dispose()
   await scope.dispose()
   await skillRegistryFiber.dispose()
@@ -776,12 +777,12 @@ test('Cordis owner activates through a host-anchored legacy package layout', asy
   t.after(() => rm(root, { recursive: true, force: true }))
   const packageDirectory = join(root, 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
   const skillDirectory = join(packageDirectory, 'presets', 'cordis', 'skills')
-  await mkdir(join(skillDirectory, CORDIS_SKILL_NAME), { recursive: true })
+  await mkdir(join(skillDirectory, LEGACY_CORDIS_SKILL_NAME), { recursive: true })
   await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({
     name: '@deepseek-ai/dsh-agent-presets',
     version: '0.1.5-compat-fixture',
   }))
-  await writeFile(join(skillDirectory, CORDIS_SKILL_NAME, 'SKILL.md'), '# legacy companion\n')
+  await writeFile(join(skillDirectory, LEGACY_CORDIS_SKILL_NAME, 'SKILL.md'), '# legacy companion\n')
 
   const agent = scopedAgent('legacy-pathless-preset', { preset: { id: 'cordis' } })
   const host = ownerContext([agent])
@@ -794,12 +795,12 @@ test('Cordis owner activates through a host-anchored legacy package layout', asy
       return fakeSkillFilesystemPlugin.apply(ctx, {
         ...config,
         bundledSkillDir: CORDIS_SKILL_DIRECTORY,
-      })
+      }, LEGACY_CORDIS_SKILL_NAME)
     },
   }
   const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin, legacySkillPlugin)
   await owner.ready
-  assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), true)
+  assert.equal(agent.skillCatalog.has(LEGACY_CORDIS_SKILL_NAME), true)
   await owner.dispose()
 })
 
@@ -808,16 +809,17 @@ test('Cordis companion resolution reads the current Host package service for eac
   t.after(() => rm(root, { recursive: true, force: true }))
   const packageDirectory = join(root, 'node_modules', '@deepseek-ai', 'dsh-agent-presets')
   const legacyDirectory = join(packageDirectory, 'presets', 'cordis', 'skills')
-  await mkdir(join(legacyDirectory, CORDIS_SKILL_NAME), { recursive: true })
+  await mkdir(join(legacyDirectory, LEGACY_CORDIS_SKILL_NAME), { recursive: true })
   await writeFile(join(packageDirectory, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh-agent-presets' }))
-  await writeFile(join(legacyDirectory, CORDIS_SKILL_NAME, 'SKILL.md'), '# old host companion\n')
+  await writeFile(join(legacyDirectory, LEGACY_CORDIS_SKILL_NAME, 'SKILL.md'), '# old host companion\n')
   const options = {}
   const host = ownerContext([], options)
   host.ctx.baseUrl = pathToFileURL(join(root, 'host.cjs')).href
   const mountedDirectories = []
   const skillPlugin = { ...fakeSkillFilesystemPlugin, apply(ctx, config) {
     mountedDirectories.push(config.bundledSkillDir)
-    return fakeSkillFilesystemPlugin.apply(ctx, { ...config, bundledSkillDir: CORDIS_SKILL_DIRECTORY })
+    const skillName = config.bundledSkillDir === legacyDirectory ? LEGACY_CORDIS_SKILL_NAME : CORDIS_SKILL_NAME
+    return fakeSkillFilesystemPlugin.apply(ctx, { ...config, bundledSkillDir: CORDIS_SKILL_DIRECTORY }, skillName)
   } }
   const owner = createCordisToolsOwner(host.ctx, fakeCordisPlugin, skillPlugin)
   t.after(() => owner.dispose())
@@ -838,7 +840,8 @@ test('Cordis companion resolution reads the current Host package service for eac
     const agent = scopedAgent(id, { preset: { id: 'cordis' } })
     const mountsBefore = mountedDirectories.length
     await host.emit('agent/created', { agent })
-    assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), expected !== undefined, id)
+    const skillName = expected === legacyDirectory ? LEGACY_CORDIS_SKILL_NAME : CORDIS_SKILL_NAME
+    assert.deepEqual([...agent.skillCatalog.keys()], expected === undefined ? [] : [skillName], id)
     assert.deepEqual(mountedDirectories.slice(mountsBefore), expected === undefined ? [] : [expected], id)
   }
   assert.equal(packageQueries, 4)
@@ -1317,7 +1320,7 @@ test('Cordis activation rollback reports a synchronously throwing fiber disposer
 
 test('Cordis companion selects the official dsh-doc identity before the legacy resource', async () => {
   for (const pathless of [false, true]) {
-    for (const available of [['dsh-doc'], ['dsh-doc', CORDIS_SKILL_NAME], [CORDIS_SKILL_NAME]]) {
+    for (const available of [[CORDIS_SKILL_NAME], [CORDIS_SKILL_NAME, LEGACY_CORDIS_SKILL_NAME], [LEGACY_CORDIS_SKILL_NAME]]) {
       const skillRoot = '/host/skills'
       const resource = await resolveCompanionSkillResource({ resolve: async () =>
         pathless ? { id: 'cordis' } : { id: 'cordis', path: '/host/cordis.yml' } }, {
@@ -1334,19 +1337,19 @@ test('Cordis mount publishes and loads only the selected official dsh-doc Skill'
   const skillPlugin = { ...fakeSkillFilesystemPlugin, apply(ctx, config) {
     ctx.effect(() => ctx.skills.registerProvider(() => ({
       name: config.providerName,
-      list: async () => ['dsh-doc', CORDIS_SKILL_NAME, EXTRA_CORDIS_SKILL_NAME].map(name => ({
+      list: async () => [CORDIS_SKILL_NAME, LEGACY_CORDIS_SKILL_NAME, EXTRA_CORDIS_SKILL_NAME].map(name => ({
         name, provider: config.providerName, invocation: { modelInvocable: true },
       })),
       get: async candidate => ({ ...candidate, content: `# ${candidate.name}` }),
     })))
   } }
   const owner = createCordisToolsOwnerRaw(ownerContext([agent]).ctx, fakeCordisPlugin, skillPlugin, {
-    fileExists: filename => filename.endsWith('/dsh-doc/SKILL.md') || filename.endsWith(`/${CORDIS_SKILL_NAME}/SKILL.md`),
+    fileExists: filename => [CORDIS_SKILL_NAME, LEGACY_CORDIS_SKILL_NAME].some(name => filename.endsWith(`/${name}/SKILL.md`)),
   })
   await owner.ready
-  assert.deepEqual((await agent.ctx.get('skills').list({ scope: agent })).map(skill => skill.name), ['dsh-doc'])
-  assert.equal(agent.skillCatalog.get('dsh-doc').content, '# dsh-doc')
-  assert.equal(await agent.ctx.get('skills').get(CORDIS_SKILL_NAME, { scope: agent }), undefined)
+  assert.deepEqual((await agent.ctx.get('skills').list({ scope: agent })).map(skill => skill.name), [CORDIS_SKILL_NAME])
+  assert.equal(agent.skillCatalog.get(CORDIS_SKILL_NAME).content, '# dsh-doc')
+  assert.equal(await agent.ctx.get('skills').get(LEGACY_CORDIS_SKILL_NAME, { scope: agent }), undefined)
   await owner.dispose()
-  assert.equal(agent.skillCatalog.has('dsh-doc'), false)
+  assert.equal(agent.skillCatalog.has(CORDIS_SKILL_NAME), false)
 })

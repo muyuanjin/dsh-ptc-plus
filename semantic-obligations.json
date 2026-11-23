@@ -494,6 +494,7 @@
         "deferred contexts and turn conclusion use the root ToolExecution methods; Host block and replacement decisions govern the final derived presentation",
         "delegated submissions own their public session observation and composite identity",
         "independent delegated sessions do not inherit native child execution handoffs",
+        "legacy code.run preserves the Host truncation signal beside retained logs and completion, including recorded-value recovery without redispatch",
         "plugin-owned isolated completion preserves value graphs without decoding public projection or historical strings and avoids unused renderer budgets",
         "stable guidance separates live values, supported direct observations, explicit JSON loss and native JSON contracts",
         "direct Node cell computation preserves the external execution-world choice",
@@ -517,7 +518,8 @@
         "an override document changes only the asset it names: the resolver is total, unknown ids stay inert, derived policy sentences, diagnostics and envelopes remain owned by code, and an empty document reproduces the built-in prompt byte for byte",
         "the assembled request is captured against its host baseline: every added or modified section, every adapted tool schema and every injected context is claimed with its recorded bytes, and a sentence appended to a claimed block changes the capture",
         "official companion resource identity selects dsh-doc before the historical cordis-plugin-development Skill without publishing siblings",
-        "public provider release resets live session computation durably; disposed Cordis Agent scopes retain cold recovery; original-provider cleanup remains delegated and failures remain retryable"
+        "public provider release resets live session computation durably; disposed Cordis Agent scopes retain cold recovery; original-provider cleanup remains delegated and failures remain retryable",
+        "the output-block executor receives ordered text fragments while PTC Plus publishes the owned cell's canonical completion through the validated transport; host-issued inspectable tool values cross as canonical program data"
       ],
       "entries": [
         "run_code",
@@ -576,6 +578,7 @@
         "scripts/dsh-message-persistence-smoke.mjs",
         "scripts/dsh-rpc-contract-smoke.mjs",
         "test/context-host-contract.test.js",
+        "test/stateful-child-computation.test.js",
         "test/context-result-preview.test.js",
         "test/program-bindings.test.js",
         "test/direct-surface-policy.test.js",
@@ -908,6 +911,7 @@
         "deferred return focus uses exact semantic candidate and current lifecycle",
         "short enlarged native and fallback keep readable source and reachable actions including RPC errors",
         "enlarged draft shares candidate authority and fixed actions while yielding to composer takeover",
+        "composer catalog keeps its anchor-relative height budget as its anchor moves with or without a render or viewport event, with native CSS placement and measured fallback placement",
         "spaced resize and close header controls distinguish shrinking to preview from hiding the draft",
         "fallback portaled viewport placement and headless modal mask",
         "composition closing-key lifetime",

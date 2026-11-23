@@ -39,6 +39,8 @@ Replace `<profile>` with your profile name, restart DSH, and select **PTC mode**
 
 The plugin declares the DSH compatibility range `>=0.2.1-0 <0.2.3` for the Host's version preflight; public capability checks and packed tests verify integration within that range.
 
+The official npm distributions of DSH `0.2.2-rc.5` and `0.2.3-alpha.2` pass the packed plugin contracts and session lifecycle checks. See the [installation guide](docs/installation.md) for the Host's Node.js requirements.
+
 When DSH exits or restarts through its built-in updater, the plugin releases computation resources without scanning historical sessions. Unloading the plugin while DSH continues running still persists session handback notices; recovery after restart uses the session records.
 
 The session shows a **REPL** tab, and wide screens show a **PTC Plus** header indicator. The sparkle button beside the composer opens the global binding menu, the session capability workbench, and **PTC Plus settings**; **Plugins → Installed → dsh-ptc-plus → Configure** in the sidebar is the same configuration.
@@ -93,6 +95,8 @@ The default **stateful semantics** (`bindingUpdates: 'stateful'`) extend JavaScr
 Cells support TypeScript (including runtime `enum` and namespaces), top-level `await` / `return`, and static `import` / `export`; a static import takes effect before the whole cell body executes, and an assignment later in the body can override it. **Binding update semantics** in settings displays the current policy and offers **Allow redeclarations and overrides** (`stateful`) or **Protect names** (`protected`); protected runtime names such as `tools` can never be overwritten.
 
 `run_code`, edited code, and the global binding workbench follow the same language policy, while explicit `eval`, `Function`, `node:vm`, and independent runtimes keep their own native boundaries. Scope, module interoperability, and historical session rules are in the [language reference](docs/runtime-reference.md#cell-semantics), and complete language rules, configuration fields, and diagnostics are in the [runtime reference](docs/runtime-reference.md).
+
+When the Host reports that a `code.run` child's logs were truncated, the result includes `outputTruncated: true`.
 
 ## Code editing and call tolerance
 

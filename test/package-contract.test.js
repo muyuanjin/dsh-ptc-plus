@@ -615,10 +615,13 @@ test('a channel record labelled with another channel is rejected', async () => {
     /channel alpha does not match its declared dist-tag or blocking role/u)
 })
 
-test('a development install that differs from its lock is refused', async t => {
+test('development graph reporting prefers its declared channel and refuses an install that differs from its lock', async t => {
   const root = await mkdtempUnderTmp('ptc-development-describe-')
   t.after(() => rm(root, { recursive: true, force: true }))
-  const channels = new Map([['next', { channel: 'next', version: '9.0.0' }]])
+  const channels = new Map([
+    ['latest', { channel: 'latest', version: '9.0.0' }],
+    ['next', { channel: 'next', version: '9.0.0' }],
+  ])
   const lock = async version => writeFile(join(root, 'package-lock.json'),
     JSON.stringify({ packages: { 'node_modules/@deepseek-ai/dsh': { version } } }, null, 2) + '\n')
   const install = async version => {
@@ -629,13 +632,16 @@ test('a development install that differs from its lock is refused', async t => {
   await lock('9.0.0')
   await install('9.0.0')
   assert.equal(await describeDevelopmentGraph(channels, root),
-    '@deepseek-ai/dsh@9.0.0 (the next channel; materialized as locked)')
+    'next resolves to @deepseek-ai/dsh@9.0.0 (materialized as locked)')
+  channels.set('next', { channel: 'next', version: '9.0.1' })
+  assert.equal(await describeDevelopmentGraph(channels, root),
+    '@deepseek-ai/dsh@9.0.0 (materialized as locked). next resolves to @deepseek-ai/dsh@9.0.1. Run host:channels:graph to update the lock (the locked release matches latest).')
   // A release no channel resolves to is a materialization fact the graph reports
   // rather than a manifest error, so the same version on both sides still describes.
   await lock('9.5.0')
   await install('9.5.0')
   assert.equal(await describeDevelopmentGraph(channels, root),
-    '@deepseek-ai/dsh@9.5.0 (no channel resolves to this release; host:channels:graph moves it onto next; materialized as locked)')
+    '@deepseek-ai/dsh@9.5.0 (materialized as locked). next resolves to @deepseek-ai/dsh@9.0.1. Run host:channels:graph to update the lock (no channel resolves to the locked release).')
   // An install that disagrees with the lock is not the graph the lock describes, and
   // no channel claim derived from that lock is true of the host the gates run on.
   await install('8.0.0')

@@ -93,6 +93,12 @@ export const jsonSchemaToTs = renderers.api.jsonSchemaToTs
 export const renderToolsSdk = renderers.api.renderToolsSdk
 export const ToolNotFoundError = errors.api.ToolNotFoundError
 
+const inspectableValue = (await loadCandidate('@deepseek-ai/dsh-ptc-runtime'))?.PtcInspectableValue
+
+export function hostBindingValue(value) {
+  return typeof inspectableValue === 'function' && value instanceof inspectableValue ? value.value : value
+}
+
 /** Executor-published transports, resolved once per executor and transport name. */
 const executorTransports = new WeakMap()
 

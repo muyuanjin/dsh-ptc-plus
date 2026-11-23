@@ -41,6 +41,8 @@ Each physical cell has acknowledged start and end fences on stdout and stderr. D
 
 Prefer executing work directly in the current cell; reserve `code.run` for source already held as data. When nested source must be written inline, escape quotes, backslashes, and newlines exactly — its parse errors point only at the generated text, not at a position in the outer cell.
 
+When the Host reports truncated output from a successful delegated `code.run` call, the result includes `outputTruncated: true` alongside the captured `logs` and any completion. Recorded child results retain this flag through recovery.
+
 For stateful/protected cells, the public prompt assembly projects the Host SDK introduction to describe runtime TypeScript `enum` and namespaces. Only the known cell-grammar phrase is replaced; native tool declarations and their guidance remain unchanged. Legacy cells keep the Host erasable-syntax restriction. Explicit `eval` and `Function` retain their native JavaScript syntax targets.
 
 ## Capability Discovery

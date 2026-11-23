@@ -93,6 +93,38 @@ try {
   }), { logs: [], value: 43 })
 })
 
+test('legacy code.run keeps the Host output truncation signal through cold recovery', async t => {
+  const session = orderedSurfaceSession('legacy-truncated-child')
+  const config = { legacyBindingSettings: true }
+  const writer = fixture(config, { upstreamRun: async request => ({
+    output: [{ type: 'text', text: 'partial' }],
+    value: 42,
+    ...(request.program === 'return 42' ? { outputTruncated: true } : {}),
+  }) })
+  t.after(() => writer.dispose())
+  const source = `
+const truncatedChild = await code.run({ code: 'return 42', description: 'Run with truncated output' })
+const completeChild = await code.run({ code: 'return 6 * 7', description: 'Run with complete output' })
+return [truncatedChild, completeChild]
+`
+  const written = await writer.runDurable(session.id, source, {}, { session, recordSession: 'deferred-result', callId: 'legacy-truncated-source' })
+  assert.equal(written.isError, false, written.error?.message)
+  const expected = [
+    { logs: ['partial'], result: 42, outputTruncated: true },
+    { logs: ['partial'], result: 42 },
+  ]
+  assert.deepEqual(written.value, expected)
+  assert.equal(writer.upstreamCalls.length, 2)
+  appendRunCodeEvents(session.events, 'legacy-truncated-source', source, written)
+  await writer.dispose()
+
+  const reader = fixture(config)
+  t.after(() => reader.dispose())
+  const restored = await reader.run(session.id, 'return [truncatedChild, completeChild]', {}, { session })
+  assert.deepEqual(restored.value, expected)
+  assert.equal(reader.upstreamCalls.length, 0)
+})
+
 test('disposing the runtime aborts an active isolated child without repeating completed tool effects', async t => {
   const state = fixture({ bindingUpdates: 'stateful', computeMs: 5_000, maxWallMs: 10_000 })
   t.after(() => state.dispose())

@@ -1,3 +1,4 @@
+import { Context } from '@deepseek-ai/cordis'
 import { latestRecoveryTip, runtimeHistoryForView } from './recovery-tips.js'
 import { HOT_CELL_DROPPED, HOT_CELL_DROPPED_EN } from './projection-retention.js'
 import { foldSurface, deriveEventMessage, snapshotSessionEvent } from '@deepseek-ai/dsh-session'
@@ -28,7 +29,8 @@ export async function handBackRuntimeSessions(ctx, owners) {
   // Cordis FiberState.UNLOADING: application teardown has no continuing model
   // request to hand back. Archive-wide writes do not belong to process cleanup;
   // a restarted provider reconciles availability at the next accepted step.
-  if (ctx.root?.fiber.state === 5) return
+  const root = typeof Context.root === 'symbol' ? ctx[Context.root] : ctx.root
+  if (root?.fiber.state === 5) return
   const service = name => owners ? owners[name] : typeof ctx.get === 'function' ? ctx.get(name) : ctx[name]
   const sessions = service('sessions')
   const persistence = service('sessionPersistence')

@@ -81,10 +81,13 @@ function createFallbackMenu(React, createPortal = content => content) {
     React.useEffect(() => cancelClose, [open])
     React.useLayoutEffect(() => {
       if (!open) return undefined
-      const place = () => {
-        const rect = getAnchorRect?.() ?? root.current?.getBoundingClientRect()
+      let previousRect
+      let frame
+      const measureAnchor = () => getAnchorRect?.() ?? root.current?.getBoundingClientRect()
+      const place = rect => {
         const surface = list.current
         if (!rect || !surface) return
+        previousRect = rect
         const viewport = window.visualViewport
         const viewportTop = viewport?.offsetTop ?? 0
         const viewportLeft = viewport?.offsetLeft ?? 0
@@ -98,16 +101,26 @@ function createFallbackMenu(React, createPortal = content => content) {
         surface.style.left = `${Math.max(viewportLeft + 8, Math.min(left, viewportLeft + viewportWidth - measured.width - 8))}px`
         surface.style.top = `${side === 'top' ? Math.max(viewportTop + 8, rect.top - measured.height - 4) : rect.bottom + 4}px`
       }
-      place()
-      window.addEventListener('resize', place)
-      window.addEventListener('scroll', place, true)
-      window.visualViewport?.addEventListener('resize', place)
-      window.visualViewport?.addEventListener('scroll', place)
+      const refresh = () => place(measureAnchor())
+      const followAnchor = () => {
+        const rect = measureAnchor()
+        if (rect && (!previousRect || rect.left !== previousRect.left || rect.right !== previousRect.right
+          || rect.top !== previousRect.top || rect.bottom !== previousRect.bottom)) place(rect)
+        frame = requestAnimationFrame(followAnchor)
+      }
+      refresh()
+      if (getAnchorRect) frame = requestAnimationFrame(followAnchor)
+      const viewport = window.visualViewport
+      window.addEventListener('resize', refresh)
+      window.addEventListener('scroll', refresh, true)
+      viewport?.addEventListener('resize', refresh)
+      viewport?.addEventListener('scroll', refresh)
       return () => {
-        window.removeEventListener('resize', place)
-        window.removeEventListener('scroll', place, true)
-        window.visualViewport?.removeEventListener('resize', place)
-        window.visualViewport?.removeEventListener('scroll', place)
+        if (frame !== undefined) cancelAnimationFrame(frame)
+        window.removeEventListener('resize', refresh)
+        window.removeEventListener('scroll', refresh, true)
+        viewport?.removeEventListener('resize', refresh)
+        viewport?.removeEventListener('scroll', refresh)
       }
     }, [open, side, align, getAnchorRect, children, items, footer])
     React.useEffect(() => {
@@ -220,12 +233,13 @@ function createFallbackModal(React, createPortal = content => content) {
  * @returns the component set the views consume.
  */
 export function resolvePrimitives(primitives, React, createPortal) {
+  const MenuFallback = createFallbackMenu(React, createPortal)
   return Object.freeze({
     Button: primitives.Button,
     CodeBlock: primitives.CodeBlock,
     DisclosureRow: primitives.DisclosureRow,
-    Menu: isHostComponent(primitives.Menu) ? primitives.Menu : createFallbackMenu(React, createPortal),
-    MenuFallback: createFallbackMenu(React, createPortal),
+    Menu: isHostComponent(primitives.Menu) ? primitives.Menu : MenuFallback,
+    MenuFallback,
     Select: createSelect(React),
     Modal: isHostComponent(primitives.Modal) ? primitives.Modal : createFallbackModal(React, createPortal),
     Toast: primitives.Toast,

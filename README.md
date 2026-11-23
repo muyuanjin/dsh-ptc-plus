@@ -39,6 +39,8 @@ dsh plugin --profile <profile> add dsh-ptc-plus
 
 插件声明 DSH 兼容范围 `>=0.2.1-0 <0.2.3`，由宿主执行版本预检；范围内的接口适配仍通过公共能力检查与打包测试验证。
 
+官方 npm 版 `0.2.2-rc.5` 和 `0.2.3-alpha.2` 均已通过打包契约与会话生命周期验证。宿主的 Node.js 要求见[安装指南](docs/installation.md)。
+
 退出或通过内置更新重启 DSH 时，插件释放计算资源，不遍历历史会话。运行中单独卸载插件仍会持久化会话交接提示；重启后的状态恢复沿用会话记录。
 
 界面默认显示会话里的 **REPL** 页签，宽屏顶部还有 **PTC Plus** 标志。输入框旁的星光按钮打开全局绑定菜单、会话能力工作台和 **PTC Plus 设置**，侧边栏的 **插件 → 已安装 → dsh-ptc-plus → 配置** 是同一套设置。
@@ -93,6 +95,8 @@ return total() // 20
 cell 支持 TypeScript（含运行时 `enum` 和 `namespace`）、顶层 `await` / `return` 和静态 `import` / `export`；静态导入在整个 cell 正文执行前生效，正文里的赋值随后可以覆盖它。设置中的“绑定更新语义”直接显示当前策略，可选择“允许重声明和覆盖”（`stateful`）或“启用名称保护”（`protected`）；`tools` 这类受保护的运行时名称任何时候都不能覆盖。
 
 `run_code`、编辑后的代码和全局绑定工作台采用同一套语言策略；显式 `eval`、`Function`、`node:vm` 或独立运行时仍受各自的原生边界约束。作用域、模块互操作和历史会话规则见[语言参考](docs/runtime-reference.md#cell-semantics)，完整的语言规则、配置字段与诊断见[运行时参考](docs/runtime-reference.md)。
+
+宿主报告 `code.run` 子执行的日志被截断时，结果会带上 `outputTruncated: true`。
 
 ## 代码编辑与调用容错
 

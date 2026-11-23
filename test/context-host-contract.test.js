@@ -199,17 +199,16 @@ for (const [statisticsEnabled, incompleteSkills] of [[false, false], [true, fals
     assert.equal(initial.isError, false, JSON.stringify(initial.error))
     for (const name of ['subagent', 'subagent_fork']) {
       if (incompleteSkills) { skillsComplete = true; skillControl.invalidate() }
-      const result = await invoke(`delegate-${name}`, `return await tools.${name}({ description: 'Fixture delegation', prompt: 'Answer fixture' })`)
+      const childName = name === 'subagent' ? 'spawn-child' : 'fork-child'
+      const result = await invoke(`delegate-${name}`, `return await tools.${name}({ name: '${childName}', description: 'Fixture delegation', prompt: 'Answer fixture' })`)
       assert.equal(result.isError, false, JSON.stringify(result.error))
-      // One delegation is one managed activation: the call answers with the child's id, and
-      // the Host delivers that child's closing message to this parent as a settlement notice.
-      assert.equal(result.value.result.kind, 'activation')
       const child = created.at(-1)
-      assert.equal(result.value.result.subagentId, child.id)
+      assert.deepEqual(result.value.result, { kind: 'activation', name: childName })
+      assert.equal(await ctx.subagents.resolveName(owner.agent, result.value.result.name, signal()), child.id)
       assert.notEqual(child.id, owner.agent.session.id)
       assert.equal(child.session.header.origin, 'subagent')
       assert.equal(child.session.header.parentSession, owner.agent.session.id)
-      await ctx.subagents.waitForChildren(owner.agent)
+      await ctx.subagents.waitForTreeWork(owner.agent)
       if (incompleteSkills) assert.equal(skillsComplete, false)
       // The settlement wakes this parent, so its own turn and the notice it reads belong to
       // the parent's log rather than to the child's result.
@@ -982,11 +981,11 @@ test('the public agent factory provides real ownership and durable non-waking ma
   const parent = await ctx.agents.create({ sessionId: 'actual-root', meta: { cwd: process.cwd() },
     agentOptions: { provider: 'fixture', model: 'fixture' } })
   t.after(() => parent.dispose())
-  const child = await ctx.agents.create({ sessionId: 'actual-child', parentAgent: parent.agent,
+  const child = await parent.agent.ctx.agents.create({ sessionId: 'actual-child',
     meta: { parentSession: parent.agent.id, origin: 'subagent', delegationDepth: 1, cwd: process.cwd() },
     agentOptions: { provider: 'fixture', model: 'fixture' } })
   t.after(() => child.dispose())
-  assert.equal(ctx.agents.isOwnedBy(child.agent.id, parent.agent), true)
+  assert.equal(ctx.agents.get(child.agent.id), child.agent)
   assert.equal(child.agent.session.header.parentSession, parent.agent.id)
   assert.equal(parent.agent.status, 'idle')
   const notice = createUserMessage({ source: { kind: 'user' },
@@ -1001,6 +1000,8 @@ test('the public agent factory provides real ownership and durable non-waking ma
     'Pending durable inbox context has not yet entered the accepted model surface.')
   const restored = Session.create(parent.agent.id, parent.agent.session.snapshotEvents(), parent.agent.session.header)
   assert.equal(ctx.sessionProjections.stateOf(restored, 'inbox')['next-step'][0].id, notice.id)
+  await parent.dispose()
+  assert.equal(ctx.agents.get(child.agent.id), undefined, 'disposing the parent releases the child created in its context')
 })
 
 test('public retention and spill preserve complete presentation without rerunning computation', async t => {

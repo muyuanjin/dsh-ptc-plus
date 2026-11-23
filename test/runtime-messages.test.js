@@ -1356,8 +1356,9 @@ test('real Host clearance leaves an explicitly scoped catalog valid across uncha
   await host.wake()
   assert.equal(viewOf(host.agent.session).ptcMessages.length, 1)
   const suppressed = host.calls.at(-1).messages
-  assert.ok(suppressed.some(message => message.content.some(block => block.text ===
-    'Current runtime context: none. Earlier runtime-context snapshots no longer apply.')))
+  const clearance = suppressed.findLast(message => message.source?.kind === 'runtime-context')
+  assert.deepEqual(clearance?.source, { kind: 'runtime-context', form: 'snapshot', sections: [] })
+  assert.match(clearance.content[0].text, /Current runtime context: none\. Earlier runtime-context snapshots no longer apply\./)
   const retained = suppressed.find(message => readRuntimeMessage(message)?.form === 'catalog')
   assert.match(retained.content[0].text, /replaces the previous global binding reference/)
   assert.match(retained.content[0].text, /COUNTER_BETA/)

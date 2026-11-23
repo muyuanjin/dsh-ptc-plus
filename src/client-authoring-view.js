@@ -98,7 +98,7 @@ export function createAuthoringView(React, deps) {
     // that public region is absent.
     const probeRef = React.useRef(null)
     const [probing, setProbing] = React.useState(() => menuChildren.supported() === undefined)
-    const menuChildrenRegion = menuChildren.supported() !== false
+    const ComposerMenu = menuChildren.supported() === false ? MenuFallback : Menu
     // The menu catalog and the workbench catalog are independent sources: a
     // read or write in one never invalidates the other's in-flight request.
     const catalogSource = React.useMemo(() => catalogOwner.claim(), [catalogOwner])
@@ -201,17 +201,27 @@ export function createAuthoringView(React, deps) {
           : item.bottom > viewport.bottom ? item.bottom - viewport.bottom : 0
       scroll.scrollTop += offset
     }
-    // The list must sit next to the entry that opened it. The published Menu reads
-    // this rect on open and on every scroll/resize, and re-runs placement whenever
-    // the prop identity changes, so measuring the trigger each render also keeps an
-    // open list on a composer that grows without emitting a scroll.
-    const menuAnchorRect = () => {
+    const menuAnchorRect = React.useCallback(() => {
       const anchor = anchorRef.current
       if (!anchor) return null
       const rect = anchor.getBoundingClientRect()
-      menuElement()?.style.setProperty('--ptc-plus-menu-space', `${Math.max(0, rect.top - 16)}px`)
+      const style = menuBodyRef.current?.style
+      const space = `${Math.max(0, rect.top - 16)}px`
+      if (style && style.getPropertyValue('--ptc-plus-menu-space') !== space) {
+        style.setProperty('--ptc-plus-menu-space', space)
+      }
       return rect
-    }
+    }, [])
+    React.useLayoutEffect(() => {
+      if (!menuOpen || ComposerMenu === MenuFallback) return undefined
+      let frame
+      const measure = () => {
+        menuAnchorRect()
+        frame = requestAnimationFrame(measure)
+      }
+      measure()
+      return () => cancelAnimationFrame(frame)
+    }, [ComposerMenu, menuOpen, menuAnchorRect])
     const hideMenu = () => {
       const itemHasFocus = menuElement()?.contains(document.activeElement)
         || (catalogFocus.current !== null && document.activeElement === document.body)
@@ -466,7 +476,7 @@ export function createAuthoringView(React, deps) {
       'data-text': isHostIconComponent(IconSparkle16) ? undefined : true,
       ref: attachAnchor,
     },
-      !pluginEnabled ? null : h(menuChildrenRegion ? Menu : MenuFallback, {
+      !pluginEnabled ? null : h(ComposerMenu, {
         className: 'ptcPlusAuthorButtonShell', open: menuOpen,
         anchor: isHostComponent(Tooltip)
           ? h(Tooltip, { label: hint, delayMs: 700, disabled: menuOpen || managing || settingsOpen }, starButton) : starButton,

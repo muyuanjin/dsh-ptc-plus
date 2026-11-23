@@ -19,7 +19,6 @@ const HOST_PACKAGES = [
   '@deepseek-ai/dsh',
   '@deepseek-ai/dsh-agent',
   '@deepseek-ai/dsh-app-boot',
-  '@deepseek-ai/dsh-ptc-runtime',
   '@deepseek-ai/dsh-system-prompt',
   '@deepseek-ai/dsh-session',
   '@deepseek-ai/dsh-session-query',
@@ -33,7 +32,6 @@ const HOST_PACKAGES = [
 const PROFILE_HOST_PACKAGES = [
   '@deepseek-ai/dsh-fs-local',
   '@deepseek-ai/dsh-working-directory',
-  '@deepseek-ai/dsh-tool-working-directory',
   '@deepseek-ai/dsh-ptc-runtime-node',
   '@deepseek-ai/dsh-subprocess-local',
   '@deepseek-ai/dsh-sandbox-local',

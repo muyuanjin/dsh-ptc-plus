@@ -25,7 +25,7 @@ import {
 } from './program-bindings.js'
 import { deepFreeze } from './record-utils.js'
 import { adaptRunCodeSchema } from './direct-surface-owner.js'
-import { hostTransportDefinition } from './host-tool-sdk.js'
+import { hostBindingValue, hostTransportDefinition } from './host-tool-sdk.js'
 import { REPL_MEMORY_META_KEY, withReplMemorySnapshot } from './repl-memory-projection.js'
 import { withUserBindingDraftCapability } from './user-binding-draft-projection.js'
 import { POST_EDIT_KEY } from './session-journal-schema.js'
@@ -41,6 +41,15 @@ export const RUN_CODE = 'run_code'
 
 const EDIT_RUN_CODE = 'edit_run_code'
 const PLUGIN_PROGRAM_GLOBALS = new Set(['capabilities', 'code', 'repl'])
+
+function hostRunResult(result, usesOutputBlocks) {
+  if (!usesOutputBlocks) return result
+  const { logs, ...rest } = result
+  return {
+    ...rest,
+    output: logs.map((text, index) => ({ type: 'text', text: index === 0 ? text : `\n${text}` })),
+  }
+}
 
 function nestedRunCodeArguments(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -133,6 +142,10 @@ const PROGRAM_CAPABILITY_METADATA = deepFreeze([
             type: 'array',
             items: { type: 'string' },
             description: 'Child console output in emission order.',
+          },
+          outputTruncated: {
+            type: 'boolean',
+            description: 'True when the Host reports that captured child output was truncated.',
           },
           result: {
             description: 'Plugin-owned isolated execution preserves supported PTC Value V1 types and reference relationships; omitted for no return, present for explicit undefined. Native delegation and legacy upstream execution retain their original result contracts.',
@@ -298,7 +311,12 @@ export function createRuntimeBridgeOwner({
       if (child.error !== undefined) {
         throw new Error(`nested run_code failed (${child.error.kind}): ${child.error.message}`)
       }
-      return { logs: child.logs, ...(child.value === undefined ? {} : { result: child.value }) }
+      const logs = child.logs ?? child.output.filter(block => block.type === 'text').map(block => block.text)
+      return {
+        logs,
+        ...(child.outputTruncated === true ? { outputTruncated: true } : {}),
+        ...(child.value === undefined ? {} : { result: child.value }),
+      }
     }
 
     const nativeSchemas = toolSchemasForAgent(executionToken?.agent)
@@ -324,9 +342,10 @@ export function createRuntimeBridgeOwner({
           enumerable: true,
           value: async (...args) => {
             ensureLease()
-            return binding.global === 'tools' && key === EDIT_RUN_CODE
+            const value = await (binding.global === 'tools' && key === EDIT_RUN_CODE
               ? scope.run(executionToken, () => invoke(...args))
-              : invoke(...args)
+              : invoke(...args))
+            return hostBindingValue(value)
           },
         })
       }
@@ -490,8 +509,12 @@ function applyEditableSlots(definition, promptText, slotPatches) {
     // the definition the executor projects. Re-applied on every request, because
     // the prompt document can change while the definition stays the same object.
     applyEditableSlots(definition, readPromptText(), slotPatches)
-    if (patchedDefinitions.has(definition)) return
+    if (patchedDefinitions.has(definition)) return patchedDefinitions.get(definition)
     const output = definition.output
+    const outputFields = output.schema?.properties
+    const usesOutputBlocks = outputFields !== undefined && Object.hasOwn(outputFields, 'outputTruncated')
+      && !Object.hasOwn(outputFields, 'result')
+    const resultSlots = new Map()
     const ownPresentationMeta = Object.getOwnPropertyDescriptor(output, 'presentationMeta')
     const patchedPresentationMeta = (args, value) => {
       const projectedCurrent = scope.getStore()
@@ -576,11 +599,40 @@ function applyEditableSlots(definition, promptText, slotPatches) {
     const patchedExecute = typeof originalExecute !== 'function'
       ? undefined
       : function (args, exec) {
-          const executionArguments = scope.getStore()?.executionArguments ?? args
-          return originalExecute.call(this, executionArguments, exec)
+          const current = scope.getStore()
+          const result = originalExecute.call(this, current?.executionArguments ?? args, exec)
+          if (!usesOutputBlocks || current?.exec !== exec) return result
+          return Promise.resolve(result).then(value => {
+            const cellResult = current.cellResult
+            if (cellResult === undefined) return value
+            return {
+              ...value,
+              logs: cellResult.logs,
+              ...(Object.hasOwn(cellResult, 'value') ? { result: cellResult.value } : {}),
+            }
+          })
         }
     let presentationPatched = false
     try {
+      if (usesOutputBlocks) {
+        const originalRender = output.render
+        const extendedSchema = { ...output.schema, properties: { ...outputFields, result: {} } }
+        const render = function (args, value) {
+          const hasCompletion = Object.hasOwn(value, 'result')
+          if (!hasCompletion && !(active && scope.getStore()?.cellResult !== undefined)) {
+            return originalRender.call(this, args, value)
+          }
+          const parts = [value.logs.join('\n')]
+          if (hasCompletion) parts.push(typeof value.result === 'string' ? value.result : JSON.stringify(value.result, null, 2))
+          const text = parts.filter(part => part.length > 0).join('\n')
+          return originalRender.call(this, args, { ...value, logs: [text] })
+        }
+        for (const [key, replacement] of [['schema', extendedSchema], ['render', render]]) {
+          const original = Object.getOwnPropertyDescriptor(output, key)
+          if (!writeSlot(output, key, replacement)) throw new Error(`cannot attach completion to output.${key}`)
+          resultSlots.set(key, { original, replacement })
+        }
+      }
       Object.defineProperty(output, 'presentationMeta', {
         configurable: true,
         enumerable: true,
@@ -600,17 +652,24 @@ function applyEditableSlots(definition, promptText, slotPatches) {
           value: patchedExecute,
         })
       }
-      patchedDefinitions.set(definition, {
+      const patch = {
         definition,
         output,
+        usesOutputBlocks,
+        resultSlots,
         ownPresentationMeta,
         patchedPresentationMeta,
         ownProjectContent,
         patchedProjectContent,
         ownExecute,
         patchedExecute,
-      })
+      }
+      patchedDefinitions.set(definition, patch)
+      return patch
     } catch (error) {
+      for (const [key, { original, replacement }] of resultSlots) {
+        if (output[key] === replacement) restoreSlot(output, key, original)
+      }
       if (definition.projectContent === patchedProjectContent) {
         if (ownProjectContent === undefined) delete definition.projectContent
         else Object.defineProperty(definition, 'projectContent', ownProjectContent)
@@ -633,7 +692,7 @@ function applyEditableSlots(definition, promptText, slotPatches) {
       if (!active || !child.active) return Promise.reject(new Error('PTC execution lease expired'))
       if (executionPolicies(child.cellConfig).languageSemantics !== 'legacy-v1') {
         return runIsolated(request, child.executionToken, child.depth, child.cellConfig, child.functions)
-          .then(execution => execution.result)
+          .then(execution => hostRunResult(execution.result, child.executionToken?.usesOutputBlocks))
       }
     }
     if (!active) return seam.runUpstream(request)
@@ -693,6 +752,10 @@ function applyEditableSlots(definition, promptText, slotPatches) {
             logs: [...execution.result.logs,
               `edit_run_code failed after acceptance: ${error instanceof Error ? error.message : String(error)}`] }
         }
+      })
+      .then(result => {
+        if (current.usesOutputBlocks) current.cellResult = result
+        return hostRunResult(result, current.usesOutputBlocks)
       })
       .finally(projected.release)
   }
@@ -838,7 +901,7 @@ function applyEditableSlots(definition, promptText, slotPatches) {
         const id = sessionId(exec.agent)
         if (id === undefined) return next()
         await capabilityEnvironment?.prepare(exec.agent)
-        patchRunCodeDefinition(exec.agent)
+        const { usesOutputBlocks } = patchRunCodeDefinition(exec.agent)
         const inherited = scope.getStore()
         const persistedCallSeq = inherited?.persistedCallSeq
         const current = {
@@ -856,6 +919,7 @@ function applyEditableSlots(definition, promptText, slotPatches) {
           sessionLog: await readSubmissionLog(exec.agent?.session, exec.signal),
           agent: exec.agent,
           exec,
+          usesOutputBlocks,
           executionArguments,
           ...(userBindings === undefined ? {} : { userBindings }),
         }
@@ -960,6 +1024,9 @@ function applyEditableSlots(definition, promptText, slotPatches) {
       }
       releaseSeam()
       for (const patched of patchedDefinitions.values()) {
+        for (const [key, { original, replacement }] of patched.resultSlots) {
+          if (patched.output[key] === replacement) restoreSlot(patched.output, key, original)
+        }
         if (patched.output.presentationMeta === patched.patchedPresentationMeta) {
           if (patched.ownPresentationMeta === undefined) delete patched.output.presentationMeta
           else Object.defineProperty(patched.output, 'presentationMeta', patched.ownPresentationMeta)

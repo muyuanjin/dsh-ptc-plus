@@ -34,6 +34,7 @@ const CORDIS_PRESET_PATH = join(
   'cordis.yml',
 )
 const CORDIS_SKILL_DIRECTORY = join(dirname(CORDIS_PRESET_PATH), 'skills')
+const CORDIS_SKILL_NAME = 'dsh-doc'
 
 function errorMessages(error) {
   return error instanceof AggregateError
@@ -493,11 +494,11 @@ function cordisAgent(disposeGate = undefined, options = {}) {
           if (activationError !== undefined) throw activationError
           if (disposed || options.activate === false) return
           if (skillFiber) {
-            skillCatalog.set('cordis-plugin-development', {
-              name: 'cordis-plugin-development',
+            skillCatalog.set(CORDIS_SKILL_NAME, {
+              name: CORDIS_SKILL_NAME,
               provider: 'ptc-plus-cordis',
               invocation: { modelInvocable: true, userInvocable: true },
-              content: '# Cordis plugin development',
+              content: '# DeepSeek Harness documentation',
             })
           } else {
             for (const name of TEST_CORDIS_TOOL_NAMES) definitions.set(name, { name })
@@ -520,7 +521,7 @@ function cordisAgent(disposeGate = undefined, options = {}) {
               } catch {}
             }
             if (disposeGate !== undefined) await disposeGate
-            if (skillFiber) skillCatalog.delete('cordis-plugin-development')
+            if (skillFiber) skillCatalog.delete(CORDIS_SKILL_NAME)
             else for (const name of TEST_CORDIS_TOOL_NAMES) definitions.delete(name)
             if (!skillFiber && (options.throwDispose === true || disposeFailuresRemaining > 0)) {
               if (disposeFailuresRemaining > 0) disposeFailuresRemaining -= 1
@@ -1256,10 +1257,10 @@ test('startup settings mount Cordis tools before the first PTC request', async (
   const assembly = await ctx.systemPrompt.assemble({ scope: agent })
   assert.deepEqual(assembly.tools.map(tool => tool.name), TEST_CORDIS_TOOL_NAMES)
   assert.deepEqual(TEST_CORDIS_TOOL_NAMES.filter(name => definitions.has(name)), TEST_CORDIS_TOOL_NAMES)
-  assert.equal(skillCatalog.has('cordis-plugin-development'), true)
+  assert.equal(skillCatalog.has(CORDIS_SKILL_NAME), true)
   for (const cleanup of cleanups.reverse()) await cleanup()
   assert.equal(TEST_CORDIS_TOOL_NAMES.some(name => definitions.has(name)), false)
-  assert.equal(skillCatalog.has('cordis-plugin-development'), false)
+  assert.equal(skillCatalog.has(CORDIS_SKILL_NAME), false)
 })
 
 test('propagates asynchronous composition activation failure without settings', async () => {

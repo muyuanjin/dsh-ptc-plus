@@ -570,8 +570,10 @@ try {
   await tree.root.update(original); await root.loader.await(); await retiringFiber.await()
   const nativeProvider = root.get('ptcRuntime')
   assert.equal(nativeProvider[Symbol.for('dsh-ptc-plus.execution-seam')], undefined)
-  const spec = await nativeProvider.resolve({ program: 'return 19', bindings: [], cwd: directories[2], signal: agent.signal })
-  assert.equal((await nativeProvider.run(spec)).value, 19)
+  const program = nativeProvider.programFormat === 'function-body' ? 'return 19' : '19'
+  const spec = await nativeProvider.resolve({ program, bindings: [], cwd: directories[2], signal: agent.signal })
+  const nativeResult = await nativeProvider.run(spec)
+  assert.equal(nativeResult.value, 19, JSON.stringify(nativeResult))
   const cut = await root.get('sessionQuery').observeSession(session.id, { projectionMode: 'none' })
   try {
     assert.ok(Array.isArray(cut.events))

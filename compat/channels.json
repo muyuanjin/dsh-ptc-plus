@@ -74,8 +74,8 @@
       },
       "offTrain": {
         "@deepseek-ai/cordis": {
-          "version": "4.2.0-alpha.1",
-          "integrity": "sha512-SnqATTN5V8Izqu9LsWon6vxKedppIAhHaeBQ5r8D188UgG+VzNI3rpO5SIfzqxWt/3OUUCLo9OiXganW0IGdnA=="
+          "version": "4.2.0-alpha.2",
+          "integrity": "sha512-lG/gjpWPa2zqtT29u2jdgnq4GkoMyDIlciG7uabo2oEgzSnLUCPPHBs97oGyUiB2jLfonLQEO2AqNJtAh0YOFg=="
         }
       },
       "absent": []
